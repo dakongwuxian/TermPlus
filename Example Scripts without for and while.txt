@@ -1,0 +1,8 @@
+send first line
+wait 3
+send second line
+wait for # for 3
+send third line
+wait for krypton for 3
+send example end
+
