@@ -5,6 +5,8 @@ Serial port GUI tool on Windows, key features: button send, loop send, customize
 
 本项目作者为吴宪，项目名为TermPlus，是用于Windows操作系统下的串口通讯软件。
 
+直接下载.exe即可使用，也可以用源代码自行压制可执行程序。
+
 使用说明参见User Manual.txt，版本更新内容参见Change Note.txt，多行循环发送脚本示例参见Example Scripts xxx .txt。
 
 如果遇到使用问题可以发送邮件至dakongwuxian@gmail.com，会尽量及时修复bug。
