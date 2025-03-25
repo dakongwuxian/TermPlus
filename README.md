@@ -14,3 +14,5 @@ Serial port GUI tool on Windows, key features: button send, loop send, customize
 本人不对此软件的可靠性负责，用于商业项目时可能出现未知的数据风险，请自行负责。
 
 本软件可用于个人和学习用途，如果用于商业用途需要作者授权。
+
+![GUI screen shot](https://github.com/user-attachments/assets/b9344767-d44f-4ff0-a731-d7ee996ac36c)
