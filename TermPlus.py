@@ -153,7 +153,11 @@ class SerialGUI:
         # 在接受文本框中输入内容的处理
         self.text_area.bind("<Key>", self.on_key_press)
         self.input_buffer = ""  # Buffer to store user input
+        self.input_buffer_cursor = 0 # 光标，用于记录左右键的移动，以便删除合适的字符
         self.received_data = ''
+        # 记录按下enter和点击发送按键后发送的字符串
+        self.sent_commands = [] # 用于保存最后10个发送的命令
+        self.sent_commands_number = -1   # 用于跟踪当前浏览的命令索引
 
         # 启动定时检查任务，每30秒检测一次 text_area 内容是否过大需要删除
         self.text_area.after(30000, self.auto_save_and_auto_delete)
@@ -165,7 +169,7 @@ class SerialGUI:
         label_send.place(relx=0, rely=1, anchor="sw",x=10, y=row_1_y)
 
         # 发送文本框
-        self.send_entry = tk.Entry(self.main_frame, width=68)
+        self.send_entry = ttk.Combobox(self.main_frame, width=66)
         self.send_entry.place(relx=0, rely=1, anchor="sw",x=80, y=row_1_y)
         self.send_entry.bind("<Return>", self.send_data_btn)
 
@@ -1267,6 +1271,7 @@ class SerialGUI:
                 self.text_area.yview(tk.END)
                 self.sent_bytes += len(data_to_send.encode())
                 self.update_data_stats()
+                self.add_sent_command(data) # 更新已发送命令
 
     def toggle_loop_send(self):
         if not self.loop_sending:
@@ -1344,10 +1349,11 @@ class SerialGUI:
     def on_key_press(self, event):
         """
         按键时：
-         - 将输入字符写入input buffer
+         - 将输入字符写入input buffer，并更新光标位置
          - 如果是回车键，则判断串口是否打开，若打开则发送input buffer的内容（附带回车），并清空input buffer
          - 如果input buffer为空，则判断串口是否打开，若打开则发送回车字符
-         - 仅处理字符和回车，其它按键则不处理
+         - backspace键删除光标前的字符
+         - 左右键时移动光标
          - 不再直接写入 autosave 文件，由后台线程统一处理
         """
         # 如果主键盘和小键盘的回车键被按下
@@ -1359,6 +1365,8 @@ class SerialGUI:
                 if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
                     self.serial_conn.send_data(data_to_send)
                     self.sent_bytes += len(data_to_send.encode())
+                    self.add_sent_command(self.input_buffer) # 更新已发送命令
+                    self.sent_commands_number = -1  # 重置上下键的命令索引
             else:
                # 若 input buffer 为空，则仅发送回车字符（前提是串口已打开）
                 if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
@@ -1368,17 +1376,93 @@ class SerialGUI:
             self.update_data_stats()
             # 只要按下回车，就在文本框中进行换行
             #self.append_to_text_area(f"\n")
-            # Clear the input buffer
+            # Clear the input buffer, reset cursor
             self.input_buffer = ""
+            self.input_buffer_cursor = 0
             # Move cursor to the end of the text area
             self.text_area.mark_set("insert", "end")
             self.text_area.see("end")
             #return "break"  # Prevent default newline insertion
+        
+            # 处理 BackSpace 键：删除光标前的一个字符
+        elif event.keysym == "BackSpace":
+            if self.input_buffer_cursor > 0:
+                self.input_buffer = (self.input_buffer[:self.input_buffer_cursor - 1] +
+                                     self.input_buffer[self.input_buffer_cursor:])
+                self.input_buffer_cursor -= 1
+            #return "break" # 不禁止backspace本身在主窗口中的删除操作
+
+        # 处理左箭头：向左移动光标
+        elif event.keysym == "Left":
+            if self.input_buffer_cursor > 0:
+                self.input_buffer_cursor -= 1
+            #return "break" # 不禁止光标在窗口中的移动
+
+        # 处理右箭头：向右移动光标
+        elif event.keysym == "Right":
+            if self.input_buffer_cursor < len(self.input_buffer):
+                self.input_buffer_cursor += 1
+            #return "break" # 不禁止光标在窗口中的移动
+        
+        elif event.keysym == "Up":
+            # 处理上箭头键：浏览之前的命令
+            if self.sent_commands:
+                if self.sent_commands_number >= -1 and self.sent_commands_number < len(self.sent_commands) - 1:
+                    self.sent_commands_number += 1
+                    self._replace_input_buffer_with_command()
+                #elif self.sent_commands_number == len(self.sent_commands) - 1:
+                #    self._replace_input_buffer_with_command()
+            return "break"
+
+        elif event.keysym == "Down":
+            # 处理下箭头键：浏览之后的命令
+            if self.sent_commands:
+                if self.sent_commands_number < len(self.sent_commands) and self.sent_commands_number > 0:
+                     self.sent_commands_number -= 1
+                     self._replace_input_buffer_with_command()
+                elif self.sent_commands_number == 0:
+                    self._clear_input_buffer()
+                    self.sent_commands_number = -1
+            return "break"
+
         elif event.char and event.keysym not in ("BackSpace", "Tab", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"):
-            # Append printable characters to the input buffer
-            self.input_buffer += event.char
+                    # 在光标位置插入字符
+            self.input_buffer = (self.input_buffer[:self.input_buffer_cursor] + event.char + self.input_buffer[self.input_buffer_cursor:])
+            self.input_buffer_cursor += 1
         # Allow default behavior for other keys
         return None
+
+    def _replace_input_buffer_with_command(self):
+        """用历史命令替换当前输入缓冲区的内容。"""
+        if 0 <= self.sent_commands_number < len(self.sent_commands):
+            command = self.sent_commands[self.sent_commands_number]
+            # 删除当前输入缓冲区的内容
+            self.text_area.delete("insert -%dc" % len(self.input_buffer), "insert")
+            # 插入历史命令
+            self.text_area.insert("insert", command)
+            self.input_buffer = command
+            self.input_buffer_cursor = len(command)
+
+    def _clear_input_buffer(self):
+        """清空输入缓冲区。"""
+        self.text_area.delete("insert -%dc" % len(self.input_buffer), "insert")
+        self.input_buffer = ""
+        self.input_buffer_cursor = 0
+
+    def add_sent_command(self, command):
+        # 如果命令为空，则不更新
+        if command.strip() == "":
+            return
+        # 如果已经有发送记录，并且最新的一条记录与当前命令相同，则不更新
+        if self.sent_commands and self.sent_commands[0] == command:
+            return
+        # 插入到列表头部
+        self.sent_commands.insert(0, command)
+        # 如果列表元素超过20个，则删除最后一个
+        if len(self.sent_commands) > 20:
+            self.sent_commands.pop()
+        # 更新下拉框的可选值
+        self.send_entry['values'] = self.sent_commands
 
     def toggle_auto_save(self):
         # 当点击按钮时为 "OFF" ，则尝试开启自动保存，并更改按钮状态和文字
