@@ -20,6 +20,7 @@ import time
 import os #新增，用于遍历目录
 import re #新增，用于加载脚本文件
 import configparser
+import ast
 
 class SerialComm:
     def __init__(self, port, baudrate=115200):
@@ -1548,7 +1549,8 @@ class SerialGUI:
             'default_delay_time': self.default_delay_time_entry.get(),
             'loop_count': self.loop_count_entry.get(),
             'terminal_symbol': self.send_all_terminal_entry.get(),
-            'terminal_wait_over_time': self.send_all_over_time_entry.get()
+            'terminal_wait_over_time': self.send_all_over_time_entry.get(),
+            'sent_commands': self.sent_commands
         }
         # 在程序所在目录创建/覆盖 TermPlusSetup.ini
         with open("TermPlusSetup.ini", "w", encoding="utf-8") as configfile:
@@ -1653,6 +1655,12 @@ class SerialGUI:
             if 'terminal_wait_over_time' in setup:
                 self.send_all_over_time_entry.delete(0, 'end')
                 self.send_all_over_time_entry.insert(0, setup['terminal_wait_over_time'])
+
+            # 已发送命令
+            if 'sent_commands' in setup:
+                self.sent_commands = ast.literal_eval(setup['sent_commands'])
+                # 更新下拉框的可选值
+                self.send_entry['values'] = self.sent_commands
 
 root = tk.Tk()
 app = SerialGUI(root)
