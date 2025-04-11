@@ -21,6 +21,7 @@ import os #新增，用于遍历目录
 import re #新增，用于加载脚本文件
 import configparser
 import ast
+from datetime import datetime
 
 class SerialComm:
     def __init__(self, port, baudrate=115200):
@@ -150,12 +151,22 @@ class SerialGUI:
         # Row 0: 接收文本区域（日志显示）
         self.text_area = scrolledtext.ScrolledText(self.main_frame, wrap=tk.WORD)
         self.text_area.grid(row=0, column=0, columnspan=1, padx=10, pady=5, sticky="nsew")
+        
+        # 配置字体颜色的tag，设置前景色为对应色
+        self.text_area.tag_config("red", foreground="red")
+        self.text_area.tag_config("blue", foreground="blue")
+        self.text_area.tag_config("green", foreground="green")
 
         # 在接受文本框中输入内容的处理
         self.text_area.bind("<Key>", self.on_key_press)
         self.input_buffer = ""  # Buffer to store user input
         self.input_buffer_cursor = 0 # 光标，用于记录左右键的移动，以便删除合适的字符
         self.received_data = ''
+        # 控制接收时间戳插入的变量
+        self.last_data_time = None
+        self.current_read_time = None
+        self.allow_new_timestamp = True
+
         # 记录按下enter和点击发送按键后发送的字符串
         self.sent_commands = [] # 用于保存最后10个发送的命令
         self.sent_commands_number = -1   # 用于跟踪当前浏览的命令索引
@@ -201,6 +212,14 @@ class SerialGUI:
         self.time_label_title.place(relx=0, rely=1, anchor="sw",x=300, y=row_2_y)
         self.time_label = tk.Label(self.main_frame, text="", font=("Arial", 10))
         self.time_label.place(relx=0, rely=1, anchor="sw",x=330, y=row_2_y)
+
+        # 时间戳label和check box
+        self.time_label_title = tk.Label(self.main_frame, text="时间戳")
+        self.time_label_title.place(relx=0, rely=1, anchor="sw",x=400, y=row_2_y)
+        self.timestamp_onoff = tk.BooleanVar(value=False)
+        self.timestamp_check = tk.Checkbutton(self.main_frame, variable=self.timestamp_onoff)
+        self.timestamp_check.place(relx=0, rely=1, anchor="sw",x=450, y=row_2_y+2)  
+
         self.update_time()  # 启动时间更新
         #循环间隔（s)标签
         loop_interval_label = tk.Label(self.main_frame, text="循环间隔 (s):")
@@ -214,31 +233,31 @@ class SerialGUI:
         self.single_loop_send_btn.place(relx=0, rely=1, anchor="sw",x=650, y=row_2_y+4)
 
         # Row 3: 标签页操作按钮区域（新建、重命名、删除）
-        # 给 button_frame 设置固定尺寸
-        button_frame = tk.Frame(self.main_frame, width=730, height=30)
-        button_frame.place(relx=0, rely=1, anchor="sw",x=10, y=-370)  # 调整 x,y 确保在 main_frame 内可见
+        # 给 row_3_frame 设置固定尺寸
+        row_3_frame = tk.Frame(self.main_frame, width=730, height=30)
+        row_3_frame.place(relx=0, rely=1, anchor="sw",x=10, y=-370)  # 调整 x,y 确保在 main_frame 内可见
 
-        self.new_tab_btn = tk.Button(button_frame, text="新建标签页", command=self.create_new_tab)
+        self.new_tab_btn = tk.Button(row_3_frame, text="新建标签页", command=self.create_new_tab)
         self.new_tab_btn.place(x=0, y=-4)
-        self.rename_tab_btn = tk.Button(button_frame, text="重命名标签页", command=self.rename_current_tab)
+        self.rename_tab_btn = tk.Button(row_3_frame, text="重命名标签页", command=self.rename_current_tab)
         self.rename_tab_btn.place(x=80, y=-4)
-        self.delete_tab_btn = tk.Button(button_frame, text="删除标签页", command=self.delete_current_tab)
+        self.delete_tab_btn = tk.Button(row_3_frame, text="删除标签页", command=self.delete_current_tab)
         self.delete_tab_btn.place(x=170, y=-4)
         
         # “清屏”按钮
-        self.clear_screen_btn = tk.Button(button_frame, text="清屏", command=self.clear_text_area, width=10)
+        self.clear_screen_btn = tk.Button(row_3_frame, text="清屏", command=self.clear_text_area, width=10)
         self.clear_screen_btn.place(x=650-10, y=-4)
 
         # Terminal label and entry
-        self.send_all_terminal_label = tk.Label(button_frame, text="等待符号:")
+        self.send_all_terminal_label = tk.Label(row_3_frame, text="等待符号:")
         self.send_all_terminal_label.place(x=350, y=0)
-        self.send_all_terminal_entry = tk.Entry(button_frame, width=5)
+        self.send_all_terminal_entry = tk.Entry(row_3_frame, width=5)
         self.send_all_terminal_entry.place(x=430, y=0)
         self.send_all_terminal_entry.insert(0, "#")
         # Terminal wait over time label and entry
-        self.send_all_over_time_label = tk.Label(button_frame, text="超时时间 (s):")
+        self.send_all_over_time_label = tk.Label(row_3_frame, text="超时时间 (s):")
         self.send_all_over_time_label.place(x=500-10, y=0)
-        self.send_all_over_time_entry = tk.Entry(button_frame, width=5)
+        self.send_all_over_time_entry = tk.Entry(row_3_frame, width=5)
         self.send_all_over_time_entry.place(x=600-10, y=0)
         self.send_all_over_time_entry.insert(0, "5")
 
@@ -257,31 +276,35 @@ class SerialGUI:
         self.add_tab("Tab 2")
 
         # Row 5
-        row_5_y = -150
+        self.row_5_frame = tk.Frame(self.main_frame)
+        self.row_5_frame.place(relx=0, rely=1, anchor="sw",x=10, y=-145, relwidth = 1.0, height = 34)
+        #self.row_5_frame.grid_columnconfigure(0, weight=1)           # 第一列扩展
+        #self.row_5_frame.grid_columnconfigure(1, weight=0, minsize=150)
+
         # 文字“多行循环发送”
-        self.multi_loop_label = tk.Label(self.main_frame, text="多行循环发送")
-        self.multi_loop_label.place(relx=0, rely=1, anchor="sw",x=10, y=row_5_y)
+        self.multi_loop_label = tk.Label(self.row_5_frame, text="多行循环发送")
+        self.multi_loop_label.place(relx=0, rely=0, anchor="ne",x=80, y=4)
         # 文字，当前执行循环：x
         self.current_loop_count = tk.StringVar(value="当前执行循环：0")
-        self.current_loop_count_label = tk.Label(self.main_frame, textvariable=self.current_loop_count)
-        self.current_loop_count_label.place(relx=0, rely=1, anchor="sw",x=250, y=row_5_y)
+        self.current_loop_count_label = tk.Label(self.row_5_frame, textvariable=self.current_loop_count)
+        self.current_loop_count_label.place(relx=0, rely=0, anchor="ne",x=280, y=4)
         # “默认间隔时间”文字
-        self.default_delay_time_label = tk.Label(self.main_frame, text="默认间隔时间ms")
-        self.default_delay_time_label.place(relx=0, rely=1, anchor="sw",x=380, y=row_5_y)
+        self.default_delay_time_label = tk.Label(self.row_5_frame, text="默认间隔时间ms")
+        self.default_delay_time_label.place(relx=0, rely=0, anchor="ne",x=410, y=4)
         # 单行文本框,“默认间隔时间”右侧
-        self.default_delay_time_entry = tk.Entry(self.main_frame, width=5)
-        self.default_delay_time_entry.place(relx=0, rely=1, anchor="sw",x=480, y=row_5_y)
+        self.default_delay_time_entry = tk.Entry(self.row_5_frame, width=5)
+        self.default_delay_time_entry.place(relx=0, rely=0, anchor="ne",x=470, y=4)
         self.default_delay_time_entry.insert(0,0)
         # “循环次数”文字
-        self.loop_count_label = tk.Label(self.main_frame, text="循环次数")
-        self.loop_count_label.place(relx=0, rely=1, anchor="sw",x=540, y=row_5_y)
+        self.loop_count_label = tk.Label(self.row_5_frame, text="循环次数")
+        self.loop_count_label.place(relx=0, rely=0, anchor="ne",x=550, y=4)
         # 单行文本框,“循环次数”右侧
-        self.loop_count_entry = tk.Entry(self.main_frame, width=5)
-        self.loop_count_entry.place(relx=0, rely=1, anchor="sw",x=600, y=row_5_y)
+        self.loop_count_entry = tk.Entry(self.row_5_frame, width=5)
+        self.loop_count_entry.place(relx=0, rely=0, anchor="ne",x=630, y=4)
         self.loop_count_entry.insert(0,3)
         # “多行循环”按钮，放在单行文本框右侧
-        self.multi_toggle_loop_send_btn = tk.Button(self.main_frame, width=10, text="多行循环", command=self.multi_toggle_loop_send, state=tk.DISABLED)
-        self.multi_toggle_loop_send_btn.place(relx=0, rely=1, anchor="sw",x=650, y=row_5_y+4)
+        self.multi_toggle_loop_send_btn = tk.Button(self.row_5_frame, width=10, text="多行循环", command=self.multi_toggle_loop_send, state=tk.DISABLED)
+        self.multi_toggle_loop_send_btn.place(relx=0, rely=0, anchor="ne",x=720, y=0)
         
         # Row 6
         # 多行文本框
@@ -304,7 +327,7 @@ class SerialGUI:
         self.multi_loop_text.insert("14.0", "wait 3\n")
 
         # 右侧功能区，使用 place 定位，固定在右上角，不影响左侧布局
-        self.right_frame = tk.Frame(self.main_frame)
+        self.right_frame = tk.Frame(self.main_frame) # , borderwidth=1, relief="raised" 边框可选项 flat raised sunken groove ridge
         self.right_frame.place(relx=1.0, rely=1.0, anchor="se", x=-10, y=-10)
 
         # 新增：窗口名输入框，默认“TermPlus”
@@ -587,7 +610,11 @@ class SerialGUI:
     
         # 定义局部命名空间并注入预定义函数
         local_namespace = {}
-    
+        local_namespace["re"] = re
+        local_namespace["gui"] = self
+        local_namespace["StopLoopException"] = StopLoopException
+        local_namespace["messagebox"] = messagebox
+
         def send_line(text):
             if not (self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open):
                 messagebox.showwarning("警告", "串口未打开，循环发送终止")
@@ -1117,8 +1144,6 @@ class SerialGUI:
                         self._send_next_command(all_lines, index + 1)
                     elif time.time() - start_time >= timeout:
                         # 超时未检测到终止符，在主窗口中显示超时，直接终止函数执行
-                        # 配置一个名为 "red" 的 tag，设置前景色为红色
-                        self.text_area.tag_config("red", foreground="red")
                         self.text_area.insert(tk.END, "Waiting for terminal_str over time, commands sending ended.", "red")
                         self.text_area.yview(tk.END)
                         return
@@ -1150,6 +1175,10 @@ class SerialGUI:
 
     def send_via_serial(self, data):
         if self.serial_conn:
+            # 如果选中时间戳，则插入发送时间
+            if self.timestamp_onoff.get():
+                timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                self.text_area.insert(tk.END, f"\nSend at    {timestamp_str}\n","blue")
             data_and_return = data + '\n'
             self.serial_conn.send_data(data_and_return)
             self.text_area.insert(tk.END, data_and_return)
@@ -1249,7 +1278,7 @@ class SerialGUI:
             messagebox.showwarning("警告", "未指定路径和文件名")
             return None
         # 构造文件名：保存文件名_YYYY-MM-DD_HH_MM_SS.txt
-        filename = f"{fname}_{time.strftime('%Y-%m-%d')}_{time.strftime('%H_%M_%S')}.txt"
+        filename = f"{fname}_{time.strftime('%Y-%m-%d')}_{time.strftime('%H-%M-%S')}.txt"
         full_path = os.path.join(path, filename)
         try:
             new_file = open(full_path, "w", encoding="utf-8")
@@ -1262,6 +1291,10 @@ class SerialGUI:
         if self.serial_conn:
             data = self.send_entry.get()
             if data:
+                # 如果选中时间戳，则先插入发送时间
+                if self.timestamp_onoff.get():
+                    timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    self.text_area.insert(tk.END, f"\nSend at    {timestamp_str}\n", "blue")
                 # 如果“发送新行”checkbox被勾选
                 if self.send_newline_var.get():
                     data_to_send = data + "\n"
@@ -1314,13 +1347,26 @@ class SerialGUI:
                 try:
                     # 使用 read() 读取当前缓冲区中的所有数据，如果没有数据则至少读取1个字节
                     data_bytes = self.serial_conn.ser.read(self.serial_conn.ser.in_waiting or 1)
+                    self.current_read_time = time.time() # 获取当前时间
                     if data_bytes:
+                        # 如果接收到了数据，也要进行一次判断，current time是否超过last time 0.1秒
+                        if self.last_data_time is not None and (self.current_read_time - self.last_data_time) >= 0.1:
+                            self.allow_new_timestamp = True  # 超过 0.1 秒后，允许下一次插入时间戳
+                        self.last_data_time = self.current_read_time  # 更新最近接收时间
+                        # 如果选中时间戳，则先插入接收时间
+                        if self.timestamp_onoff.get() and self.allow_new_timestamp:
+                            timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                            self.text_area.insert(tk.END, f"\nReceive at {timestamp_str}\n", "green")
+                            self.allow_new_timestamp = False  # 插入一次时间戳后禁止后续插入
                         received_str = data_bytes.decode(errors='replace')
                         self.text_area.insert(tk.END, received_str)
                         self.text_area.yview(tk.END)  # 自动滚动到末尾
                         self.received_bytes += len(data_bytes)
                         self.update_data_stats()
                     else:
+                        # 如果没有接收到数据，计算当前时间和上次接收时间是否超过0.1秒，超过则允许下一次插入时间戳
+                        if self.last_data_time is not None and (self.current_read_time - self.last_data_time) >= 0.1:
+                            self.allow_new_timestamp = True  # 超过 0.1 秒后，允许下一次插入时间戳
                         # 如果没有接收到数据，短暂休眠，避免占用过多 CPU 资源
                         time.sleep(0.01)
                 except Exception:
@@ -1365,6 +1411,10 @@ class SerialGUI:
                 data_to_send = self.input_buffer + "\n"
                 if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
                     self.serial_conn.send_data(data_to_send)
+                    # 如果选中时间戳，则先插入接收时间
+                    if self.timestamp_onoff.get():
+                        timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                        self.text_area.insert(tk.END, f"\nSend at    {timestamp_str}\n", "blue")
                     self.sent_bytes += len(data_to_send.encode())
                     self.add_sent_command(self.input_buffer) # 更新已发送命令
                     self.sent_commands_number = -1  # 重置上下键的命令索引

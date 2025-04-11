@@ -1,0 +1,14 @@
+#get current place in text_area
+start_idx = gui.text_area.index("end")
+send ts r
+wait 3
+# get text contents in text_area from last command send to now
+response = gui.text_area.get(start_idx, "end-1c") 
+# match for words "Board" and temp number
+m = re.search(r'Board\s*:\s*([\d.]+)', response)
+# get temp number
+if m: temp = float(m.group(1))
+if temp > 30:# decide if temp >30
+    messagebox.showinfo("提示", "board temp>30 detected")# pop out message
+    raise StopLoopException("stop")# stop running
+
