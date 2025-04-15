@@ -282,29 +282,39 @@ class SerialGUI:
         #self.row_5_frame.grid_columnconfigure(1, weight=0, minsize=150)
 
         # 文字“多行循环发送”
-        self.multi_loop_label = tk.Label(self.row_5_frame, text="多行循环发送")
-        self.multi_loop_label.place(relx=0, rely=0, anchor="ne",x=80, y=4)
+        self.multi_loop_label = tk.Label(self.row_5_frame, text="多行循环")
+        self.multi_loop_label.place(relx=0, rely=0, anchor="ne",x=55, y=4)
         # 文字，当前执行循环：x
-        self.current_loop_count = tk.StringVar(value="当前执行循环：0")
+        self.current_loop_count = tk.StringVar(value="当前循环：0")
         self.current_loop_count_label = tk.Label(self.row_5_frame, textvariable=self.current_loop_count)
-        self.current_loop_count_label.place(relx=0, rely=0, anchor="ne",x=280, y=4)
+        self.current_loop_count_label.place(relx=0, rely=0, anchor="ne",x=300, y=4)
         # “默认间隔时间”文字
-        self.default_delay_time_label = tk.Label(self.row_5_frame, text="默认间隔时间ms")
+        self.default_delay_time_label = tk.Label(self.row_5_frame, text="默认间隔ms:")
         self.default_delay_time_label.place(relx=0, rely=0, anchor="ne",x=410, y=4)
         # 单行文本框,“默认间隔时间”右侧
         self.default_delay_time_entry = tk.Entry(self.row_5_frame, width=5)
-        self.default_delay_time_entry.place(relx=0, rely=0, anchor="ne",x=470, y=4)
+        self.default_delay_time_entry.place(relx=0, rely=0, anchor="ne",x=460, y=4)
         self.default_delay_time_entry.insert(0,0)
         # “循环次数”文字
-        self.loop_count_label = tk.Label(self.row_5_frame, text="循环次数")
-        self.loop_count_label.place(relx=0, rely=0, anchor="ne",x=550, y=4)
+        self.loop_count_label = tk.Label(self.row_5_frame, text="循环次数:")
+        self.loop_count_label.place(relx=0, rely=0, anchor="ne",x=530, y=4)
         # 单行文本框,“循环次数”右侧
         self.loop_count_entry = tk.Entry(self.row_5_frame, width=5)
-        self.loop_count_entry.place(relx=0, rely=0, anchor="ne",x=630, y=4)
+        self.loop_count_entry.place(relx=0, rely=0, anchor="ne",x=580, y=4)
         self.loop_count_entry.insert(0,3)
-        # “多行循环”按钮，放在单行文本框右侧
-        self.multi_toggle_loop_send_btn = tk.Button(self.row_5_frame, width=10, text="多行循环", command=self.multi_toggle_loop_send, state=tk.DISABLED)
-        self.multi_toggle_loop_send_btn.place(relx=0, rely=0, anchor="ne",x=720, y=0)
+        # “开始”按钮，放在单行文本框右侧
+        self.start_button = tk.Button(self.row_5_frame, width=5, text="开始", command=self.start_multi_loop_send, state=tk.NORMAL)
+        self.start_button.place(relx=0, rely=0, anchor="ne",x=640, y=0)
+        # “暂停”按钮
+        self.pause_button = tk.Button(self.row_5_frame, width=5, text="暂停", command=self.pause_resume_multi_loop_send, state=tk.DISABLED)
+        self.pause_button.place(relx=0, rely=0, anchor="ne", x=690, y=0)
+        # “停止”按钮
+        self.stop_button = tk.Button(self.row_5_frame, width=5, text="停止", command=self.stop_multi_loop_send, state=tk.DISABLED)
+        self.stop_button.place(relx=0, rely=0, anchor="ne", x=740, y=0)
+         # 暂停控制的 Event，以及标记当前暂停状态
+        self.pause_event = threading.Event()
+        self.pause_event.set()   # 未暂停状态
+        self.paused = False        # 标记是否处于暂停状态
         
         # Row 6
         # 多行文本框
@@ -447,6 +457,25 @@ class SerialGUI:
         self.save_as_multi_loop_btn = tk.Button(self.right_frame, text="另存为", command=self.save_multi_loop_file_as, width=15)
         self.save_as_multi_loop_btn.pack(fill="x", pady=2)
 
+        # 保存 text_area 的原始 grid 布局信息
+        self.original_text_area_grid = self.text_area.grid_info()
+        
+        # 保存 main_frame 中（除 text_area 和最大化按钮外）的其他控件的原始 place 信息
+        self.original_layout = {}
+        for widget in self.main_frame.winfo_children():
+            # 如果不是 text_area 且不是以后要创建的最大化按钮，则保存放置信息
+            # 这里假设其他控件均使用 place 布局（text_area 为 grid 布局）
+            if widget != self.text_area:
+                self.original_layout[widget] = widget.place_info()
+        
+        # 新增：最大化状态标记
+        self.maximized = False
+        
+        # 新增：创建“最大化/恢复”按钮（例如放在窗口右上角，不影响 text_area）
+        self.maximize_button = tk.Button(self.main_frame, text="□", command=self.toggle_maximize, width=2)
+        # 这里采用 place 定位（注意此处将一直显示）
+        self.maximize_button.place(relx=1, rely=0, anchor="ne", x=-146, y=5)
+
         self.sent_bytes = 0
         self.received_bytes = 0
         self.serial_conn = None
@@ -526,20 +555,45 @@ class SerialGUI:
         
 
 
-    #def multi_loop_send(self):
+    # def start_multi_loop_send(self):
     #    # 在新线程中运行自定义脚本，避免阻塞GUI
     #    threading.Thread(target=self.run_custom_script, daemon=True).start()
-    def multi_toggle_loop_send(self):
+    def start_multi_loop_send(self):
         if not self.loop_sending:
             self.loop_sending = True
             self.loop_stop = False
-            self.multi_toggle_loop_send_btn.config(text="停止循环")
+            self.pause_event.set()    # 确保初始状态为非暂停
+            # 启动后禁用开始按钮，启用停止和暂停按钮
+            self.start_button.config(state=tk.DISABLED)
+            self.stop_button.config(state=tk.NORMAL)
+            self.pause_button.config(state=tk.NORMAL)
             threading.Thread(target=self.run_custom_script, daemon=True).start()
-        else:
-            # 用户点击停止时，设置停止标志
+
+    def stop_multi_loop_send(self):
+        if self.loop_sending:
             self.loop_stop = True
             self.loop_sending = False
-            self.multi_toggle_loop_send_btn.config(text="多行循环")
+            # 为了避免在暂停状态下不能退出，恢复 Event
+            self.pause_event.set()
+            self.paused = False
+            # 恢复按钮初始状态
+            self.start_button.config(state=tk.NORMAL)
+            self.stop_button.config(state=tk.DISABLED)
+            self.pause_button.config(state=tk.DISABLED, text="暂停")
+
+    def pause_resume_multi_loop_send(self):
+        # 如果没有运行，则不处理
+        if not self.loop_sending:
+            return
+        # 如果当前未处于暂停状态，则暂停；如果已暂停，则继续
+        if not self.paused:
+            self.pause_event.clear()  # 清除后wait()处将会阻塞
+            self.paused = True
+            self.pause_button.config(text="继续")
+        else:
+            self.pause_event.set()     # 允许继续执行
+            self.paused = False
+            self.pause_button.config(text="暂停")
 
     def run_custom_script(self):
         """
@@ -637,6 +691,7 @@ class SerialGUI:
             interval = 0.1
             elapsed = 0
             while elapsed < seconds:
+                self.pause_event.wait() # 阻塞直到未暂停；如果当前处于暂停状态，此处将阻塞
                 if self.loop_stop:
                     raise StopLoopException("循环已停止")
                 time.sleep(interval)
@@ -678,7 +733,7 @@ class SerialGUI:
         self.loop_stop = False
         while (loop_count == 0 or iteration < loop_count) and not self.loop_stop:
             iteration += 1
-            self.root.after(0, lambda i=iteration: self.current_loop_count.set(f"当前执行循环：{i}"))
+            self.root.after(0, lambda i=iteration: self.current_loop_count.set(f"当前循环：{i}"))
             try:
                 exec(processed_code, {}, local_namespace)
             # 当检测到停止标志时，不显示错误窗口，直接退出循环
@@ -688,7 +743,9 @@ class SerialGUI:
                 messagebox.showerror("脚本执行错误", str(e))
                 break
         self.loop_sending = False
-        self.root.after(0, lambda: self.multi_toggle_loop_send_btn.config(text="循环发送"))
+        self.root.after(0, lambda: self.start_button.config(state=tk.NORMAL))
+        self.root.after(0, lambda: self.stop_button.config(state=tk.DISABLED))
+        self.root.after(0, lambda: self.pause_button.config(state=tk.DISABLED))
 
     def on_closing(self):
         """
@@ -1233,7 +1290,7 @@ class SerialGUI:
             if self.serial_conn.ser and self.serial_conn.ser.is_open:
                 self.send_btn.config(state=tk.NORMAL) #发送
                 self.single_loop_send_btn.config(state=tk.NORMAL) #单行循环
-                self.multi_toggle_loop_send_btn.config(state=tk.NORMAL) #多行循环
+                self.start_button.config(state=tk.NORMAL)
                 self.toggle_port_btn.config(text="关闭串口")
                 self.port_menu.config(state="disabled")
                 self.baud_menu.config(state="disabled")
@@ -1258,7 +1315,9 @@ class SerialGUI:
             self.serial_conn.close()
             self.send_btn.config(state=tk.DISABLED) #发送
             self.single_loop_send_btn.config(state=tk.DISABLED) #单行循环
-            self.multi_toggle_loop_send_btn.config(state=tk.DISABLED) #多行循环
+            self.start_button.config(state=tk.DISABLED)
+            self.stop_button.config(state=tk.DISABLED)
+            self.pause_button.config(state=tk.DISABLED)
             self.toggle_port_btn.config(text="打开串口")
             self.port_menu.config(state="readonly")
             self.baud_menu.config(state="readonly")
@@ -1327,10 +1386,15 @@ class SerialGUI:
                 interval = 3
             data = self.send_entry.get()
             if data and self.serial_conn:
+                # 如果选中发送新行被勾选
                 if self.send_newline_var.get():
                     data_to_send = data + "\n"
                 else:
                     data_to_send = data
+                # 如果选中时间戳，则先插入发送时间
+                if self.timestamp_onoff.get():
+                    timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    self.text_area.insert(tk.END, f"\nSend at    {timestamp_str}\n", "blue")
                 self.serial_conn.send_data(data_to_send)
                 self.text_area.insert(tk.END, f"{data_to_send}")
                 self.text_area.yview(tk.END)
@@ -1605,6 +1669,37 @@ class SerialGUI:
         # 在程序所在目录创建/覆盖 TermPlusSetup.ini
         with open("TermPlusSetup.ini", "w", encoding="utf-8") as configfile:
             config.write(configfile)
+    
+    # 切换主窗口最大化
+    def toggle_maximize(self):
+        if not self.maximized:
+            # 进入最大化模式：
+            # 隐藏除 text_area 和 maximize_button 外的所有控件
+            for widget in self.main_frame.winfo_children():
+                if widget not in (self.text_area, self.maximize_button):
+                    # 使用 place_forget 隐藏（text_area 由于使用 grid 故不处理）
+                    widget.place_forget()
+            # 隐藏 text_area 的 grid 布局，并通过 place 让其占满整个 main_frame
+            self.text_area.grid_remove()
+            self.text_area.place(relx=0, rely=0, relwidth=1, relheight=1)
+            # 将窗口放到主窗口右上角
+            self.maximize_button.place(relx=1, rely=0, anchor="ne", x=-15, y=0)
+            # 修改按钮文字为“恢复”
+            self.maximize_button.config(text="－")
+            self.maximized = True
+        else:
+            # 恢复原布局：
+            # 隐藏 text_area 使用的 place 布局，并恢复 grid 布局
+            self.text_area.place_forget()
+            self.text_area.grid(**self.original_text_area_grid)
+            # 恢复之前隐藏的控件
+            for widget, geom in self.original_layout.items():
+                widget.place(**geom)
+            # 将按钮放回主窗口右上角
+            self.maximize_button.place(relx=1, rely=0, anchor="ne", x=-146, y=5)
+                # 将按钮文字改回“最大化”
+            self.maximize_button.config(text="□")
+            self.maximized = False
 
     def load_setup(self):
         """
