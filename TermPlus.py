@@ -140,17 +140,34 @@ class SerialGUI:
 
         # 使用 grid 布局创建 main_frame，并让它随窗口扩展
         self.main_frame = tk.Frame(self.root)
-        self.main_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self.main_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=(5,10))
                 
         # 设置 main_frame 内部的行和列
-        self.main_frame.grid_rowconfigure(0, weight=1)            # Row 0（接收文本区域）扩展
-        self.main_frame.grid_rowconfigure(1, weight=0, minsize=470) # Row 1 固定高度
+        self.main_frame.grid_rowconfigure(0, weight=0)  # row_0_frame
+        self.main_frame.grid_rowconfigure(1, weight=1)  # 文本区域,固定高度
+        self.main_frame.grid_rowconfigure(2, weight=0) 
+        self.main_frame.grid_rowconfigure(3, weight=0)
+        self.main_frame.grid_rowconfigure(4, weight=0)
+        self.main_frame.grid_rowconfigure(5, weight=0)
+        self.main_frame.grid_rowconfigure(6, weight=0)
+        self.main_frame.grid_rowconfigure(7, weight=0)
         self.main_frame.grid_columnconfigure(0, weight=1)           # 第一列扩展
-        self.main_frame.grid_columnconfigure(1, weight=0, minsize=120)
+        self.main_frame.grid_columnconfigure(1, weight=0)
         
-        # Row 0: 接收文本区域（日志显示）
+
+        # row 0 area show/hide buttons
+        self.row_0_frame = tk.Frame(self.main_frame)
+        self.row_0_frame.grid(row=0, column=0, sticky="NW", padx=0)
+        self.show_keys_btn = tk.Button(self.row_0_frame, text="按键", command=self.toggle_key_area)
+        self.show_keys_btn.pack(side="left", padx=(10,4))
+        self.show_script_btn = tk.Button(self.row_0_frame, text="脚本", command=self.toggle_script_area)
+        self.show_script_btn.pack(side="left", padx=4)
+        self.toggle_sidebar_btn = tk.Button(self.row_0_frame, text="配置", command=self.toggle_sidebar)
+        self.toggle_sidebar_btn.pack(side="left", padx=4)
+
+        # row 1 text_area
         self.text_area = scrolledtext.ScrolledText(self.main_frame, wrap=tk.WORD)
-        self.text_area.grid(row=0, column=0, columnspan=1, padx=10, pady=5, sticky="nsew")
+        self.text_area.grid(row=1, column=0, columnspan=1, padx=10, pady=5, sticky="nsew") 
         
         # 配置字体颜色的tag，设置前景色为对应色
         self.text_area.tag_config("red", foreground="red")
@@ -174,152 +191,159 @@ class SerialGUI:
         # 启动定时检查任务，每30秒检测一次 text_area 内容是否过大需要删除
         self.text_area.after(30000, self.auto_save_and_auto_delete)
 
-        # Row 1：发送文本标签、发送文本框、发送按钮和发送新行复选框
+        # Row 2：发送文本标签、发送文本框、发送按钮和发送新行复选框
+        self.row_2_frame = tk.Frame(self.main_frame, width=730, height=32)
+        self.row_2_frame.grid(row=2, column=0, sticky="nw", padx=10, pady=(10,0))
         # “发送文本:”
-        row_1_y = -440 # “发送”、发送文本框、发送按钮、checkbox、“发送新行”的y坐标，坐标原点在窗口左上角
-        label_send = tk.Label(self.main_frame, text="发送文本:")
-        label_send.place(relx=0, rely=1, anchor="sw",x=10, y=row_1_y)
+        label_send = tk.Label(self.row_2_frame, text="发送文本:")
+        label_send.place(relx=0, rely=0.5, anchor="w",x=0)
 
         # 发送文本框
-        self.send_entry = ttk.Combobox(self.main_frame, width=66)
-        self.send_entry.place(relx=0, rely=1, anchor="sw",x=80, y=row_1_y)
+        self.send_entry = ttk.Combobox(self.row_2_frame, width=66)
+        self.send_entry.place(relx=0, rely=0.5, anchor="w",x=70)
         self.send_entry.bind("<Return>", self.send_data_btn)
 
         # 发送新行复选框
         self.send_newline_var = tk.BooleanVar(value=True)
-        self.newline_checkbox = tk.Checkbutton(self.main_frame, text="发送新行", variable=self.send_newline_var)
-        self.newline_checkbox.place(relx=0, rely=1, anchor="sw",x=570, y=row_1_y)
+        self.newline_checkbox = tk.Checkbutton(self.row_2_frame, text="发送新行", variable=self.send_newline_var)
+        self.newline_checkbox.place(relx=0, rely=0.5, anchor="w",x=560)
         
         # 发送按钮
-        self.send_btn = tk.Button(self.main_frame, text="发送", command=self.send_data_btn, state=tk.DISABLED, width=10)
-        self.send_btn.place(relx=0, rely=1, anchor="sw",x=650, y=row_1_y+4)
+        self.send_btn = tk.Button(self.row_2_frame, text="发送", command=self.send_data_btn, state=tk.DISABLED, width=10)
+        self.send_btn.place(relx=0, rely=0.5, anchor="w",x=640)
 
-        # Row 2：数据统计、循环间隔（s)标签、循环间隔输入框和循环发送按钮
-        self.data_stats = tk.StringVar(value="发送: 000 B | 接收: 000 B")
+        # Row 3：数据统计、循环间隔（s)标签、循环间隔输入框和循环发送按钮
+        self.row_3_frame = tk.Frame(self.main_frame, width=730, height=32)
+        self.row_3_frame.grid(row=3, column=0, sticky="nw", padx=0)
 
-        row_2_y = -410  # 下方几个空间的y坐标，坐标原点是窗口的左上角
+        #row_3_y = -410  # 下方几个空间的y坐标，坐标原点是窗口的左上角
+
         #数据统计："发送: 0 B | 接收: 0 B"
-        self.stats_label = tk.Label(self.main_frame, textvariable=self.data_stats)
-        self.stats_label.place(relx=0, rely=1, anchor="sw",x=10, y=row_2_y)
+        self.data_stats = tk.StringVar(value="发送: 000 B | 接收: 000 B")
+        self.stats_label = tk.Label(self.row_3_frame, textvariable=self.data_stats)
+        self.stats_label.place(relx=0, rely=0.5, anchor="w",x=10)
         # 新增：显示日期的静态标签和动态标签
-        self.date_label_title = tk.Label(self.main_frame, text="日期:")
-        self.date_label_title.place(relx=0, rely=1, anchor="sw",x=180, y=row_2_y)
-        self.date_label = tk.Label(self.main_frame, text="", font=("Arial", 10))
-        self.date_label.place(relx=0, rely=1, anchor="sw",x=210, y=row_2_y)
+        self.date_label_title = tk.Label(self.row_3_frame, text="日期:")
+        self.date_label_title.place(relx=0, rely=0.5, anchor="w",x=180, y=0)
+        self.date_label = tk.Label(self.row_3_frame, text="", font=("Arial", 10))
+        self.date_label.place(relx=0, rely=0.5, anchor="w",x=210)
 
         # 新增：显示时间的静态标签和动态标签
-        self.time_label_title = tk.Label(self.main_frame, text="时间:")
-        self.time_label_title.place(relx=0, rely=1, anchor="sw",x=300, y=row_2_y)
-        self.time_label = tk.Label(self.main_frame, text="", font=("Arial", 10))
-        self.time_label.place(relx=0, rely=1, anchor="sw",x=330, y=row_2_y)
+        self.time_label_title = tk.Label(self.row_3_frame, text="时间:")
+        self.time_label_title.place(relx=0, rely=0.5, anchor="w",x=300)
+        self.time_label = tk.Label(self.row_3_frame, text="", font=("Arial", 10))
+        self.time_label.place(relx=0, rely=0.5, anchor="w",x=330)
 
         # 时间戳label和check box
-        self.time_label_title = tk.Label(self.main_frame, text="时间戳")
-        self.time_label_title.place(relx=0, rely=1, anchor="sw",x=400, y=row_2_y)
+        self.time_label_title = tk.Label(self.row_3_frame, text="时间戳")
+        self.time_label_title.place(relx=0, rely=0.5, anchor="w",x=400)
         self.timestamp_onoff = tk.BooleanVar(value=False)
-        self.timestamp_check = tk.Checkbutton(self.main_frame, variable=self.timestamp_onoff)
-        self.timestamp_check.place(relx=0, rely=1, anchor="sw",x=450, y=row_2_y+2)  
+        self.timestamp_check = tk.Checkbutton(self.row_3_frame, variable=self.timestamp_onoff)
+        self.timestamp_check.place(relx=0, rely=0.5, anchor="w",x=450)  
 
         self.update_time()  # 启动时间更新
         #循环间隔（s)标签
-        loop_interval_label = tk.Label(self.main_frame, text="循环间隔 (s):")
-        loop_interval_label.place(relx=0, rely=1, anchor="sw",x=500, y=row_2_y)
+        loop_interval_label = tk.Label(self.row_3_frame, text="循环间隔 (s):")
+        loop_interval_label.place(relx=0, rely=0.5, anchor="w",x=500)
         #循环间隔输入框
-        self.loop_interval_entry = tk.Entry(self.main_frame, width=5)
-        self.loop_interval_entry.place(relx=0, rely=1, anchor="sw",x=600, y=row_2_y)
+        self.loop_interval_entry = tk.Entry(self.row_3_frame, width=5)
+        self.loop_interval_entry.place(relx=0, rely=0.5, anchor="w",x=600)
         self.loop_interval_entry.insert(0, "3")
         # 单行循环发送按钮
-        self.single_loop_send_btn = tk.Button(self.main_frame, text="单行循环", command=self.toggle_loop_send, state=tk.DISABLED, width=10)
-        self.single_loop_send_btn.place(relx=0, rely=1, anchor="sw",x=650, y=row_2_y+4)
+        self.single_loop_send_btn = tk.Button(self.row_3_frame, text="单行循环", command=self.toggle_loop_send, state=tk.DISABLED, width=10)
+        self.single_loop_send_btn.place(relx=0, rely=0.5, anchor="w",x=650)
 
-        # Row 3: 标签页操作按钮区域（新建、重命名、删除）
-        # 给 row_3_frame 设置固定尺寸
-        row_3_frame = tk.Frame(self.main_frame, width=730, height=30)
-        row_3_frame.place(relx=0, rely=1, anchor="sw",x=10, y=-370)  # 调整 x,y 确保在 main_frame 内可见
+        # Row 4:
+        self.row_4_frame = tk.Frame(self.main_frame, width=730, height=32)
+        self.row_4_frame.grid(row=4, column=0, sticky="nw", padx=10, pady=(0,10))
 
-        self.new_tab_btn = tk.Button(row_3_frame, text="新建标签页", command=self.create_new_tab)
-        self.new_tab_btn.place(x=0, y=-4)
-        self.rename_tab_btn = tk.Button(row_3_frame, text="重命名标签页", command=self.rename_current_tab)
-        self.rename_tab_btn.place(x=80, y=-4)
-        self.delete_tab_btn = tk.Button(row_3_frame, text="删除标签页", command=self.delete_current_tab)
-        self.delete_tab_btn.place(x=170, y=-4)
-        
         # “清屏”按钮
-        self.clear_screen_btn = tk.Button(row_3_frame, text="清屏", command=self.clear_text_area, width=10)
-        self.clear_screen_btn.place(x=650-10, y=-4)
+        self.clear_screen_btn = tk.Button(self.row_4_frame, text="清屏", command=self.clear_text_area, width=10)
+        self.clear_screen_btn.place(relx=0, rely=0.5, anchor="w",x=650-10)
 
         # Terminal label and entry
-        self.send_all_terminal_label = tk.Label(row_3_frame, text="等待符号:")
-        self.send_all_terminal_label.place(x=350, y=0)
-        self.send_all_terminal_entry = tk.Entry(row_3_frame, width=5)
-        self.send_all_terminal_entry.place(x=430, y=0)
+        self.send_all_terminal_label = tk.Label(self.row_4_frame, text="等待符号:")
+        self.send_all_terminal_label.place(relx=0, rely=0.5, anchor="w",x=350)
+        self.send_all_terminal_entry = tk.Entry(self.row_4_frame, width=5)
+        self.send_all_terminal_entry.place(relx=0, rely=0.5, anchor="w",x=430)
         self.send_all_terminal_entry.insert(0, "#")
         # Terminal wait over time label and entry
-        self.send_all_over_time_label = tk.Label(row_3_frame, text="超时时间 (s):")
-        self.send_all_over_time_label.place(x=500-10, y=0)
-        self.send_all_over_time_entry = tk.Entry(row_3_frame, width=5)
-        self.send_all_over_time_entry.place(x=600-10, y=0)
+        self.send_all_over_time_label = tk.Label(self.row_4_frame, text="超时时间 (s):")
+        self.send_all_over_time_label.place(relx=0, rely=0.5, anchor="w",x=500-10)
+        self.send_all_over_time_entry = tk.Entry(self.row_4_frame, width=5)
+        self.send_all_over_time_entry.place(relx=0, rely=0.5, anchor="w",x=600-10)
         self.send_all_over_time_entry.insert(0, "5")
 
-        # Row 4: Notebook区域（标签页区域），创建一个一行两列的区域，让notebook占据第一行一列，第一行第二列固定宽度。
-        self.notebook_frame = tk.Frame(self.main_frame)
-        self.notebook_frame.place(relx=0, rely=1, anchor="sw",x=10, y=-180, relwidth=1.0, height=186)
+        # Row 5: Notebook区域（标签页区域），创建一个一行两列的区域，让notebook占据第一行一列，第一行第二列固定宽度。
+        self.row_5_frame = tk.Frame(self.main_frame, height=186)#width=730, 
+        self.row_5_frame.grid(row=5, column=0, sticky="nsew", padx=(0,20), pady=(0,10))
 
         # 设置 notebook_frame 内部的行和列，让第二列默认为0，使得第一列不会被右侧悬浮的控件们挡住
-        self.notebook_frame.grid_columnconfigure(0, weight=1)           # 第一列扩展
-        self.notebook_frame.grid_columnconfigure(1, weight=0, minsize=150)
+        self.row_5_frame.grid_columnconfigure(0, weight=1)           # 第一列扩展
+        self.row_5_frame.grid_columnconfigure(1, weight=0)
 
-        self.notebook = ttk.Notebook(self.notebook_frame)
-        # 例如：Notebook 固定位置和大小
-        self.notebook.grid(row=0, column=0, columnspan=1, padx=0, pady=0, sticky="nsew")
+        self.notebook = ttk.Notebook(self.row_5_frame)
+        self.notebook.grid(row=0, column=0, columnspan=1, padx=(10,0), pady=0, sticky="nsew")
         self.add_tab("Tab 1")
         self.add_tab("Tab 2")
 
-        # Row 5
-        self.row_5_frame = tk.Frame(self.main_frame)
-        self.row_5_frame.place(relx=0, rely=1, anchor="sw",x=10, y=-145, relwidth = 1.0, height = 34)
+        # 为标签页添加右键上下文菜单,创建一个菜单，包含 New / Rename / Delete 三项
+        self.tab_menu = tk.Menu(self.root, tearoff=0)
+        self.tab_menu.add_command(label="New",   command=self.create_new_tab)
+        self.tab_menu.add_command(label="Rename",command=self.rename_current_tab)
+        self.tab_menu.add_command(label="Delete",command=self.delete_current_tab)
+
+        # 绑定右键事件到 notebook，弹出上下文菜单
+        self.notebook.bind("<Button-3>", self.show_tab_menu)
+
+        # Row 6, “多行循环”等文字和按键
+        self.row_6_frame = tk.Frame(self.main_frame, width=730, height=34)
+        self.row_6_frame.grid(row=6, column=0, sticky="nw", padx=(10,0), pady=(0,0))
         #self.row_5_frame.grid_columnconfigure(0, weight=1)           # 第一列扩展
         #self.row_5_frame.grid_columnconfigure(1, weight=0, minsize=150)
 
         # 文字“多行循环发送”
-        self.multi_loop_label = tk.Label(self.row_5_frame, text="多行循环")
-        self.multi_loop_label.place(relx=0, rely=0, anchor="ne",x=55, y=4)
+        self.multi_loop_label = tk.Label(self.row_6_frame, text="多行循环")
+        self.multi_loop_label.place(relx=0, rely=0.5, anchor="w",x=0)
         # 文字，当前执行循环：x
         self.current_loop_count = tk.StringVar(value="当前循环：0")
-        self.current_loop_count_label = tk.Label(self.row_5_frame, textvariable=self.current_loop_count)
-        self.current_loop_count_label.place(relx=0, rely=0, anchor="ne",x=300, y=4)
+        self.current_loop_count_label = tk.Label(self.row_6_frame, textvariable=self.current_loop_count)
+        self.current_loop_count_label.place(relx=0, rely=0.5, anchor="w",x=290-55)
         # “默认间隔时间”文字
-        self.default_delay_time_label = tk.Label(self.row_5_frame, text="默认间隔ms:")
-        self.default_delay_time_label.place(relx=0, rely=0, anchor="ne",x=410, y=4)
+        self.default_delay_time_label = tk.Label(self.row_6_frame, text="默认间隔ms:")
+        self.default_delay_time_label.place(relx=0, rely=0.5, anchor="w",x=390-55)
         # 单行文本框,“默认间隔时间”右侧
-        self.default_delay_time_entry = tk.Entry(self.row_5_frame, width=5)
-        self.default_delay_time_entry.place(relx=0, rely=0, anchor="ne",x=460, y=4)
+        self.default_delay_time_entry = tk.Entry(self.row_6_frame, width=5)
+        self.default_delay_time_entry.place(relx=0, rely=0.5, anchor="w",x=470-55)
         self.default_delay_time_entry.insert(0,0)
         # “循环次数”文字
-        self.loop_count_label = tk.Label(self.row_5_frame, text="循环次数:")
-        self.loop_count_label.place(relx=0, rely=0, anchor="ne",x=530, y=4)
+        self.loop_count_label = tk.Label(self.row_6_frame, text="循环次数:")
+        self.loop_count_label.place(relx=0, rely=0.5, anchor="w",x=520-55)
         # 单行文本框,“循环次数”右侧
-        self.loop_count_entry = tk.Entry(self.row_5_frame, width=5)
-        self.loop_count_entry.place(relx=0, rely=0, anchor="ne",x=580, y=4)
+        self.loop_count_entry = tk.Entry(self.row_6_frame, width=5)
+        self.loop_count_entry.place(relx=0, rely=0.5, anchor="w",x=580-55)
         self.loop_count_entry.insert(0,3)
         # “开始”按钮，放在单行文本框右侧
-        self.start_button = tk.Button(self.row_5_frame, width=5, text="开始", command=self.start_multi_loop_send, state=tk.NORMAL)
-        self.start_button.place(relx=0, rely=0, anchor="ne",x=640, y=0)
+        self.start_button = tk.Button(self.row_6_frame, width=5, text="开始", command=self.start_multi_loop_send, state=tk.NORMAL)
+        self.start_button.place(relx=0, rely=0.5, anchor="w",x=640-55)
         # “暂停”按钮
-        self.pause_button = tk.Button(self.row_5_frame, width=5, text="暂停", command=self.pause_resume_multi_loop_send, state=tk.DISABLED)
-        self.pause_button.place(relx=0, rely=0, anchor="ne", x=690, y=0)
+        self.pause_button = tk.Button(self.row_6_frame, width=5, text="暂停", command=self.pause_resume_multi_loop_send, state=tk.DISABLED)
+        self.pause_button.place(relx=0, rely=0.5, anchor="w", x=690-55)
         # “停止”按钮
-        self.stop_button = tk.Button(self.row_5_frame, width=5, text="停止", command=self.stop_multi_loop_send, state=tk.DISABLED)
-        self.stop_button.place(relx=0, rely=0, anchor="ne", x=740, y=0)
+        self.stop_button = tk.Button(self.row_6_frame, width=5, text="停止", command=self.stop_multi_loop_send, state=tk.DISABLED)
+        self.stop_button.place(relx=0, rely=0.5, anchor="w", x=740-55)
          # 暂停控制的 Event，以及标记当前暂停状态
         self.pause_event = threading.Event()
         self.pause_event.set()   # 未暂停状态
         self.paused = False        # 标记是否处于暂停状态
         
-        # Row 6
+        # Row 7
         # 多行文本框
-        self.multi_loop_text = scrolledtext.ScrolledText(self.main_frame, width=104, height=10)
-        self.multi_loop_text.place(relx=0, rely=1, anchor="sw",x=10, y=-10)
+        self.row_7_frame = tk.Frame(self.main_frame,width=730, height=100)
+        self.row_7_frame.grid(row=7, column=0, sticky="ew", padx=10, pady=(0,10))
+        self.row_7_frame.grid_propagate(False) # 固定该父容器
+        self.multi_loop_text = scrolledtext.ScrolledText(self.row_7_frame,height=10)
+        self.multi_loop_text.pack(fill="x")
 
         self.multi_loop_text.insert("1.0", "# Open example scripts to know how to send loop scripts.\n")
         self.multi_loop_text.insert("2.0", "# See details in User Manual.txt\n")
@@ -336,88 +360,79 @@ class SerialGUI:
         self.multi_loop_text.insert("13.0", "send lmclist\n")
         self.multi_loop_text.insert("14.0", "wait 3\n")
 
-        # 右侧功能区，使用 place 定位，固定在右上角，不影响左侧布局
+        # right_frame 右侧功能区，使用grid放置在右下角
         self.right_frame = tk.Frame(self.main_frame) # , borderwidth=1, relief="raised" 边框可选项 flat raised sunken groove ridge
-        self.right_frame.place(relx=1.0, rely=1.0, anchor="se", x=-10, y=-10)
+        # 放到 main_frame 的 col=1，row=0~7 跨 8 行，占据右下角
+        self.right_frame.grid(row=0, column=1,rowspan=8,sticky="se",padx=(5,5), pady=(5,5))        # south-east，贴到右下
 
-        # 新增：窗口名输入框，默认“TermPlus”
+        # 窗口名输入框，默认“TermPlus”
         tk.Label(self.right_frame, text="窗口名:").pack(anchor="w")
         self.window_name_var = tk.StringVar(value="TermPlus")
         self.window_name_entry = tk.Entry(self.right_frame, textvariable=self.window_name_var, width=15)
-        self.window_name_entry.pack(fill="x", pady=2)
+        self.window_name_entry.pack(fill="x", pady=2,anchor="se")
         self.window_name_entry.bind("<KeyRelease>", self.update_window_title)
         # 启动时设置窗口标题为默认值
         self.root.title(self.window_name_var.get())
-
-		# 右侧区域内部内容依然可以用 pack 或 grid 布局：
+		# 选择串口
         tk.Label(self.right_frame, text="选择串口:").pack(anchor="w")
         self.port_var = tk.StringVar()
         self.port_menu = ttk.Combobox(self.right_frame, textvariable=self.port_var, values=self.get_ports(), state="readonly", width=10)
-        self.port_menu.pack(fill="x", pady=2)
+        self.port_menu.pack(fill="x", pady=2, anchor="se")
+        # 刷新串口
         self.refresh_btn = tk.Button(self.right_frame, text="刷新串口", command=self.refresh_ports, width=10)
-        self.refresh_btn.pack(fill="x", pady=2)
+        self.refresh_btn.pack(fill="x", pady=2, anchor="se")
+        # 选择或输入波特率
         tk.Label(self.right_frame, text="波特率:").pack(anchor="w")
         self.baud_var = tk.StringVar(value="115200")
         baudrates = ["300", "1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200", "230400"]
         self.baud_menu = ttk.Combobox(self.right_frame, textvariable=self.baud_var, values=baudrates, width=10)
-        self.baud_menu.pack(fill="x", pady=2)
-        #串口指示、打开串口/关闭串口
+        self.baud_menu.pack(fill="x", pady=2, anchor="se")
+        # 串口指示、打开串口/关闭串口
         toggle_frame = tk.Frame(self.right_frame)
-        toggle_frame.pack(fill="x", pady=2)
-
+        toggle_frame.pack(fill="x", pady=2, anchor="se")
         self.toggle_port_btn = tk.Button(toggle_frame, text="打开串口", command=self.toggle_serial, width=10)
-        self.toggle_port_btn.pack(side="left")
-
+        self.toggle_port_btn.pack(side="left", anchor="se")
         # 将状态画布放在按钮右侧，设置一些水平间距
         self.status_canvas = Canvas(toggle_frame, width=20, height=20, bg="gray", highlightthickness=0)
-        self.status_canvas.pack(side="left", padx=5)
-
-        # 在关闭串口按钮下方增加间隔行
-        #tk.Label(self.right_frame, text="").pack(pady=5)
-
-        # 第一行：显示文字“自动保存路径”
-        tk.Label(self.right_frame, text="自动保存路径").pack(anchor="w")
-
-        # 第二行：一个文本框和右边的方形按键
+        self.status_canvas.pack(side="left", padx=5, anchor="se")
+        # 文字“自动保存路径”
+        tk.Label(self.right_frame, text="自动保存路径").pack(anchor="sw")
+        # 文本框 方形按键
         auto_save_path_frame = tk.Frame(self.right_frame)
-        auto_save_path_frame.pack(fill="x", pady=2)
+        auto_save_path_frame.pack(fill="x", pady=2, anchor="se")
         self.auto_save_path_entry = tk.Entry(auto_save_path_frame, width=10, justify="right")
-        self.auto_save_path_entry.pack(side="left", fill="x", expand=True, pady=2)
-        # 按键上的文字为省略号，点击后调用 choose_auto_save_path 方法
+        self.auto_save_path_entry.pack(side="left", fill="x", expand=True, pady=2, anchor="se")
+        # 按键 省略号
         square_button = tk.Button(auto_save_path_frame, text="…", width=2, height=1, command=self.choose_auto_save_path)
-        square_button.pack(side="left")
-
-        # 第三行：显示文字“保存文件名”
-        tk.Label(self.right_frame, text="保存文件名").pack(anchor="w")
-
-        # 第四行：一个文本框（用于输入文件名）
+        square_button.pack(side="left", anchor="se")
+        # 文字 保存文件名
+        tk.Label(self.right_frame, text="保存文件名").pack(anchor="sw")
+        # 文本框
         default_text = tk.StringVar(value="AutoSave")
         self.file_name_entry = tk.Entry(self.right_frame, width=10, justify="left", textvariable=default_text)
-        self.file_name_entry.pack(fill="x", pady=2)
-
-        # 第五行：显示“自动保存状态”和右边的按钮
+        self.file_name_entry.pack(fill="x", pady=2, anchor="se")
+        # 自动保存状态 按钮
         auto_save_frame = tk.Frame(self.right_frame)
         auto_save_frame.pack(fill="x", pady=5)
         # 文字“自动保存”
-        tk.Label(auto_save_frame, text="自动保存").pack(side="left")
+        tk.Label(auto_save_frame, text="自动保存").pack(side="left", anchor="se")
         # 自动保存按键，初始背景为灰色，点击后切换颜色
         self.auto_save_btn = tk.Button(auto_save_frame, text="OFF", width=4, height=1, bg="gray", command=self.toggle_auto_save)
-        self.auto_save_btn.pack(side="right", padx=2)
-        # “文件最大容量”
-        tk.Label(self.right_frame, text="文件最大容量").pack(anchor="w", pady=(2,0))
-        # 文本框和右侧显示“MB”
+        self.auto_save_btn.pack(side="right", padx=2, anchor="se")
+        # 文件最大容量
+        tk.Label(self.right_frame, text="文件最大容量").pack(anchor="sw", pady=(2,0))
+        # 文本框 右侧显示“MB”
         file_capacity_frame = tk.Frame(self.right_frame)
-        file_capacity_frame.pack(fill="x", pady=2)
+        file_capacity_frame.pack(fill="x", pady=2, anchor="se")
         self.max_capacity_entry = tk.Entry(file_capacity_frame, width=10, justify="right")
-        self.max_capacity_entry.pack(side="left", fill="x", expand=True)
+        self.max_capacity_entry.pack(side="left", fill="x", expand=True, anchor="se")
         self.max_capacity_entry.insert(0, "10")
-        tk.Label(file_capacity_frame, text="MB").pack(side="left", padx=2)
-
+        tk.Label(file_capacity_frame, text="MB").pack(side="left", padx=2, anchor="se")
         # 脚本路径选择框：上方标签、文本框及小三角按钮
         script_path_label = tk.Label(self.right_frame, text="脚本路径")
-        script_path_label.pack(anchor="w")
+        script_path_label.pack(anchor="sw")
         path_frame = tk.Frame(self.right_frame)
-        path_frame.pack(fill="x", pady=2)
+        path_frame.pack(fill="x", pady=2, anchor="se")
         # 文本框宽度与关闭串口按钮一致，文本右对齐
         self.script_path_entry = tk.Entry(path_frame, width=10, justify="right")
         self.script_path_entry.grid(row=0, column=0, sticky="ew")
@@ -431,32 +446,32 @@ class SerialGUI:
         script_path_button.pack(fill="both", expand=True)
         # 在脚本路径文本框下方增加一个下拉选择框，用于显示脚本路径下所有 .ts 文件
         script_file_label = tk.Label(self.right_frame, text="脚本文件")
-        script_file_label.pack(anchor="w", pady=(5,0))
+        script_file_label.pack(anchor="sw", pady=(5,0))
         self.script_file_combo = ttk.Combobox(self.right_frame, values=[], width=10, state="readonly")
-        self.script_file_combo.pack(fill="x", pady=2)
+        self.script_file_combo.pack(fill="x", pady=2, anchor="se")
         # 新增加载脚本按钮
         self.load_script_button = tk.Button(self.right_frame, text="加载脚本", command=self.load_script)
-        self.load_script_button.pack(fill="x", pady=2)
+        self.load_script_button.pack(fill="x", pady=2, anchor="se")
         # 在右侧区域新增保存脚本按钮，放置在加载脚本按钮下方
         self.save_script_button = tk.Button(self.right_frame, text="保存脚本", command=self.save_script)
-        self.save_script_button.pack(fill="x", pady=2)
+        self.save_script_button.pack(fill="x", pady=2, anchor="se")
         # 在右侧区域“保存脚本”按钮下方新增“保存为新脚本”按钮
         self.save_as_script_button = tk.Button(self.right_frame, text="另存为", command=self.save_as_new_script)
-        self.save_as_script_button.pack(fill="x", pady=2)
+        self.save_as_script_button.pack(fill="x", pady=2, anchor="se")
 
         # 新增：空行，用于分隔
         #tk.Label(self.right_frame, text="").pack(pady=5)
         # 新增：标题“多行循环发送”
-        tk.Label(self.right_frame, text="多行循环发送").pack(anchor="w")
+        tk.Label(self.right_frame, text="多行循环").pack(anchor="sw")
         # 新增三个按键所在的容器
         # 垂直排列三个按键
         self.open_multi_loop_btn = tk.Button(self.right_frame, text="打开", command=self.open_multi_loop_file, width=15)
-        self.open_multi_loop_btn.pack(fill="x", pady=2)
+        self.open_multi_loop_btn.pack(fill="x", pady=2, anchor="se")
         self.save_multi_loop_btn = tk.Button(self.right_frame, text="保存", command=self.save_multi_loop_file, width=15)
-        self.save_multi_loop_btn.pack(fill="x", pady=2)
+        self.save_multi_loop_btn.pack(fill="x", pady=2, anchor="se")
         self.save_as_multi_loop_btn = tk.Button(self.right_frame, text="另存为", command=self.save_multi_loop_file_as, width=15)
-        self.save_as_multi_loop_btn.pack(fill="x", pady=2)
-
+        self.save_as_multi_loop_btn.pack(fill="x", pady=2, anchor="se")
+        '''
         # 保存 text_area 的原始 grid 布局信息
         self.original_text_area_grid = self.text_area.grid_info()
         
@@ -475,6 +490,20 @@ class SerialGUI:
         self.maximize_button = tk.Button(self.main_frame, text="□", command=self.toggle_maximize, width=2)
         # 这里采用 place 定位（注意此处将一直显示）
         self.maximize_button.place(relx=1, rely=0, anchor="ne", x=-146, y=5)
+        
+        # 新增：收起/展开 右侧面板 按钮
+        self.sidebar_collapsed = False
+        self.toggle_sidebar_btn = tk.Button(self.root, text=">", width=2, command=self.toggle_sidebar)
+        # 把按钮放在窗口右上角（与系统标题栏下缘对齐）
+        self.toggle_sidebar_btn.place(relx=1.0, y=5, anchor="ne")
+        '''
+
+        # 保存原始的 grid 配置
+        self.row_5_grid_info = self.row_5_frame.grid_info()
+        self.row_6_grid_info = self.row_6_frame.grid_info()
+        self.row_7_grid_info = self.row_7_frame.grid_info()
+        self.right_frame_grid_info = self.right_frame.grid_info()
+
 
         self.sent_bytes = 0
         self.received_bytes = 0
@@ -1007,13 +1036,32 @@ class SerialGUI:
         for i in range(5):
             tab_frame.grid_rowconfigure(i, weight=1)  # 设置行的权重
             for j in range(6):
-                cell = tk.Button(tab_frame, text="", width=16, height=1, anchor="w", justify="left", relief="groove")
+                cell = tk.Button(tab_frame, text="", height=1, anchor="w", justify="left", relief="groove") #width=16 
                 cell.grid(row=i, column=j, padx=1, pady=1, sticky="nsew")  # 使用 sticky="nsew"
                 cell.custom_data = ""  # 存储多行待发送内容
                 # 左键点击：发送该按钮保存的多行内容
                 cell.config(command=lambda c=cell: self.cell_send(c))
                 # 右键绑定：弹出单元格菜单
                 cell.bind("<Button-3>", lambda event, c=cell: self.show_cell_menu(event, c))
+
+    def show_tab_menu(self, event):
+        """
+        在 notebook 上捕获右键，计算当前点击的 tab index，
+        选中该 tab 并弹出上下文菜单。
+        """
+        # identify 返回类似 'label' 或 'close'，在有 label 的地方右键才生效
+        elem = self.notebook.identify(event.x, event.y)
+        if "label" not in elem:
+            return
+
+        # 计算被点击的 tab 索引
+        tab_index = self.notebook.index(f"@{event.x},{event.y}")
+        # 切换选中到该 tab
+        self.notebook.select(tab_index)
+
+        # 弹出菜单
+        self.tab_menu.tk_popup(event.x_root, event.y_root)
+        self.tab_menu.grab_release()
 
     def show_cell_menu(self, event, cell):
         self.current_cell = cell
@@ -1112,16 +1160,25 @@ class SerialGUI:
             edit_win.title(new_text)  # 将单行文本框中的内容设置为窗口标题
             if close_after:
                 edit_win.destroy()
-        btn_send_row = tk.Button(left_frame, text="Send", command=send_current_row)
+        btn_send_row = tk.Button(left_frame, text="Send(F1)", command=send_current_row)
         btn_send_row.pack(side=tk.LEFT, padx=5)
-        btn_send_row_move = tk.Button(left_frame, text="Send & Next", command=send_current_row_and_move)
+        btn_send_row_move = tk.Button(left_frame, text="Send & Next(F5)", command=send_current_row_and_move)
         btn_send_row_move.pack(side=tk.LEFT, padx=5)
-        btn_send_all = tk.Button(left_frame, text="Send All", command=lambda: self.send_all(multi_text.get("1.0", tk.END)))
+        btn_send_all = tk.Button(left_frame, text="Send All(F9)", command=lambda: self.send_all(multi_text.get("1.0", tk.END)))
         btn_send_all.pack(side=tk.LEFT, padx=5)
+
+        # 给编辑窗口绑定功能键事件
+        edit_win.bind("<F1>", lambda event: send_current_row())
+        edit_win.bind("<F5>", lambda event: send_current_row_and_move())
+        edit_win.bind("<F9>", lambda event: self.send_all(multi_text.get("1.0", tk.END)))
+
         btn_save = tk.Button(right_frame, text="Save", command=lambda: save_action(False))
         btn_save.pack(side=tk.LEFT, padx=5)
         btn_save_close = tk.Button(right_frame, text="Save & close", command=lambda: save_action(True))
         btn_save_close.pack(side=tk.LEFT, padx=5)
+
+        # 确保窗口拥有键盘焦点，以捕获按键
+        edit_win.focus_set()
         
 
 
@@ -1669,7 +1726,7 @@ class SerialGUI:
         # 在程序所在目录创建/覆盖 TermPlusSetup.ini
         with open("TermPlusSetup.ini", "w", encoding="utf-8") as configfile:
             config.write(configfile)
-    
+    '''
     # 切换主窗口最大化
     def toggle_maximize(self):
         if not self.maximized:
@@ -1700,7 +1757,31 @@ class SerialGUI:
                 # 将按钮文字改回“最大化”
             self.maximize_button.config(text="□")
             self.maximized = False
+    '''
+    def toggle_key_area(self):
+        if self.row_5_frame.winfo_ismapped():
+            # 隐藏
+            self.row_5_frame.grid_remove()
+        else:
+            # 恢复到原来位置
+            self.row_5_frame.grid(**self.row_5_grid_info)
 
+    def toggle_script_area(self):
+        if self.row_6_frame.winfo_ismapped():
+            self.row_6_frame.grid_remove()
+            self.row_7_frame.grid_remove()
+        else:
+            self.row_6_frame.grid(**self.row_6_grid_info)
+            self.row_7_frame.grid(**self.row_7_grid_info)
+
+    def toggle_sidebar(self):
+        #点击后收起或展开右侧面板：
+        if self.right_frame.winfo_ismapped():
+            self.right_frame.grid_remove()
+        else:
+            self.right_frame.grid(**self.right_frame_grid_info)
+
+        
     def load_setup(self):
         """
         程序启动时，尝试从 TermPlusSetup.ini 读取控件的默认值，如果文件不存在则不做任何操作
