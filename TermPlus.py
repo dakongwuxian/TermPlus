@@ -13,6 +13,7 @@ from queue import Empty
 import tkinter as tk
 from tkinter import scrolledtext, ttk, Canvas, simpledialog, messagebox, filedialog
 from turtle import color
+import tkinter.font as tkFont
 import serial
 import serial.tools.list_ports
 import threading
@@ -22,6 +23,9 @@ import re #新增，用于加载脚本文件
 import configparser
 import ast
 from datetime import datetime
+import builtins
+import keyword
+import subprocess, threading, sys, os
 
 class SerialComm:
     def __init__(self, port, baudrate=115200):
@@ -42,16 +46,6 @@ class SerialComm:
                 self.ser.write(data.encode())
             except serial.SerialException:
                 print("发送数据失败")
-
-    #def receive_data(self):
-    #    if self.ser and self.ser.is_open:
-    #        # 串口接收等待时间设置，如果超过这个时间没有继续收到字符，则认为此次传输结束
-    #        self.ser.timeout = 0.01
-    #        try:
-    #            data = self.ser.readline().decode().strip()
-    #        except serial.SerialException:
-    #            data = None
-    #        return data
 
     def receive_data(self, end_char='\n'):
         if self.ser and self.ser.is_open:
@@ -90,13 +84,33 @@ class StopLoopException(Exception):
 
 class SerialGUI:
     def __init__(self, root, center=True):
+               
         self.auto_save_file = None
         self.last_saved_index = "1.0"  # 记录 autosave 时最后保存的位置
         self.auto_save_stop = False   # 控制 autosave 线程停止的标志
         self.root = root
-        self.root.title("TermPlus")         
+
+        # 字体设置
+        # 1. 创建 NamedFont 对象
+        ui_font = tkFont.Font(family="Microsoft YaHei UI", size=9)  # 中文控件
+        code_font = tkFont.Font(family="Microsoft YaHei UI", size=9)         # 英文代码区 Microsoft YaHei UI Consolas
+
+        # 2. 全局设置控件字体（中文 UI）
+        root.option_add("*Label.Font", ui_font)
+        root.option_add("*Button.Font", ui_font)
+        root.option_add("*Menu.Font", ui_font)
+
+        # 3. 单独设置 Text/TextArea 文本区字体（英文代码）
+        root.option_add("*Text.Font", code_font)
+        # 或者针对 ScrolledText
+        root.option_add("*ScrolledText.Font", code_font)
+
+        # 窗口标题
+        self.root.title("TermPlus")     
+        # 窗口启动时尺寸
         window_width = 910
         window_height = 790
+        # 窗口最小尺寸
         root.minsize(910,600)
         # 窗口关闭时的回调
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -112,8 +126,18 @@ class SerialGUI:
             # 默认不居中时，可以使用传入的新位置，比如偏移100,100
             position_x, position_y = 100, 100
         self.root.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
-        
-        
+
+        self.style = ttk.Style()
+        self.style.theme_use('default')  # 使用支持自定义样式的主题
+        self.style.configure(".", font=ui_font)    # 默认 ttk 控件都用 ui_font
+        self.style.configure("TEntry", font=code_font)
+        self.style.configure('Custom.TCheckbutton',
+                background="#F0F0F0",
+                foreground='black')
+        self.style.map('Custom.TCheckbutton',
+                  background=[('active', "#F0F0F0")],
+                  foreground=[('active', 'black')])
+
 
         # 创建菜单栏
         self.menu_bar = tk.Menu(self.root)
@@ -165,6 +189,10 @@ class SerialGUI:
         self.toggle_sidebar_btn = tk.Button(self.row_0_frame, text="配置", command=self.toggle_sidebar)
         self.toggle_sidebar_btn.pack(side="left", padx=4)
 
+        # 黑白主题切换
+        self.theme_btn = tk.Button(self.row_0_frame, text="主题", command=self.toggle_theme)
+        self.theme_btn.pack(side="left", padx=4)
+
         # row 1 text_area
         self.text_area = scrolledtext.ScrolledText(self.main_frame, wrap=tk.WORD)
         self.text_area.grid(row=1, column=0, columnspan=1, padx=10, pady=5, sticky="nsew") 
@@ -195,8 +223,8 @@ class SerialGUI:
         self.row_2_frame = tk.Frame(self.main_frame, width=730, height=32)
         self.row_2_frame.grid(row=2, column=0, sticky="nw", padx=10, pady=(10,0))
         # “发送文本:”
-        label_send = tk.Label(self.row_2_frame, text="发送文本:")
-        label_send.place(relx=0, rely=0.5, anchor="w",x=0)
+        self.label_send = tk.Label(self.row_2_frame, text="发送文本:")
+        self.label_send.place(relx=0, rely=0.5, anchor="w",x=0)
 
         # 发送文本框
         self.send_entry = ttk.Combobox(self.row_2_frame, width=66)
@@ -205,7 +233,7 @@ class SerialGUI:
 
         # 发送新行复选框
         self.send_newline_var = tk.BooleanVar(value=True)
-        self.newline_checkbox = tk.Checkbutton(self.row_2_frame, text="发送新行", variable=self.send_newline_var)
+        self.newline_checkbox = ttk.Checkbutton(self.row_2_frame, text="发送新行", variable=self.send_newline_var, style='Custom.TCheckbutton')
         self.newline_checkbox.place(relx=0, rely=0.5, anchor="w",x=560)
         
         # 发送按钮
@@ -224,27 +252,27 @@ class SerialGUI:
         self.stats_label.place(relx=0, rely=0.5, anchor="w",x=10)
         # 新增：显示日期的静态标签和动态标签
         self.date_label_title = tk.Label(self.row_3_frame, text="日期:")
-        self.date_label_title.place(relx=0, rely=0.5, anchor="w",x=180, y=0)
-        self.date_label = tk.Label(self.row_3_frame, text="", font=("Arial", 10))
+        self.date_label_title.place(relx=0, rely=0.5, anchor="w",x=170, y=0)
+        self.date_label = tk.Label(self.row_3_frame, text="")
         self.date_label.place(relx=0, rely=0.5, anchor="w",x=210)
 
         # 新增：显示时间的静态标签和动态标签
         self.time_label_title = tk.Label(self.row_3_frame, text="时间:")
-        self.time_label_title.place(relx=0, rely=0.5, anchor="w",x=300)
-        self.time_label = tk.Label(self.row_3_frame, text="", font=("Arial", 10))
+        self.time_label_title.place(relx=0, rely=0.5, anchor="w",x=290)
+        self.time_label = tk.Label(self.row_3_frame, text="")
         self.time_label.place(relx=0, rely=0.5, anchor="w",x=330)
 
         # 时间戳label和check box
-        self.time_label_title = tk.Label(self.row_3_frame, text="时间戳")
-        self.time_label_title.place(relx=0, rely=0.5, anchor="w",x=400)
+        self.time_stamp_title = tk.Label(self.row_3_frame, text="时间戳")
+        self.time_stamp_title.place(relx=0, rely=0.5, anchor="w",x=400)
         self.timestamp_onoff = tk.BooleanVar(value=False)
-        self.timestamp_check = tk.Checkbutton(self.row_3_frame, variable=self.timestamp_onoff)
+        self.timestamp_check = ttk.Checkbutton(self.row_3_frame, variable=self.timestamp_onoff, style='Custom.TCheckbutton')
         self.timestamp_check.place(relx=0, rely=0.5, anchor="w",x=450)  
 
         self.update_time()  # 启动时间更新
         #循环间隔（s)标签
-        loop_interval_label = tk.Label(self.row_3_frame, text="循环间隔 (s):")
-        loop_interval_label.place(relx=0, rely=0.5, anchor="w",x=500)
+        self.loop_interval_label = tk.Label(self.row_3_frame, text="循环间隔 (s):")
+        self.loop_interval_label.place(relx=0, rely=0.5, anchor="w",x=500)
         #循环间隔输入框
         self.loop_interval_entry = tk.Entry(self.row_3_frame, width=5)
         self.loop_interval_entry.place(relx=0, rely=0.5, anchor="w",x=600)
@@ -261,12 +289,12 @@ class SerialGUI:
         self.clear_screen_btn = tk.Button(self.row_4_frame, text="清屏", command=self.clear_text_area, width=10)
         self.clear_screen_btn.place(relx=0, rely=0.5, anchor="w",x=650-10)
 
-        # Terminal label and entry
+        # 等待符号
         self.send_all_terminal_label = tk.Label(self.row_4_frame, text="等待符号:")
         self.send_all_terminal_label.place(relx=0, rely=0.5, anchor="w",x=350)
-        self.send_all_terminal_entry = tk.Entry(self.row_4_frame, width=5)
-        self.send_all_terminal_entry.place(relx=0, rely=0.5, anchor="w",x=430)
-        self.send_all_terminal_entry.insert(0, "#")
+        # 等待符号选择框
+        self.send_all_terminal_menu = ttk.Combobox(self.row_4_frame, textvariable='#', values=["#","$"], width=2)
+        self.send_all_terminal_menu.place(relx=0, rely=0.5, anchor="w",x=430)
         # Terminal wait over time label and entry
         self.send_all_over_time_label = tk.Label(self.row_4_frame, text="超时时间 (s):")
         self.send_all_over_time_label.place(relx=0, rely=0.5, anchor="w",x=500-10)
@@ -282,7 +310,7 @@ class SerialGUI:
         self.row_5_frame.grid_columnconfigure(0, weight=1)           # 第一列扩展
         self.row_5_frame.grid_columnconfigure(1, weight=0)
 
-        self.notebook = ttk.Notebook(self.row_5_frame)
+        self.notebook = ttk.Notebook(self.row_5_frame, style='Custom.TCheckbutton')
         self.notebook.grid(row=0, column=0, columnspan=1, padx=(10,0), pady=0, sticky="nsew")
         self.add_tab("Tab 1")
         self.add_tab("Tab 2")
@@ -347,26 +375,52 @@ class SerialGUI:
 
         self.multi_loop_text.insert("1.0", "# Open example scripts to know how to send loop scripts.\n")
         self.multi_loop_text.insert("2.0", "# See details in User Manual.txt\n")
-        self.multi_loop_text.insert("3.0", "# Here is an example for repeating reboot radio\n")
-        self.multi_loop_text.insert("4.0", "send mr -s 2 -m auapplic\n")
-        self.multi_loop_text.insert("5.0", "wait for krypton login: for 60\n")
-        self.multi_loop_text.insert("6.0", "wait 1\n")
-        self.multi_loop_text.insert("7.0", "send root\n")
-        self.multi_loop_text.insert("8.0", "wait for krypton:~# for 10\n")
-        self.multi_loop_text.insert("9.0", "wait 1\n")
-        self.multi_loop_text.insert("10.0", "send lmclist\n")
-        self.multi_loop_text.insert("11.0", "wait for O&M for 100\n")
-        self.multi_loop_text.insert("12.0", "wait 1\n")
-        self.multi_loop_text.insert("13.0", "send lmclist\n")
-        self.multi_loop_text.insert("14.0", "wait 3\n")
+        self.multi_loop_text.insert("3.0", "# Availabel functions:\n")
+        self.multi_loop_text.insert("4.0", "# 1. repeatly send commands to serial port using while for or setting the loop count\n")
+        self.multi_loop_text.insert("5.0", "# 2. open power shell and send commands to power shell\n")
+        self.multi_loop_text.insert("6.0", "# 3. delay for certain time between two sends\n")
+        self.multi_loop_text.insert("7.0", "# 4. waiting for specific string which is expected to show in receive window\n")
+        self.multi_loop_text.insert("8.0", "# 5. stop loop running or run specific commands after expected string show in receive window\n")
+        self.multi_loop_text.insert("9.0", "# 6. get contents in main window and match for strings you want\n")
+        
+        # 用于高亮（蓝色）所有函数名
+        self.multi_loop_text.tag_config("func", foreground="blue") # #9CDCFE blue  189, 99, 128 = BD6380 #569CD6
 
+        # 绑定修改事件，用于自动高亮
+        self.multi_loop_text.bind("<<Modified>>", self.on_multi_loop_modified)
+
+        # 要高亮的名字列表
+        #   a. Python 内置关键字──关键字模块
+        kw = keyword.kwlist  # ['False','None','True','and',…,'if','else',…]
+        #   b. Python 内置函数／类型──builtins 模块
+        bi = [name for name in dir(builtins) if callable(getattr(builtins, name))]
+        #   c. （可选）re 模块里的函数
+        re_funcs = [name for name, obj in vars(re).items() if callable(obj)]
+        # 自定义的函数
+        custom_funcs = [
+            "send", "wait","wait_for","wait for",     # 例如你脚本里定义的函数
+            "open_powershell",      # 以及其它任意名字
+            "powershell_send",
+            "send_line",
+            "open power shell","power shell send"
+        ]
+        
+        # 合并所有词，转义后拼成一个大正则
+        all_words = set(kw + bi + re_funcs + custom_funcs)
+        # 确保按最长优先，避免关键字 like "in" 湿匹配到变量名中的 in
+        sorted_words = sorted(all_words, key=len, reverse=True)
+        escaped = [re.escape(w) for w in sorted_words]
+        pattern = r"\b(?:" + "|".join(escaped) + r")\b"
+        self._func_highlight_re = re.compile(pattern)
+        
         # right_frame 右侧功能区，使用grid放置在右下角
         self.right_frame = tk.Frame(self.main_frame) # , borderwidth=1, relief="raised" 边框可选项 flat raised sunken groove ridge
         # 放到 main_frame 的 col=1，row=0~7 跨 8 行，占据右下角
         self.right_frame.grid(row=0, column=1,rowspan=8,sticky="se",padx=(5,5), pady=(5,5))        # south-east，贴到右下
 
         # 窗口名输入框，默认“TermPlus”
-        tk.Label(self.right_frame, text="窗口名:").pack(anchor="w")
+        self.window_name_label = tk.Label(self.right_frame, text="窗口名:")
+        self.window_name_label.pack(anchor="w")
         self.window_name_var = tk.StringVar(value="TermPlus")
         self.window_name_entry = tk.Entry(self.right_frame, textvariable=self.window_name_var, width=15)
         self.window_name_entry.pack(fill="x", pady=2,anchor="se")
@@ -374,7 +428,8 @@ class SerialGUI:
         # 启动时设置窗口标题为默认值
         self.root.title(self.window_name_var.get())
 		# 选择串口
-        tk.Label(self.right_frame, text="选择串口:").pack(anchor="w")
+        self.choose_port_label = tk.Label(self.right_frame, text="选择串口:")
+        self.choose_port_label.pack(anchor="w")
         self.port_var = tk.StringVar()
         self.port_menu = ttk.Combobox(self.right_frame, textvariable=self.port_var, values=self.get_ports(), state="readonly", width=10)
         self.port_menu.pack(fill="x", pady=2, anchor="se")
@@ -382,71 +437,76 @@ class SerialGUI:
         self.refresh_btn = tk.Button(self.right_frame, text="刷新串口", command=self.refresh_ports, width=10)
         self.refresh_btn.pack(fill="x", pady=2, anchor="se")
         # 选择或输入波特率
-        tk.Label(self.right_frame, text="波特率:").pack(anchor="w")
+        self.baud_label = tk.Label(self.right_frame, text="波特率:")
+        self.baud_label.pack(anchor="w")
         self.baud_var = tk.StringVar(value="115200")
         baudrates = ["300", "1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200", "230400"]
         self.baud_menu = ttk.Combobox(self.right_frame, textvariable=self.baud_var, values=baudrates, width=10)
         self.baud_menu.pack(fill="x", pady=2, anchor="se")
         # 串口指示、打开串口/关闭串口
-        toggle_frame = tk.Frame(self.right_frame)
-        toggle_frame.pack(fill="x", pady=2, anchor="se")
-        self.toggle_port_btn = tk.Button(toggle_frame, text="打开串口", command=self.toggle_serial, width=10)
+        self.toggle_frame = tk.Frame(self.right_frame)
+        self.toggle_frame.pack(fill="x", pady=2, anchor="se")
+        self.toggle_port_btn = tk.Button(self.toggle_frame, text="打开串口", command=self.toggle_serial, width=10)
         self.toggle_port_btn.pack(side="left", anchor="se")
         # 将状态画布放在按钮右侧，设置一些水平间距
-        self.status_canvas = Canvas(toggle_frame, width=20, height=20, bg="gray", highlightthickness=0)
+        self.status_canvas = Canvas(self.toggle_frame, width=20, height=20, bg="gray", highlightthickness=0)
         self.status_canvas.pack(side="left", padx=5, anchor="se")
         # 文字“自动保存路径”
-        tk.Label(self.right_frame, text="自动保存路径").pack(anchor="sw")
+        self.auto_save_path_label = tk.Label(self.right_frame, text="自动保存路径")
+        self.auto_save_path_label.pack(anchor="sw")
         # 文本框 方形按键
-        auto_save_path_frame = tk.Frame(self.right_frame)
-        auto_save_path_frame.pack(fill="x", pady=2, anchor="se")
-        self.auto_save_path_entry = tk.Entry(auto_save_path_frame, width=10, justify="right")
+        self.auto_save_path_frame = tk.Frame(self.right_frame)
+        self.auto_save_path_frame.pack(fill="x", pady=2, anchor="se")
+        self.auto_save_path_entry = tk.Entry(self.auto_save_path_frame, width=10, justify="right")
         self.auto_save_path_entry.pack(side="left", fill="x", expand=True, pady=2, anchor="se")
         # 按键 省略号
-        square_button = tk.Button(auto_save_path_frame, text="…", width=2, height=1, command=self.choose_auto_save_path)
-        square_button.pack(side="left", anchor="se")
+        self.square_button = tk.Button(self.auto_save_path_frame, text="…", width=2, height=1, command=self.choose_auto_save_path)
+        self.square_button.pack(side="left", anchor="se")
         # 文字 保存文件名
-        tk.Label(self.right_frame, text="保存文件名").pack(anchor="sw")
+        self.save_file_name_label = tk.Label(self.right_frame, text="保存文件名")
+        self.save_file_name_label.pack(anchor="sw")
         # 文本框
-        default_text = tk.StringVar(value="AutoSave")
-        self.file_name_entry = tk.Entry(self.right_frame, width=10, justify="left", textvariable=default_text)
+        self.file_name_entry = tk.Entry(self.right_frame, width=10, justify="left", textvariable="AutoSave")
         self.file_name_entry.pack(fill="x", pady=2, anchor="se")
         # 自动保存状态 按钮
-        auto_save_frame = tk.Frame(self.right_frame)
-        auto_save_frame.pack(fill="x", pady=5)
+        self.auto_save_frame = tk.Frame(self.right_frame)
+        self.auto_save_frame.pack(fill="x", pady=5)
         # 文字“自动保存”
-        tk.Label(auto_save_frame, text="自动保存").pack(side="left", anchor="se")
+        self.auto_save_label = tk.Label(self.auto_save_frame, text="自动保存")
+        self.auto_save_label.pack(side="left", anchor="se")
         # 自动保存按键，初始背景为灰色，点击后切换颜色
-        self.auto_save_btn = tk.Button(auto_save_frame, text="OFF", width=4, height=1, bg="gray", command=self.toggle_auto_save)
+        self.auto_save_btn = tk.Button(self.auto_save_frame, text="OFF", width=4, height=1, bg="gray", command=self.toggle_auto_save)
         self.auto_save_btn.pack(side="right", padx=2, anchor="se")
         # 文件最大容量
-        tk.Label(self.right_frame, text="文件最大容量").pack(anchor="sw", pady=(2,0))
+        self.file_max_volume_label = tk.Label(self.right_frame, text="文件最大容量")
+        self.file_max_volume_label.pack(anchor="sw", pady=(2,0))
         # 文本框 右侧显示“MB”
-        file_capacity_frame = tk.Frame(self.right_frame)
-        file_capacity_frame.pack(fill="x", pady=2, anchor="se")
-        self.max_capacity_entry = tk.Entry(file_capacity_frame, width=10, justify="right")
+        self.file_capacity_frame = tk.Frame(self.right_frame)
+        self.file_capacity_frame.pack(fill="x", pady=2, anchor="se")
+        self.max_capacity_entry = tk.Entry(self.file_capacity_frame, width=10, justify="right")
         self.max_capacity_entry.pack(side="left", fill="x", expand=True, anchor="se")
         self.max_capacity_entry.insert(0, "10")
-        tk.Label(file_capacity_frame, text="MB").pack(side="left", padx=2, anchor="se")
+        self.MB_label = tk.Label(self.file_capacity_frame, text="MB")
+        self.MB_label.pack(side="left", padx=2, anchor="se")
         # 脚本路径选择框：上方标签、文本框及小三角按钮
-        script_path_label = tk.Label(self.right_frame, text="脚本路径")
-        script_path_label.pack(anchor="sw")
-        path_frame = tk.Frame(self.right_frame)
-        path_frame.pack(fill="x", pady=2, anchor="se")
+        self.script_path_label = tk.Label(self.right_frame, text="脚本路径")
+        self.script_path_label.pack(anchor="sw")
+        self.path_frame = tk.Frame(self.right_frame)
+        self.path_frame.pack(fill="x", pady=2, anchor="se")
         # 文本框宽度与关闭串口按钮一致，文本右对齐
-        self.script_path_entry = tk.Entry(path_frame, width=10, justify="right")
+        self.script_path_entry = tk.Entry(self.path_frame, width=10, justify="right")
         self.script_path_entry.grid(row=0, column=0, sticky="ew")
-        path_frame.columnconfigure(0, weight=1)
+        self.path_frame.columnconfigure(0, weight=1)
         # 按钮区域：使用固定尺寸的 Frame 保证按钮宽高相等
         button_size = 5  # 可根据实际情况调整
-        button_frame = tk.Frame(path_frame, width=button_size, height=button_size)
-        button_frame.grid(row=0, column=1, padx=(1,0))
-        button_frame.grid_propagate(False)
-        script_path_button = tk.Button(button_frame, text="…", command=self.choose_script_path)
-        script_path_button.pack(fill="both", expand=True)
+        self.button_frame = tk.Frame(self.path_frame, width=button_size, height=button_size)
+        self.button_frame.grid(row=0, column=1, padx=(1,0))
+        self.button_frame.grid_propagate(False)
+        self.script_path_button = tk.Button(self.button_frame, text="…", command=self.choose_script_path)
+        self.script_path_button.pack(fill="both", expand=True)
         # 在脚本路径文本框下方增加一个下拉选择框，用于显示脚本路径下所有 .ts 文件
-        script_file_label = tk.Label(self.right_frame, text="脚本文件")
-        script_file_label.pack(anchor="sw", pady=(5,0))
+        self.script_file_label = tk.Label(self.right_frame, text="脚本文件")
+        self.script_file_label.pack(anchor="sw", pady=(5,0))
         self.script_file_combo = ttk.Combobox(self.right_frame, values=[], width=10, state="readonly")
         self.script_file_combo.pack(fill="x", pady=2, anchor="se")
         # 新增加载脚本按钮
@@ -462,7 +522,8 @@ class SerialGUI:
         # 新增：空行，用于分隔
         #tk.Label(self.right_frame, text="").pack(pady=5)
         # 新增：标题“多行循环发送”
-        tk.Label(self.right_frame, text="多行循环").pack(anchor="sw")
+        self.config_multi_loop_label = tk.Label(self.right_frame, text="多行循环")
+        self.config_multi_loop_label.pack(anchor="sw")
         # 新增三个按键所在的容器
         # 垂直排列三个按键
         self.open_multi_loop_btn = tk.Button(self.right_frame, text="打开", command=self.open_multi_loop_file, width=15)
@@ -471,32 +532,6 @@ class SerialGUI:
         self.save_multi_loop_btn.pack(fill="x", pady=2, anchor="se")
         self.save_as_multi_loop_btn = tk.Button(self.right_frame, text="另存为", command=self.save_multi_loop_file_as, width=15)
         self.save_as_multi_loop_btn.pack(fill="x", pady=2, anchor="se")
-        '''
-        # 保存 text_area 的原始 grid 布局信息
-        self.original_text_area_grid = self.text_area.grid_info()
-        
-        # 保存 main_frame 中（除 text_area 和最大化按钮外）的其他控件的原始 place 信息
-        self.original_layout = {}
-        for widget in self.main_frame.winfo_children():
-            # 如果不是 text_area 且不是以后要创建的最大化按钮，则保存放置信息
-            # 这里假设其他控件均使用 place 布局（text_area 为 grid 布局）
-            if widget != self.text_area:
-                self.original_layout[widget] = widget.place_info()
-        
-        # 新增：最大化状态标记
-        self.maximized = False
-        
-        # 新增：创建“最大化/恢复”按钮（例如放在窗口右上角，不影响 text_area）
-        self.maximize_button = tk.Button(self.main_frame, text="□", command=self.toggle_maximize, width=2)
-        # 这里采用 place 定位（注意此处将一直显示）
-        self.maximize_button.place(relx=1, rely=0, anchor="ne", x=-146, y=5)
-        
-        # 新增：收起/展开 右侧面板 按钮
-        self.sidebar_collapsed = False
-        self.toggle_sidebar_btn = tk.Button(self.root, text=">", width=2, command=self.toggle_sidebar)
-        # 把按钮放在窗口右上角（与系统标题栏下缘对齐）
-        self.toggle_sidebar_btn.place(relx=1.0, y=5, anchor="ne")
-        '''
 
         # 保存原始的 grid 配置
         self.row_5_grid_info = self.row_5_frame.grid_info()
@@ -512,10 +547,15 @@ class SerialGUI:
         self.stop_reading = False
         self.loop_sending = False
         self.loop_thread = None
+        self.current_color_theme_light = True
+        # ─── 新增：PowerShell 进程句柄 ───
+        self.ps_proc = None
 
         self.refresh_ports()
         # 初始化完成后，尝试加载之前保存的配置
         self.load_setup()
+
+
 
     # 打开 按键
     def open_multi_loop_file(self):
@@ -631,9 +671,14 @@ class SerialGUI:
           - 行以 "wait" 开头（但不包含 "wait for"）转换为 wait(x)
           - 行以 "send " 开头，转换为 send_line("xx")
             如果 default_delay_time_entry 中的数字 T > 0，则在该行后追加一行 wait(T/1000)
+          - open power shell        → 打开 Windows PowerShell
+          - PS send <命令文本>      → 在 PowerShell 中执行该命令
           - 其它行不做转换
         根据 loop_count_entry 的值决定执行次数，且每次执行更新当前循环计数。
         """
+
+
+
         # 读取默认延时（毫秒）和循环次数
         try:
             T = float(self.default_delay_time_entry.get().strip())
@@ -644,16 +689,31 @@ class SerialGUI:
         except:
             loop_count = 0  # 0 表示无限循环
 
+        # 读取并拆分脚本
         code = self.multi_loop_text.get("1.0", tk.END)
         lines = code.splitlines()
         processed_lines = []
         import re
-        #import time
+        import subprocess
+
+
         for i,line in enumerate(lines):
             leading_whitespace = re.match(r'^\s*', line).group()
             stripped = line.strip()
             if not stripped:
                 continue
+            low = stripped.lower()
+
+            # open power shell
+            if low == "open power shell":
+                processed_lines.append(f"{leading_whitespace}open_powershell()")
+                continue
+            if low.startswith("power shell send "):
+                prefix = "power shell send "
+                arg = stripped[len(prefix):].strip()
+                processed_lines.append(f"{leading_whitespace}powershell_send({repr(arg)})")
+                continue
+
             if stripped.startswith("wait for "):
                 m = re.match(r'^wait\s+for\s+(.+?)\s+for\s+(.+)$', stripped)
                 if m:
@@ -690,30 +750,48 @@ class SerialGUI:
             else:
                 processed_lines.append(line)
         processed_code = "\n".join(processed_lines)
-    
-        # 定义局部命名空间并注入预定义函数
-        local_namespace = {}
-        local_namespace["re"] = re
-        local_namespace["gui"] = self
-        local_namespace["StopLoopException"] = StopLoopException
-        local_namespace["messagebox"] = messagebox
+
+        def open_powershell():
+            if self.ps_proc is None or self.ps_proc.poll() is not None:
+                try:
+                    self.ps_proc = subprocess.Popen(
+                        ["powershell", "-NoExit"],
+                        stdin=subprocess.PIPE,
+                        stdout=None,  # 取消对输出的捕获
+                        stderr=None,  # 取消对错误的捕获
+                        creationflags=subprocess.CREATE_NEW_CONSOLE
+                    )
+                    time.sleep(0.1)  # 等待窗口启动
+                except Exception as e:
+                    messagebox.showerror("错误", f"无法打开 PowerShell: {e}")
+
+        def powershell_send(cmd_text):
+            if self.ps_proc and self.ps_proc.stdin:
+                try:
+                    self.ps_proc.stdin.write((cmd_text + "\n").encode("utf-8"))
+                    self.ps_proc.stdin.flush()
+                except Exception as e:
+                    messagebox.showerror("错误", f"PowerShell 发送失败: {e}")
+            else:
+                messagebox.showwarning("警告", "请先执行 open power shell")
+
 
         def send_line(text):
+            #if not (self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open):
+            #    messagebox.showwarning("警告", "串口未打开，循环发送终止")
+            #    raise Exception("串口未打开")
+            #text_to_send = text + '\n'
+            ##self.send_data(text_to_send)
+            #self.serial_conn.send_data(text_to_send)
+            #self.text_area.insert(tk.END, text_to_send)
+            #self.text_area.yview(tk.END)
+            #self.sent_bytes += len(text_to_send.encode())
+            #self.update_data_stats()
+            # 复用 send_via_serial，支持 PowerShell 拦截
             if not (self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open):
                 messagebox.showwarning("警告", "串口未打开，循环发送终止")
                 raise Exception("串口未打开")
-            text_to_send = text + '\n'
-            #self.send_data(text_to_send)
-            self.serial_conn.send_data(text_to_send)
-            self.text_area.insert(tk.END, text_to_send)
-            self.text_area.yview(tk.END)
-            self.sent_bytes += len(text_to_send.encode())
-            self.update_data_stats()
-
-
-        local_namespace["send_line"] = send_line
-
-        local_namespace["wait"] = time.sleep
+            self.send_via_serial(text)
 
         # 修改后的 wait 函数，检查 self.loop_stop 标志，允许立即中断
         def wait(seconds):
@@ -725,8 +803,6 @@ class SerialGUI:
                     raise StopLoopException("循环已停止")
                 time.sleep(interval)
                 elapsed += interval
-
-        local_namespace["wait"] = wait
 
         def wait_for(target_string, over_time):
             # 如果字符串为空，则不执行该函数
@@ -756,7 +832,21 @@ class SerialGUI:
                     last_index = current_index
             return False
 
-        local_namespace["wait_for"] = wait_for
+        # 定义局部命名空间并注入预定义函数
+        # 构建执行环境
+        local_namespace = {
+            "open_powershell": self.open_powershell,
+            "powershell_send": powershell_send,
+            "wait_for":       wait_for,
+            "wait":           wait,
+            "send_line":      send_line,
+            "re":             re,
+            "gui":            self,
+            "messagebox":     messagebox,
+            "StopLoopException": StopLoopException,
+            "tk":             tk,        # 让脚本能用 tk.END
+            "END":            tk.END,    # 或者只暴露 END
+        }
 
         iteration = 0
         self.loop_stop = False
@@ -775,6 +865,120 @@ class SerialGUI:
         self.root.after(0, lambda: self.start_button.config(state=tk.NORMAL))
         self.root.after(0, lambda: self.stop_button.config(state=tk.DISABLED))
         self.root.after(0, lambda: self.pause_button.config(state=tk.DISABLED))
+
+    def on_multi_loop_modified(self, event=None):
+        """
+        当 multi_loop_text 内容发生修改时，自动触发高亮。
+        """
+        # 重置 Modified 状态，否则不会再触发
+        if self.multi_loop_text.edit_modified():
+            self.multi_loop_text.edit_modified(False)
+            self.highlight_multi_loop()
+
+    # 新增方法：根据正则匹配函数名并应用标签
+
+    def highlight_multi_loop(self):
+        """
+        在 multi_loop_text 中，将函数名（send, wait, wait for,
+        open power shell, power shell send）高亮为蓝色。
+        """
+        widget = self.multi_loop_text
+        text = widget.get("1.0", "end")  # 取全量内容
+
+        # 清除旧标签
+        widget.tag_remove("func", "1.0", "end")
+        # 在整个文本中搜索所有匹配
+        for m in self._func_highlight_re.finditer(text):
+            # 找到本行的行首位置
+            line_start = text.rfind('\n', 0, m.start()) + 1
+            # 本行注释前缀：去掉缩进后看首字符
+            prefix = text[line_start:m.start()].lstrip()
+            if prefix.startswith('#'):
+                # 注释行，跳过
+                continue
+            start = f"1.0+{m.start()}c"
+            end   = f"1.0+{m.end()}c"
+            widget.tag_add("func", start, end)
+
+    #def open_powershell(self):
+    #    """类方法：打开一个新的 PowerShell 窗口，并保存句柄到 self.ps_proc"""
+    #    import subprocess, time, tkinter.messagebox as mb
+    #    # 如果已经启动且未退出，就不重复打开
+    #    if getattr(self, 'ps_proc', None) and self.ps_proc.poll() is None:
+    #        return
+    #    try:
+    #        self.ps_proc = subprocess.Popen(
+    #            ["powershell", "-NoExit"],
+    #            stdin= subprocess.PIPE,#None
+    #            stdout=subprocess.PIPE,
+    #            stderr=subprocess.STDOUT,
+    #            creationflags=subprocess.CREATE_NEW_CONSOLE
+    #        )
+    #        time.sleep(0.1)
+    #    except Exception as e:
+    #        mb.showerror("错误", f"无法打开 PowerShell: {e}")
+    def open_powershell(self):
+        """
+        打开一个新的 PowerShell 窗口，并保存句柄到 self.ps_proc。
+        同时启动后台线程，将管道里的输出镜像回 PowerShell 窗口，
+        既能脚本推送，也能在窗口中看到响应。
+        """
+        # 如果已打开且进程未退出，就不重复打开
+        if getattr(self, 'ps_proc', None) and self.ps_proc.poll() is None:
+            return
+
+        try:
+            # 启动 PowerShell，stdin/stdout 都走管道，同时新开控制台
+            self.ps_proc = subprocess.Popen(
+                ["powershell", "-NoExit"],
+                stdin = subprocess.PIPE,
+                stdout= subprocess.PIPE,
+                stderr= subprocess.STDOUT,
+                #creationflags = subprocess.CREATE_NEW_CONSOLE
+            )
+            # 启动镜像线程：从管道读，再写回 CONOUT$
+            threading.Thread(
+                target=self._read_ps_output,
+                daemon=True
+            ).start()
+
+            # 原有的延时或其他初始化
+            time.sleep(0.1)
+
+        except Exception as e:
+            messagebox .showerror("错误", f"无法打开 PowerShell: {e}")
+
+    def _read_ps_output(self):
+        """
+        后台执行：从 ps_proc.stdout 实时读取，
+        然后调度到主线程插入到 text_area。
+        """
+        proc = self.ps_proc
+        for raw in proc.stdout:
+            try:
+                text = raw.decode('utf-8', errors='ignore')
+            except:
+                continue
+            # 回到主线程安全地更新 UI
+            self.text_area.after(0, self._append_text, text)
+
+    def _append_text(self, text):
+        """在 text_area 末尾插入文本，并自动滚动。"""
+        self.text_area.insert(tk.END, text)
+        self.text_area.see(tk.END)
+        # 可选：也更新发送/接收统计等
+
+    def powershell_send(self, cmd_text):
+        """类方法：向已打开的 PowerShell 窗口发送命令"""
+        if getattr(self, 'ps_proc', None) and self.ps_proc.stdin:
+            try:
+                self.ps_proc.stdin.write((cmd_text + "\n").encode("utf-8"))
+                self.ps_proc.stdin.flush()
+            except Exception as e:
+                messagebox.showerror("错误", f"PowerShell 发送失败: {e}")
+        else:
+            messagebox.showwarning("警告", "请先执行 open power shell")
+    
 
     def on_closing(self):
         """
@@ -1123,12 +1327,35 @@ class SerialGUI:
         
         # cell的三个按钮，发送当前行、发送当前行并移动至下一行、发送全部
         def send_current_row():
-            index = multi_text.index("insert")
-            line_start = f"{index.split('.')[0]}.0"
-            line_end = f"{index.split('.')[0]}.end"
-            current_line = multi_text.get(line_start, line_end)
-            if current_line.strip():
-                self.send_via_serial(current_line)
+            try:
+                # 尝试获取选区的起止索引
+                start_index = multi_text.index(tk.SEL_FIRST)   # 'sel.first'
+                end_index   = multi_text.index(tk.SEL_LAST)    # 'sel.last'
+                # 将索引转换为行号
+                start_line = int(start_index.split('.')[0])
+                end_line   = int(end_index.split('.')[0])
+            except tk.TclError:
+                # 无选区：只发送光标所在行
+                cursor_index = multi_text.index(tk.INSERT)     # 'insert'
+                line_num = int(cursor_index.split('.')[0])
+                start_line = end_line = line_num
+
+            # 收集要发送的行文本（非空）
+            all_lines = []
+            for ln in range(start_line, end_line + 1):
+                text_line = multi_text.get(f"{ln}.0", f"{ln}.end").strip()
+                if text_line:
+                    all_lines.append(text_line)
+
+            if not all_lines:
+                return  # 没有可发送的内容
+
+            if start_line == end_line:
+                # 单行：直接发送
+                self.send_via_serial(all_lines[0])
+            else:
+                # 多行：调用已有的递归发送函数，从第 0 行开始
+                self._send_next_command(all_lines, 0)
         
         def send_current_row_and_move():
             index = multi_text.index("insert")
@@ -1238,7 +1465,7 @@ class SerialGUI:
             return
         # 如果下一行不是以wait开头，则执行后面的内容
         # 检查 send_all_terminal_entry 是否有字符，以及 send_all_over_time_entry 是否有数字
-        terminal_str = self.send_all_terminal_entry.get().strip()
+        terminal_str = self.send_all_terminal_menu.get().strip()
         over_time_str = self.send_all_over_time_entry.get().strip()
         if terminal_str and over_time_str:
             try:
@@ -1258,7 +1485,7 @@ class SerialGUI:
                         self._send_next_command(all_lines, index + 1)
                     elif time.time() - start_time >= timeout:
                         # 超时未检测到终止符，在主窗口中显示超时，直接终止函数执行
-                        self.text_area.insert(tk.END, "Waiting for terminal_str over time, commands sending ended.", "red")
+                        self.text_area.insert(tk.END, "串口未收到设置的等待符号，发送终止，请设置或去掉等待符号。", "red")
                         self.text_area.yview(tk.END)
                         return
                     else:
@@ -1287,18 +1514,43 @@ class SerialGUI:
         if self.serial_conn and cell.custom_data:
             self.send_all(cell.custom_data)  # 传递 cell.custom_data
 
-    def send_via_serial(self, data):
-        if self.serial_conn:
-            # 如果选中时间戳，则插入发送时间
-            if self.timestamp_onoff.get():
-                timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                self.text_area.insert(tk.END, f"\nSend at    {timestamp_str}\n","blue")
-            data_and_return = data + '\n'
-            self.serial_conn.send_data(data_and_return)
-            self.text_area.insert(tk.END, data_and_return)
-            self.text_area.yview(tk.END)
-            self.sent_bytes += len(data.encode())
-            self.update_data_stats()
+    def send_via_serial(self, data, add_newline=True, insert_display=True):
+        """
+         统一的发送入口，内部会拦截 PowerShell 关键字。
+         原来总是会在 data 后面加一个 '\n'。
+         现在由参数 add_newline 决定是否加 '\n'。
+         原来总是插入到 text_area
+         现在需要由参数insert_display:决定是否插入到 text_area
+        """
+        if not (self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open):
+            messagebox.showwarning("警告", "串口未打开")
+            return
+        key = data.strip().lower()
+        # 拦截打开 PowerShell
+        if key == "open power shell":
+            self.open_powershell()
+            return
+        # 拦截向 PowerShell 发送命令
+        if key.startswith("power shell send "):
+            cmd = data.strip()[len("power shell send "):]
+            self.powershell_send(cmd)
+            return
+
+        # 默认走串口
+        # （1）插入可选的时间戳
+        if self.timestamp_onoff.get():
+            ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            self.text_area.insert(tk.END, f"\nSend at    {ts}\n", "blue")
+        # （2）真正写入串口并显示
+        raw = data + ("\n" if add_newline else "")
+        self.serial_conn.send_data(raw)
+        # 判断是否向主窗口写入发送的字符串
+        if insert_display:
+            self.text_area.insert(tk.END, raw)
+        self.text_area.yview(tk.END)
+        # （3）更新统计
+        self.sent_bytes += len(data.encode())
+        self.update_data_stats()
 
     def create_new_tab(self):
         new_title = f"Tab {len([t for t in self.notebook.tabs() if self.notebook.tab(t, 'text') != '']) + 1}"
@@ -1404,24 +1656,23 @@ class SerialGUI:
             return None
 
     def send_data_btn(self, event=None):
+        """
+        由“发送”按钮或回车触发：
+         - 读取输入框 text；
+         - 根据“发送新行”复选框决定是否添加 '\\n'；
+         - 复用 send_via_serial 完成发送与拦截；
+         - 最后更新已发送命令历史。
+        """
         if self.serial_conn:
             data = self.send_entry.get()
-            if data:
-                # 如果选中时间戳，则先插入发送时间
-                if self.timestamp_onoff.get():
-                    timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                    self.text_area.insert(tk.END, f"\nSend at    {timestamp_str}\n", "blue")
-                # 如果“发送新行”checkbox被勾选
-                if self.send_newline_var.get():
-                    data_to_send = data + "\n"
-                else:
-                    data_to_send = data
-                self.serial_conn.send_data(data_to_send)
-                self.text_area.insert(tk.END, data_to_send)
-                self.text_area.yview(tk.END)
-                self.sent_bytes += len(data_to_send.encode())
-                self.update_data_stats()
-                self.add_sent_command(data) # 更新已发送命令
+            if not data:
+                return
+
+            # 通过 add_newline 参数控制是否在末尾补 '\n'
+            self.send_via_serial(data, add_newline=self.send_newline_var.get())
+
+            # 更新已发送命令历史
+            self.add_sent_command(data)
 
     def toggle_loop_send(self):
         if not self.loop_sending:
@@ -1527,23 +1778,21 @@ class SerialGUI:
         # 如果主键盘和小键盘的回车键被按下
         if event.keysym in ("Return", "KP_Enter"):
             # Enter key pressed
+            # 如果有输入内容
             if self.input_buffer.strip():
-                # Send buffered input followed by a newline
-                data_to_send = self.input_buffer + "\n"
-                if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
-                    self.serial_conn.send_data(data_to_send)
-                    # 如果选中时间戳，则先插入接收时间
-                    if self.timestamp_onoff.get():
-                        timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                        self.text_area.insert(tk.END, f"\nSend at    {timestamp_str}\n", "blue")
-                    self.sent_bytes += len(data_to_send.encode())
-                    self.add_sent_command(self.input_buffer) # 更新已发送命令
-                    self.sent_commands_number = -1  # 重置上下键的命令索引
+                # 可选：先插入“Send at”时间戳
+                if self.timestamp_onoff.get():
+                    ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    self.text_area.insert(tk.END, f"\nSend at    {ts}\n", "blue")
+
+                # 用统一入口发送，包括 PowerShell 拦截
+                self.send_via_serial(self.input_buffer,add_newline=True,insert_display=False)
+                self.add_sent_command(self.input_buffer) # 更新已发送命令
+                self.sent_commands_number = -1  # 重置上下键的命令索引
             else:
-               # 若 input buffer 为空，则仅发送回车字符（前提是串口已打开）
-                if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
-                    self.serial_conn.send_data("\n")
-                    self.sent_bytes += 1
+                # 缓冲区为空时，仅发送一个回车
+                self.send_via_serial("",
+                                     add_newline=True,insert_display=False)
             self.text_area.yview(tk.END)
             self.update_data_stats()
             # 只要按下回车，就在文本框中进行换行
@@ -1562,19 +1811,22 @@ class SerialGUI:
                 self.input_buffer = (self.input_buffer[:self.input_buffer_cursor - 1] +
                                      self.input_buffer[self.input_buffer_cursor:])
                 self.input_buffer_cursor -= 1
-            #return "break" # 不禁止backspace本身在主窗口中的删除操作
+            else:
+                return "break"# 如果已输入内容的计数值已归零，则禁止backspace本身在主窗口中的删除操作
 
         # 处理左箭头：向左移动光标
         elif event.keysym == "Left":
             if self.input_buffer_cursor > 0:
                 self.input_buffer_cursor -= 1
-            #return "break" # 不禁止光标在窗口中的移动
+            else:
+                return "break"# 如果已输入内容的计数值已归零，则禁止移动
 
         # 处理右箭头：向右移动光标
         elif event.keysym == "Right":
             if self.input_buffer_cursor < len(self.input_buffer):
                 self.input_buffer_cursor += 1
-            #return "break" # 不禁止光标在窗口中的移动
+            else:
+                return "break"# 不满足则禁止移动
         
         elif event.keysym == "Up":
             # 处理上箭头键：浏览之前的命令
@@ -1719,7 +1971,7 @@ class SerialGUI:
             'loop_interval': self.loop_interval_entry.get(),
             'default_delay_time': self.default_delay_time_entry.get(),
             'loop_count': self.loop_count_entry.get(),
-            'terminal_symbol': self.send_all_terminal_entry.get(),
+            'terminal_symbol': self.send_all_terminal_menu.get(),
             'terminal_wait_over_time': self.send_all_over_time_entry.get(),
             'sent_commands': self.sent_commands
         }
@@ -1781,6 +2033,100 @@ class SerialGUI:
         else:
             self.right_frame.grid(**self.right_frame_grid_info)
 
+    def toggle_theme(self):
+        if self.current_color_theme_light == True:# 如果当前是浅色主题
+            # 切换到深色主题
+            window_bg_color = '#252A38'    # 37 42 56
+            text_bg_color = "#171b26"      # (0, 0, 0)
+            text_fg_color = "#d9dce4"      # (255, 255, 255)
+            self.multi_loop_text.tag_config("func", foreground="#569CD6") # #9CDCFE blue  189, 99, 128 = BD6380 #569CD6
+            self.current_color_theme_light = False
+        else:
+            # 切换到浅色主题
+            window_bg_color = "#F0F0F0"    # (240, 240, 240)
+            text_bg_color = "#FFFFFF"      # (255, 255, 255)
+            text_fg_color = "#000000"      # (0, 0, 0)
+            self.multi_loop_text.tag_config("func", foreground="blue") # #9CDCFE blue  189, 99, 128 = BD6380 #569CD6
+            self.current_color_theme_light = True
+
+        # 设置所有ttk控件的颜色样式
+        self.style.configure('Custom.TCheckbutton',
+                background=window_bg_color,
+                foreground=text_fg_color)
+            
+        # 设置输入文字的控件的颜色，ttk.Combox
+        self.text_area.configure(background=text_bg_color, foreground=text_fg_color)
+        self.multi_loop_text.configure(background=text_bg_color, foreground=text_fg_color)
+        #self.send_entry.configure(background=text_bg_color, foreground=text_fg_color)
+        self.auto_save_path_entry.configure(background=text_bg_color, foreground=text_fg_color)
+        #self.baud_menu.configure(background=text_bg_color, foreground=text_fg_color)
+        #self.port_menu.configure(background=text_bg_color, foreground=text_fg_color)
+        #self.script_file_combo.configure(background=text_bg_color, foreground=text_fg_color)
+
+        
+        # 设置所有Frame的背景色
+        self.main_frame.configure(background=window_bg_color)
+        self.row_0_frame.configure(background=window_bg_color)
+        self.row_2_frame.configure(background=window_bg_color)
+        self.row_3_frame.configure(background=window_bg_color)
+        self.row_4_frame.configure(background=window_bg_color)
+        self.row_5_frame.configure(background=window_bg_color)
+        self.row_6_frame.configure(background=window_bg_color)
+        self.row_7_frame.configure(background=window_bg_color)
+        self.right_frame.configure(background=window_bg_color)
+        self.toggle_frame.configure(background=window_bg_color)
+        self.auto_save_path_frame.configure(background=window_bg_color)
+        self.auto_save_frame.configure(background=window_bg_color)
+        self.button_frame.configure(background=window_bg_color)
+        self.path_frame.configure(background=window_bg_color)
+        self.file_capacity_frame.configure(background=window_bg_color)
+
+        # 设置窗口背景色
+        self.root.configure(bg=window_bg_color)
+        # 设置菜单栏控件的颜色
+        #self.menu_bar.configure(bg=window_bg_color, fg=text_fg_color, activebackground=window_bg_color, activeforeground=text_fg_color)  # 菜单栏本身无法修改颜色
+        self.new_menu.configure(bg=window_bg_color, fg=text_fg_color)
+        self.about_menu.configure(bg=window_bg_color, fg=text_fg_color)
+
+        # 设置所有Label的颜色
+        for widget in [self.label_send, self.stats_label, self.date_label_title, self.date_label,
+                        self.time_label_title, self.time_label, self.time_label_title, self.time_stamp_title, self.loop_interval_label,
+                        self.send_all_terminal_label, self.send_all_over_time_label,
+                        self.multi_loop_label, self.current_loop_count_label,
+                        self.default_delay_time_label, self.loop_count_label, self.window_name_label, self.choose_port_label, 
+                        self.baud_label, self.auto_save_label,self.auto_save_path_label,self.save_file_name_label,self.file_max_volume_label,
+                        self.MB_label,self.script_path_label,self.script_file_label,self.config_multi_loop_label]:
+            widget.configure(background=window_bg_color, foreground=text_fg_color)
+           
+        # 设置所有Entry的颜色
+        for widget in [ self.loop_interval_entry, 
+                        self.send_all_over_time_entry, self.default_delay_time_entry,
+                        self.loop_count_entry, self.window_name_entry,self.file_name_entry,
+                        self.max_capacity_entry,self.script_path_entry]:
+            widget.configure(background=window_bg_color, foreground=text_fg_color)
+            #self.send_all_terminal_menu,
+            
+        # 设置所有Button的颜色
+        for widget in [self.show_keys_btn, self.show_script_btn, self.toggle_sidebar_btn,self.theme_btn,
+                        self.send_btn, self.single_loop_send_btn, self.clear_screen_btn,
+                        self.start_button, self.pause_button, self.stop_button,
+                        self.refresh_btn, self.toggle_port_btn, self.square_button,self.script_path_button,
+                        self.load_script_button,self.save_script_button,self.save_as_script_button,self.open_multi_loop_btn,
+                        self.save_multi_loop_btn,self.save_as_multi_loop_btn]:
+            widget.configure(background=window_bg_color, foreground=text_fg_color)
+
+        # 设置tab的颜色
+        for tab_id in self.notebook.tabs():
+            tab_frame = self.notebook.nametowidget(tab_id)
+            tab_frame.configure(background=window_bg_color)
+            for child in tab_frame.winfo_children():
+                if isinstance(child, tk.Button):
+                    child.configure(
+                        background=window_bg_color,
+                        foreground=text_fg_color,
+                        activebackground=text_bg_color,
+                        activeforeground=text_fg_color
+                    )
         
     def load_setup(self):
         """
@@ -1874,8 +2220,8 @@ class SerialGUI:
             
             # 等待符号
             if 'terminal_symbol' in setup:
-                self.send_all_terminal_entry.delete(0, 'end')
-                self.send_all_terminal_entry.insert(0, setup['terminal_symbol'])
+                self.send_all_terminal_menu.delete(0, 'end')
+                self.send_all_terminal_menu.insert(0, setup['terminal_symbol'])
             
             # 等待符号超时时间
             if 'terminal_wait_over_time' in setup:
