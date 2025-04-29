@@ -1,0 +1,8 @@
+send lmclist
+if wait_for("CXP2021114/1",3)==True:
+    messagebox.showinfo("提示", "Target string found.")# pop out message
+    raise StopLoopException("stop")# stop running
+gui.text_area.insert(tk.END, "Target found")
+gui.text_area.see(tk.END)
+
+

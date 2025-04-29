@@ -1,0 +1,17 @@
+send ifconfig eth0 10.166.147.42 netmask 255.255.255.128 broadcast 10.166.147.127
+wait 1
+send route add default gw 10.166.147.1
+wait 1
+send ifconfig eth0
+wait 1
+send ping -c 4 10.166.147.42
+wait 5
+open power shell
+wait 1
+power shell send cd C:\4485\4485_R1C_JESD_DL_lane4_CRC_issue_debug\krypton_bin\aapl_3.2.7
+wait 1
+power shell send scp aapl_krypton0 root@10.166.147.42:/usr/bin
+wait 3
+send ls /usr/bin/aapl_krypton0
+wait 1
+
