@@ -1,0 +1,16 @@
+# to control N5767A, your computer must install 'Keysight Connection Expert' first
+# you could see the address for visa_init in 'Keysight Connection Expert' when N5767A is connected to your computer via USB
+# this init fucntion is working under sharing mode, it would not stop "Keysight Connection Expert' to work at the same time
+visa_init(USB0::0x0957::0xA407::US19E8463P::0::INSTR)
+wait 1
+visa_query(OUTP?)
+wait 1
+visa_write(OUTP OFF)
+wait 1
+visa_query(OUTP?)
+wait 3
+visa_write(OUTP ON)
+wait 1
+visa_query(OUTP?)
+wait 1
+
