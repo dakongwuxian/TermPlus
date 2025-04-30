@@ -9,23 +9,25 @@
 
 如需商业授权或有任何疑问，请联系：[dakongwuxian@gmail.com]
 """
-from queue import Empty
+
 import tkinter as tk
 from tkinter import scrolledtext, ttk, Canvas, simpledialog, messagebox, filedialog
-from turtle import color
 import tkinter.font as tkFont
 import serial
 import serial.tools.list_ports
 import threading
 import time
-import os #新增，用于遍历目录
-import re #新增，用于加载脚本文件
+import os # 遍历目录
+import re # 加载脚本文件
 import configparser
 import ast
 from datetime import datetime
 import builtins
 import keyword
-import subprocess, threading, sys, os
+import subprocess
+import pyvisa
+from pyvisa.constants import AccessModes
+
 
 class SerialComm:
     def __init__(self, port, baudrate=115200):
@@ -90,20 +92,13 @@ class SerialGUI:
         self.auto_save_stop = False   # 控制 autosave 线程停止的标志
         self.root = root
 
+        # 初始化 PyVISA ResourceManager，psu 初始为 None
+        self.rm  = pyvisa.ResourceManager()
+        self.psu = None
+
         # 字体设置
-        # 1. 创建 NamedFont 对象
-        ui_font = tkFont.Font(family="Microsoft YaHei UI", size=9)  # 中文控件
-        code_font = tkFont.Font(family="Microsoft YaHei UI", size=9)         # 英文代码区 Microsoft YaHei UI Consolas
-
-        # 2. 全局设置控件字体（中文 UI）
-        root.option_add("*Label.Font", ui_font)
-        root.option_add("*Button.Font", ui_font)
-        root.option_add("*Menu.Font", ui_font)
-
-        # 3. 单独设置 Text/TextArea 文本区字体（英文代码）
-        root.option_add("*Text.Font", code_font)
-        # 或者针对 ScrolledText
-        root.option_add("*ScrolledText.Font", code_font)
+        default_font = tkFont.nametofont("TkDefaultFont")
+        default_font.configure(family="Microsoft YaHei UI", size=9)
 
         # 窗口标题
         self.root.title("TermPlus")     
@@ -127,10 +122,11 @@ class SerialGUI:
             position_x, position_y = 100, 100
         self.root.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
 
+        # 设置ttk控件的style，用以修改其配色
         self.style = ttk.Style()
         self.style.theme_use('default')  # 使用支持自定义样式的主题
-        self.style.configure(".", font=ui_font)    # 默认 ttk 控件都用 ui_font
-        self.style.configure("TEntry", font=code_font)
+        self.style.configure(".", font=default_font)    # 默认 ttk 控件都用 ui_font
+        self.style.configure("TEntry", font=default_font)
         self.style.configure('Custom.TCheckbutton',
                 background="#F0F0F0",
                 foreground='black')
@@ -244,8 +240,6 @@ class SerialGUI:
         self.row_3_frame = tk.Frame(self.main_frame, width=730, height=32)
         self.row_3_frame.grid(row=3, column=0, sticky="nw", padx=0)
 
-        #row_3_y = -410  # 下方几个空间的y坐标，坐标原点是窗口的左上角
-
         #数据统计："发送: 0 B | 接收: 0 B"
         self.data_stats = tk.StringVar(value="发送: 000 B | 接收: 000 B")
         self.stats_label = tk.Label(self.row_3_frame, textvariable=self.data_stats)
@@ -327,8 +321,6 @@ class SerialGUI:
         # Row 6, “多行循环”等文字和按键
         self.row_6_frame = tk.Frame(self.main_frame, width=730, height=34)
         self.row_6_frame.grid(row=6, column=0, sticky="nw", padx=(10,0), pady=(0,0))
-        #self.row_5_frame.grid_columnconfigure(0, weight=1)           # 第一列扩展
-        #self.row_5_frame.grid_columnconfigure(1, weight=0, minsize=150)
 
         # 文字“多行循环发送”
         self.multi_loop_label = tk.Label(self.row_6_frame, text="多行循环")
@@ -900,23 +892,6 @@ class SerialGUI:
             end   = f"1.0+{m.end()}c"
             widget.tag_add("func", start, end)
 
-    #def open_powershell(self):
-    #    """类方法：打开一个新的 PowerShell 窗口，并保存句柄到 self.ps_proc"""
-    #    import subprocess, time, tkinter.messagebox as mb
-    #    # 如果已经启动且未退出，就不重复打开
-    #    if getattr(self, 'ps_proc', None) and self.ps_proc.poll() is None:
-    #        return
-    #    try:
-    #        self.ps_proc = subprocess.Popen(
-    #            ["powershell", "-NoExit"],
-    #            stdin= subprocess.PIPE,#None
-    #            stdout=subprocess.PIPE,
-    #            stderr=subprocess.STDOUT,
-    #            creationflags=subprocess.CREATE_NEW_CONSOLE
-    #        )
-    #        time.sleep(0.1)
-    #    except Exception as e:
-    #        mb.showerror("错误", f"无法打开 PowerShell: {e}")
     def open_powershell(self):
         """
         打开一个新的 PowerShell 窗口，并保存句柄到 self.ps_proc。
@@ -964,8 +939,11 @@ class SerialGUI:
 
     def _append_text(self, text):
         """在 text_area 末尾插入文本，并自动滚动。"""
-        self.text_area.insert(tk.END, text)
-        self.text_area.see(tk.END)
+        # 使用after lambda的形式是为了让子进程不会冲突
+        self.text_area.after(0, lambda: (
+            self.text_area.insert(tk.END, text),
+            self.text_area.see(tk.END)
+        ))
         # 可选：也更新发送/接收统计等
 
     def powershell_send(self, cmd_text):
@@ -1521,6 +1499,11 @@ class SerialGUI:
          现在由参数 add_newline 决定是否加 '\n'。
          原来总是插入到 text_area
          现在需要由参数insert_display:决定是否插入到 text_area
+         新增四种 VISA 控制指令：
+         - visa_init(address)
+         - visa_query(command)
+         - visa_write(command)
+         - visa_read()
         """
         if not (self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open):
             messagebox.showwarning("警告", "串口未打开")
@@ -1535,6 +1518,76 @@ class SerialGUI:
             cmd = data.strip()[len("power shell send "):]
             self.powershell_send(cmd)
             return
+        # ── VISA 拦截 ──
+        # 1) 初始化 VISA 设备
+        if key.startswith("visa_init"):
+            m = re.match(r'visa_init\(\s*([^\)]+?)\s*\)', data, re.IGNORECASE)
+            if m:
+                addr = m.group(1)
+                try:
+                    # 使用 shared_lock 模式，等待解锁时间设为 3000 ms
+                    visa_res = self.rm.open_resource(
+                        addr,
+                        access_mode=AccessModes.shared_lock,  # ⑤ 共享锁
+                        open_timeout=3000                    # ⑥ 等待 3 s
+                    )
+                    self.psu = VisaComm(visa_res)
+                    self.text_area.insert(tk.END, f"√ VISA 初始化成功: {addr}\n")
+                except Exception as e:
+                    self.text_area.insert(tk.END, f"× VISA 初始化失败: {e}\n")
+            else:
+                self.text_area.insert(tk.END, "× visa_init 格式错误，应为 visa_init(ADDRESS)\n")
+            self.text_area.see(tk.END)
+            return
+
+        # 2) QUERY
+        if key.startswith("visa_query"):
+            if not self.psu:
+                self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n")
+            else:
+                m = re.match(r'visa_query\(\s*(.+?)\s*\)', data.strip(), re.IGNORECASE)
+                if m:
+                    cmd = m.group(1)
+                    try:
+                        resp = self.psu.query(cmd)
+                        self.text_area.insert(tk.END, f">>> VISA QUERY: {cmd}\n{resp}\n")
+                    except Exception as e:
+                        self.text_area.insert(tk.END, f"× VISA QUERY 错误: {e}\n")
+                else:
+                    self.text_area.insert(tk.END, "× visa_query 格式错误，应为 visa_query(COMMAND)\n")
+            self.text_area.see(tk.END)
+            return
+
+        # 3) WRITE
+        if key.startswith("visa_write"):
+            if not self.psu:
+                self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n")
+            else:
+                m = re.match(r'visa_write\(\s*(.+?)\s*\)', data.strip(), re.IGNORECASE)
+                if m:
+                    cmd = m.group(1)
+                    try:
+                        self.psu.write(cmd)
+                        self.text_area.insert(tk.END, f"√ VISA WRITE: {cmd}\n")
+                    except Exception as e:
+                        self.text_area.insert(tk.END, f"× VISA WRITE 错误: {e}\n")
+                else:
+                    self.text_area.insert(tk.END, "× visa_write 格式错误，应为 visa_write(COMMAND)\n")
+            self.text_area.see(tk.END)
+            return
+
+        # 4) READ
+        if key.startswith("visa_read"):
+            if not self.psu:
+                self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n")
+            else:
+                try:
+                    resp = self.psu.read()
+                    self.text_area.insert(tk.END, f">>> VISA READ:\n{resp}\n")
+                except Exception as e:
+                    self.text_area.insert(tk.END, f"× VISA READ 错误: {e}\n")
+            self.text_area.see(tk.END)
+            return
 
         # 默认走串口
         # （1）插入可选的时间戳
@@ -1546,8 +1599,11 @@ class SerialGUI:
         self.serial_conn.send_data(raw)
         # 判断是否向主窗口写入发送的字符串
         if insert_display:
-            self.text_area.insert(tk.END, raw)
-        self.text_area.yview(tk.END)
+            # 安全地在主线程插入并滚动
+            self.text_area.after(0, lambda: (
+                self.text_area.insert(tk.END, raw),
+                self.text_area.yview(tk.END)
+            ))
         # （3）更新统计
         self.sent_bytes += len(data.encode())
         self.update_data_stats()
@@ -1700,12 +1756,21 @@ class SerialGUI:
                 else:
                     data_to_send = data
                 # 如果选中时间戳，则先插入发送时间
+
                 if self.timestamp_onoff.get():
                     timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                    self.text_area.insert(tk.END, f"\nSend at    {timestamp_str}\n", "blue")
+                    # 使用 after(0, lambda: ( 将要执行的语句包住，可以让子进程不会跟其他进程冲突
+                    self.text_area.after(0, lambda: (
+                        self.text_area.insert(tk.END, f"\nSend at    {timestamp_str}\n", "blue")
+                    ))
                 self.serial_conn.send_data(data_to_send)
-                self.text_area.insert(tk.END, f"{data_to_send}")
-                self.text_area.yview(tk.END)
+                # 使用 after(0, lambda: ( 将要执行的语句包住，可以让子进程不会跟其他进程冲突
+                self.text_area.after(0, lambda: (
+                    self.text_area.insert(tk.END, f"{data_to_send}"),
+                    self.text_area.yview(tk.END)
+                ))
+
+
                 self.sent_bytes += len(data_to_send.encode())
                 self.update_data_stats()
             sleep_time = 0
@@ -2039,7 +2104,10 @@ class SerialGUI:
             window_bg_color = '#252A38'    # 37 42 56
             text_bg_color = "#171b26"      # (0, 0, 0)
             text_fg_color = "#d9dce4"      # (255, 255, 255)
+            # 多行循环文本框内需要高亮的文字的tag
             self.multi_loop_text.tag_config("func", foreground="#569CD6") # #9CDCFE blue  189, 99, 128 = BD6380 #569CD6
+            # 主窗口的blue的tag的配色在深色配色下需要修改
+            self.text_area.tag_config("blue", foreground="#569CD6")
             self.current_color_theme_light = False
         else:
             # 切换到浅色主题
@@ -2047,6 +2115,7 @@ class SerialGUI:
             text_bg_color = "#FFFFFF"      # (255, 255, 255)
             text_fg_color = "#000000"      # (0, 0, 0)
             self.multi_loop_text.tag_config("func", foreground="blue") # #9CDCFE blue  189, 99, 128 = BD6380 #569CD6
+            self.text_area.tag_config("blue", foreground="blue")
             self.current_color_theme_light = True
 
         # 设置所有ttk控件的颜色样式
@@ -2057,12 +2126,13 @@ class SerialGUI:
         # 设置输入文字的控件的颜色，ttk.Combox
         self.text_area.configure(background=text_bg_color, foreground=text_fg_color)
         self.multi_loop_text.configure(background=text_bg_color, foreground=text_fg_color)
-        #self.send_entry.configure(background=text_bg_color, foreground=text_fg_color)
         self.auto_save_path_entry.configure(background=text_bg_color, foreground=text_fg_color)
+
+        # 这几个控件是ttk控件中的下拉菜单，无法直接修改其配色
+        #self.send_entry.configure(background=text_bg_color, foreground=text_fg_color)
         #self.baud_menu.configure(background=text_bg_color, foreground=text_fg_color)
         #self.port_menu.configure(background=text_bg_color, foreground=text_fg_color)
         #self.script_file_combo.configure(background=text_bg_color, foreground=text_fg_color)
-
         
         # 设置所有Frame的背景色
         self.main_frame.configure(background=window_bg_color)
@@ -2233,6 +2303,23 @@ class SerialGUI:
                 self.sent_commands = ast.literal_eval(setup['sent_commands'])
                 # 更新下拉框的可选值
                 self.send_entry['values'] = self.sent_commands
+
+class VisaComm:
+    def __init__(self, resource):
+        self.resource = resource
+        # 保留其他必要配置
+        self.resource.timeout = 5000           # ② 设置超时为 5000 ms
+        self.resource.write_termination = '\n'
+        self.resource.read_termination  = '\n'
+
+    def write(self, cmd: str):
+        self.resource.write(cmd)
+
+    def read(self) -> str:
+        return self.resource.read()
+
+    def query(self, cmd: str) -> str:
+        return self.resource.query(cmd)
 
 root = tk.Tk()
 app = SerialGUI(root)
