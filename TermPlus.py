@@ -134,6 +134,25 @@ class SerialGUI:
                   background=[('active', "#F0F0F0")],
                   foreground=[('active', 'black')])
 
+        # 设置未选中状态下的浅色 Tab 样式
+        self.style.configure(
+            'TNotebook.Tab',
+            background='#F0F0F0',         # 未选中时的背景浅灰色 :contentReference[oaicite:1]{index=1}
+            foreground='black'            # 未选中时的文字黑色
+        )
+
+        # 3. 设置选中状态下的映射（selected: 选中, active: 鼠标悬停）
+        self.style.map(
+            'TNotebook.Tab',
+            background=[
+                ('selected', '#FFFFFF'),  # 选中时白色背景 :contentReference[oaicite:2]{index=2}
+                ('active',   '#D3D3D3')   # 悬停时浅灰背景 :contentReference[oaicite:3]{index=3}
+            ],
+            foreground=[
+                ('selected', 'black')      # 选中时文字保持黑色 :contentReference[oaicite:4]{index=4}
+            ]
+        )
+
 
         # 创建菜单栏
         self.menu_bar = tk.Menu(self.root)
@@ -304,7 +323,8 @@ class SerialGUI:
         self.row_5_frame.grid_columnconfigure(0, weight=1)           # 第一列扩展
         self.row_5_frame.grid_columnconfigure(1, weight=0)
 
-        self.notebook = ttk.Notebook(self.row_5_frame, style='Custom.TCheckbutton')
+        #self.notebook = ttk.Notebook(self.row_5_frame, style='Custom.TCheckbutton')
+        self.notebook = ttk.Notebook(self.row_5_frame,)# 本身使用默认样式 'TNotebook' :contentReference[oaicite:5]{index=5}
         self.notebook.grid(row=0, column=0, columnspan=1, padx=(10,0), pady=0, sticky="nsew")
         self.add_tab("Tab 1")
         self.add_tab("Tab 2")
@@ -394,7 +414,15 @@ class SerialGUI:
             "open_powershell",      # 以及其它任意名字
             "powershell_send",
             "send_line",
-            "open power shell","power shell send"
+            "open power shell",
+            "power shell send",
+            "toggle_serial",
+            "connect_serial",
+            "close_serial",
+            "set_port",
+            "set_baudrate",
+            "gui.text_area.insert",
+            "gui.text_area.see"
         ]
         
         # 合并所有词，转义后拼成一个大正则
@@ -542,7 +570,7 @@ class SerialGUI:
         self.current_color_theme_light = True
         # ─── 新增：PowerShell 进程句柄 ───
         self.ps_proc = None
-
+        self.last_auto_delete_lines = 0
         self.refresh_ports()
         # 初始化完成后，尝试加载之前保存的配置
         self.load_setup()
@@ -813,7 +841,9 @@ class SerialGUI:
                 current_index = self.text_area.index("end-1c")
                 # 如果发生了删除操作，导致 last_index 大于 current_index，则重置 last_index 为文本起始位置
                 if self.text_area.compare(last_index, ">", current_index):
-                    last_index = "1.0"
+                    last_index_line,last_index_col = map(int,last_index.split('.'))
+                    last_index_new_line = max(1, last_index_line - self.last_auto_delete_lines)
+                    last_index = f"{last_index_new_line}.{last_index_col}"
                 new_text = self.text_area.get(last_index, current_index)
                 if target_string in new_text:
                     return True
@@ -823,6 +853,21 @@ class SerialGUI:
                 except Exception:
                     last_index = current_index
             return False
+
+        def set_port(port_name):
+            # 把 port_name 转成字符串（以防参数不是字符串字面量）
+            port_str = str(port_name)
+            # 设置下拉框
+            try:
+                self.port_menu.set(port_str)
+                # 刷新串口列表后，如果需要可先调用 refresh_ports()
+                # self.refresh_ports()
+            except Exception:
+                pass
+
+        def set_baudrate(baud):
+            baud_str = str(baud)
+            self.baud_var.set(baud_str)
 
         # 定义局部命名空间并注入预定义函数
         # 构建执行环境
@@ -838,6 +883,11 @@ class SerialGUI:
             "StopLoopException": StopLoopException,
             "tk":             tk,        # 让脚本能用 tk.END
             "END":            tk.END,    # 或者只暴露 END
+            "toggle_serial": self.toggle_serial,
+            "connect_serial": self.connect_serial,
+            "close_serial": self.close_serial,
+            "set_port": set_port,
+            "set_baudrate": set_baudrate,
         }
 
         iteration = 0
@@ -1098,7 +1148,7 @@ class SerialGUI:
             script_content += "</tab>\n\n"
     
         try:
-            with open(full_path, "w", encoding="utf-8") as f:
+            with open(full_path, "w", encoding="gbk") as f:
                 f.write(script_content)
             messagebox.showinfo("提示", "脚本保存成功")
         except Exception as e:
@@ -1259,6 +1309,7 @@ class SerialGUI:
     def cell_edit(self):
         if not self.current_cell:
             return
+        cell = self.current_cell
         edit_win = tk.Toplevel(self.root)
         # 将编辑窗口放在屏幕正中心
         edit_win.update_idletasks()
@@ -1318,12 +1369,16 @@ class SerialGUI:
                 line_num = int(cursor_index.split('.')[0])
                 start_line = end_line = line_num
 
-            # 收集要发送的行文本（非空）
+            # 收集要发送的行文本（非空，且不以 # 开头）
             all_lines = []
             for ln in range(start_line, end_line + 1):
-                text_line = multi_text.get(f"{ln}.0", f"{ln}.end").strip()
-                if text_line:
-                    all_lines.append(text_line)
+                text_line = multi_text.get(f"{ln}.0", f"{ln}.end")
+                if not text_line.strip():
+                    continue
+                if text_line.lstrip().startswith('#'):
+                    # 以 # 开头的注释行，跳过
+                    continue
+                all_lines.append(text_line.strip())
 
             if not all_lines:
                 return  # 没有可发送的内容
@@ -1337,32 +1392,42 @@ class SerialGUI:
         
         def send_current_row_and_move():
             index = multi_text.index("insert")
-            line_start = f"{index.split('.')[0]}.0"
-            line_end = f"{index.split('.')[0]}.end"
+            line_num = int(index.split('.')[0])
+            line_start = f"{line_num}.0"
+            line_end = f"{line_num}.end"
             current_line = multi_text.get(line_start, line_end).strip()
 
-            if current_line:  # 如果当前行不为空
+            # 发送或跳过当前行
+            if current_line:
                 if current_line.lower().startswith(("wait", "#")):
-                    # 如果行以 "wait"或“#” 开头，则不发送，只移动到下一行
+                    # 注释或 wait 开头，跳过发送
                     pass  
                 else:
-                    # 发送当前行内容
                     self.send_via_serial(current_line)
 
-            # 计算下一行的行号
-            line_num = int(index.split('.')[0])
+            # 计算下一行行号（循环回到第一行）
             total_lines = int(multi_text.index("end-1c").split('.')[0])
             next_line = line_num + 1 if line_num < total_lines else 1
+            next_start = f"{next_line}.0"
+            next_end   = f"{next_line}.end"
 
-            # 移动光标到下一行
-            multi_text.mark_set("insert", f"{next_line}.0")
+            # 移动光标到下一行行首
+            multi_text.mark_set("insert", next_start)
+            multi_text.see(next_start)
+
+            # 取消之前的选区并选中整行
+            try:
+                multi_text.tag_remove("sel", "1.0", "end")
+            except Exception:
+                pass
+            multi_text.tag_add("sel", next_start, next_end)
 
         # 原有保存按钮，靠右
         def save_action(close_after=False):
             new_text = single_entry.get()
-            self.current_cell.config(text=new_text)
-            self.current_cell.custom_data = multi_text.get("1.0", tk.END).strip()
-            edit_win.title(new_text)  # 将单行文本框中的内容设置为窗口标题
+            cell.config(text=new_text)
+            cell.custom_data = multi_text.get("1.0", tk.END).strip()
+            edit_win.title(new_text)
             if close_after:
                 edit_win.destroy()
         btn_send_row = tk.Button(left_frame, text="Send(F1)", command=send_current_row)
@@ -1616,7 +1681,8 @@ class SerialGUI:
     def rename_current_tab(self):
         current = self.notebook.select()
         if current:
-            new_name = simpledialog.askstring("重命名", "请输入新名称：", parent=self.root)
+            current_name = self.notebook.tab(current, "text")
+            new_name = simpledialog.askstring("重命名", "请输入新名称：",initialvalue=current_name, parent=self.root)
             if new_name:
                 self.notebook.tab(current, text=new_name)
 
@@ -1655,7 +1721,7 @@ class SerialGUI:
             if self.serial_conn.ser and self.serial_conn.ser.is_open:
                 self.send_btn.config(state=tk.NORMAL) #发送
                 self.single_loop_send_btn.config(state=tk.NORMAL) #单行循环
-                self.start_button.config(state=tk.NORMAL)
+                #self.start_button.config(state=tk.NORMAL) # 开始运行按钮，新增了脚本对COM口的操作，此行注释掉
                 self.toggle_port_btn.config(text="关闭串口")
                 self.port_menu.config(state="disabled")
                 self.baud_menu.config(state="disabled")
@@ -1680,7 +1746,7 @@ class SerialGUI:
             self.serial_conn.close()
             self.send_btn.config(state=tk.DISABLED) #发送
             self.single_loop_send_btn.config(state=tk.DISABLED) #单行循环
-            self.start_button.config(state=tk.DISABLED)
+            #self.start_button.config(state=tk.DISABLED) # 开始运行按钮，新增了脚本对COM口的操作，此行注释掉
             self.stop_button.config(state=tk.DISABLED)
             self.pause_button.config(state=tk.DISABLED)
             self.toggle_port_btn.config(text="打开串口")
@@ -1964,6 +2030,8 @@ class SerialGUI:
             self.auto_save_stop = False
             self.auto_save_btn.config(text="ON", bg="green")
         else:
+            # 先立即执行一次保存操作，然后再停止
+            self.auto_save_and_auto_delete()
             # 关闭自动保存
             self.auto_save_stop = True
             if self.auto_save_file:
@@ -1973,7 +2041,7 @@ class SerialGUI:
 
     def auto_save_and_auto_delete(self):
         """
-        每30秒，如果自动保存标志位打开，则执行自动保存操作。
+        每10秒，如果自动保存标志位打开，则执行自动保存操作。
         """
         # 执行自动保存操作（如果标志位打开）
         if not self.auto_save_stop:
@@ -2013,6 +2081,7 @@ class SerialGUI:
                 start_line = int(total_lines/2) + 1
                 # 删除从第一行到 start_line 行的起始部分
                 self.text_area.delete("1.0", f"{start_line}.0")
+                self.last_auto_delete_lines = start_line - 1				
                 # 更新文本框的内容后，重新记录最后保存的位置
                 self.last_saved_index = self.text_area.index("end-1c")
         # 10秒后再次检测
@@ -2104,10 +2173,30 @@ class SerialGUI:
             window_bg_color = '#252A38'    # 37 42 56
             text_bg_color = "#171b26"      # (0, 0, 0)
             text_fg_color = "#d9dce4"      # (255, 255, 255)
+            cursor_color = "#FFFFFF"  # 深色背景下用白色光标
             # 多行循环文本框内需要高亮的文字的tag
             self.multi_loop_text.tag_config("func", foreground="#569CD6") # #9CDCFE blue  189, 99, 128 = BD6380 #569CD6
             # 主窗口的blue的tag的配色在深色配色下需要修改
             self.text_area.tag_config("blue", foreground="#569CD6")
+            
+            # 设置tab未选中状态下的深色 Tab 样式
+            self.style.configure(
+                'TNotebook.Tab',
+                background='#252A38',         # 未选中时的背景深色 :contentReference[oaicite:1]{index=1}
+                foreground='#d9dce4'            # 未选中时的文字白色
+            )
+
+            # 设置选中状态下的映射（selected: 选中, active: 鼠标悬停）
+            self.style.map(
+                'TNotebook.Tab',
+                background=[
+                    ('selected', '#FFFFFF'),  # 选中时白色背景 :contentReference[oaicite:2]{index=2}
+                    ('active',   '#D3D3D3')   # 悬停时浅灰背景 :contentReference[oaicite:3]{index=3}
+                ],
+                foreground=[
+                    ('selected', 'black')      # 选中时文字保持黑色 :contentReference[oaicite:4]{index=4}
+                ]
+            )
             self.current_color_theme_light = False
         else:
             # 切换到浅色主题
@@ -2116,6 +2205,26 @@ class SerialGUI:
             text_fg_color = "#000000"      # (0, 0, 0)
             self.multi_loop_text.tag_config("func", foreground="blue") # #9CDCFE blue  189, 99, 128 = BD6380 #569CD6
             self.text_area.tag_config("blue", foreground="blue")
+            cursor_color = "#000000"  # 浅色背景下用黑色光标
+            
+            # 设置tab未选中状态下的浅色 Tab 样式
+            self.style.configure(
+                'TNotebook.Tab',
+                background='#F0F0F0',         # 未选中时的背景浅灰色 :contentReference[oaicite:1]{index=1}
+                foreground='black'            # 未选中时的文字黑色
+            )
+
+            # 3. 设置选中状态下的映射（selected: 选中, active: 鼠标悬停）
+            self.style.map(
+                'TNotebook.Tab',
+                background=[
+                    ('selected', '#FFFFFF'),  # 选中时白色背景 :contentReference[oaicite:2]{index=2}
+                    ('active',   '#D3D3D3')   # 悬停时浅灰背景 :contentReference[oaicite:3]{index=3}
+                ],
+                foreground=[
+                    ('selected', 'black')      # 选中时文字保持黑色 :contentReference[oaicite:4]{index=4}
+                ]
+            )
             self.current_color_theme_light = True
 
         # 设置所有ttk控件的颜色样式
@@ -2124,9 +2233,9 @@ class SerialGUI:
                 foreground=text_fg_color)
             
         # 设置输入文字的控件的颜色，ttk.Combox
-        self.text_area.configure(background=text_bg_color, foreground=text_fg_color)
-        self.multi_loop_text.configure(background=text_bg_color, foreground=text_fg_color)
-        self.auto_save_path_entry.configure(background=text_bg_color, foreground=text_fg_color)
+        self.text_area.configure(background=text_bg_color, foreground=text_fg_color, insertbackground=cursor_color)
+        self.multi_loop_text.configure(background=text_bg_color, foreground=text_fg_color, insertbackground=cursor_color)
+        self.auto_save_path_entry.configure(background=text_bg_color, foreground=text_fg_color, insertbackground=cursor_color)
 
         # 这几个控件是ttk控件中的下拉菜单，无法直接修改其配色
         #self.send_entry.configure(background=text_bg_color, foreground=text_fg_color)
@@ -2173,7 +2282,7 @@ class SerialGUI:
                         self.send_all_over_time_entry, self.default_delay_time_entry,
                         self.loop_count_entry, self.window_name_entry,self.file_name_entry,
                         self.max_capacity_entry,self.script_path_entry]:
-            widget.configure(background=window_bg_color, foreground=text_fg_color)
+            widget.configure(background=window_bg_color, foreground=text_fg_color, insertbackground=cursor_color)
             #self.send_all_terminal_menu,
             
         # 设置所有Button的颜色
