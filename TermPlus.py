@@ -209,7 +209,36 @@ class SerialGUI:
         self.theme_btn.pack(side="left", padx=4)
 
         # row 1 text_area
-        self.text_area = scrolledtext.ScrolledText(self.main_frame, wrap=tk.WORD)
+        #self.text_area = scrolledtext.ScrolledText(self.main_frame, wrap=tk.WORD)
+        self.text_area = scrolledtext.ScrolledText(
+            self.main_frame,
+            wrap=tk.WORD,
+            undo=True,              # 启用撤销栈
+            autoseparators=False,   # 关闭自动分隔
+            maxundo=-1              # 不限撤销步数
+        )
+
+        # 2. 用 <KeyRelease> + after_idle 来插入分隔符：
+        def _text_area_keyrelease(event):
+            # 只对可见字符和删除键插入分隔符
+            if event.char or event.keysym in ("BackSpace", "Delete"):
+                # 延迟到空闲时，确保文本已实际更新后再插入分隔
+                self.text_area.after_idle(self.text_area.edit_separator)
+
+        self.text_area.bind("<KeyRelease>", _text_area_keyrelease)
+
+        # 3. 保持 Ctrl+Z / Ctrl+Y 的撤销／重做绑定：
+        def _text_area_undo(event):
+            self.text_area.edit_undo()
+            return "break"   # 阻止默认 Ctrl+Z 删除行为 :contentReference[oaicite:2]{index=2}
+
+        def _text_area_redo(event):
+            self.text_area.edit_redo()
+            return "break"
+
+        self.text_area.bind("<Control-z>", _text_area_undo)
+        self.text_area.bind("<Control-y>", _text_area_redo)
+
         self.text_area.grid(row=1, column=0, columnspan=1, padx=10, pady=5, sticky="nsew") 
         
         # 配置字体颜色的tag，设置前景色为对应色
@@ -240,11 +269,62 @@ class SerialGUI:
         # “发送文本:”
         self.label_send = tk.Label(self.row_2_frame, text="发送文本:")
         self.label_send.place(relx=0, rely=0.5, anchor="w",x=0)
-
+        
+        # 发送文本框
+        # 1. 历史撤销/重做栈
+        self.send_undo_stack = []   # 每项：(text, cursor_index)
+        self.send_redo_stack = []
         # 发送文本框
         self.send_entry = ttk.Combobox(self.row_2_frame, width=66)
         self.send_entry.place(relx=0, rely=0.5, anchor="w",x=70)
         self.send_entry.bind("<Return>", self.send_data_btn)
+
+        # 2. 绑定文本变化：KeyRelease 时记录状态
+        def _on_send_keyrelease(event):
+            # 仅针对可见字符和删除键
+            if event.char or event.keysym in ("BackSpace", "Delete"):
+                # 记录当前内容和光标
+                txt = self.send_entry.get()
+                idx = self.send_entry.index(tk.INSERT)
+                self.send_undo_stack.append((txt, idx))
+                # 新输入清空重做栈
+                self.send_redo_stack.clear()
+        self.send_entry.bind("<KeyRelease>", _on_send_keyrelease)
+
+        # 3. 撤销：Ctrl+Z
+        def _on_send_undo(event):
+            if not self.send_undo_stack:
+                return "break"
+            # 最新状态先推到 redo
+            last = self.send_undo_stack.pop()
+            cur_txt = self.send_entry.get()
+            cur_idx = self.send_entry.index(tk.INSERT)
+            self.send_redo_stack.append((cur_txt, cur_idx))
+            # 取上一个状态
+            if self.send_undo_stack:
+                txt, idx = self.send_undo_stack[-1]
+            else:
+                txt, idx = "", 0
+            # 恢复
+            self.send_entry.set(txt)
+            self.send_entry.icursor(idx)
+            return "break"
+        self.send_entry.bind("<Control-z>", _on_send_undo)
+
+        # 4. 重做：Ctrl+Y
+        def _on_send_redo(event):
+            if not self.send_redo_stack:
+                return "break"
+            txt, idx = self.send_redo_stack.pop()
+            # 当前状态推到 undo
+            cur_txt = self.send_entry.get()
+            cur_idx = self.send_entry.index(tk.INSERT)
+            self.send_undo_stack.append((cur_txt, cur_idx))
+            # 恢复 redo 状态
+            self.send_entry.set(txt)
+            self.send_entry.icursor(idx)
+            return "break"
+        self.send_entry.bind("<Control-y>", _on_send_redo)
 
         # 发送新行复选框
         self.send_newline_var = tk.BooleanVar(value=True)
@@ -382,7 +462,35 @@ class SerialGUI:
         self.row_7_frame = tk.Frame(self.main_frame,width=730, height=100)
         self.row_7_frame.grid(row=7, column=0, sticky="ew", padx=10, pady=(0,10))
         self.row_7_frame.grid_propagate(False) # 固定该父容器
-        self.multi_loop_text = scrolledtext.ScrolledText(self.row_7_frame,height=10)
+        #self.multi_loop_text = scrolledtext.ScrolledText(self.row_7_frame,height=10)
+        self.multi_loop_text = scrolledtext.ScrolledText(
+            self.row_7_frame,
+            height=10,
+            undo=True,               # 打开撤销功能 :contentReference[oaicite:0]{index=0}
+            autoseparators=False,     # 禁用自动分隔编辑操作 :contentReference[oaicite:1]{index=1}
+            maxundo=-1               # 不限制撤销步数 :contentReference[oaicite:2]{index=2}
+        )
+        def _on_key(event):
+            # 只对可见字符和删除键插入撤销分隔
+            if event.char or event.keysym in ("BackSpace", "Delete"):
+                # 延迟到事件循环尾部，确保已有文本更新
+                self.multi_loop_text.after_idle(self.multi_loop_text.edit_separator)
+
+        # 使用 <Key> 而非 <KeyRelease>
+        self.multi_loop_text.bind("<Key>", _on_key)
+
+        # 保留 Ctrl+Z / Ctrl+Y 绑定（确保回调正确返回 "break"）
+        def _undo(event):
+            self.multi_loop_text.edit_undo()
+            return "break"
+
+        def _redo(event):
+            self.multi_loop_text.edit_redo()
+            return "break"
+
+        self.multi_loop_text.bind("<Control-z>", _undo)
+        self.multi_loop_text.bind("<Control-y>", _redo)
+
         self.multi_loop_text.pack(fill="x")
 
         self.multi_loop_text.insert("1.0", "# Open example scripts to know how to send loop scripts.\n")
@@ -394,6 +502,9 @@ class SerialGUI:
         self.multi_loop_text.insert("7.0", "# 4. waiting for specific string which is expected to show in receive window\n")
         self.multi_loop_text.insert("8.0", "# 5. stop loop running or run specific commands after expected string show in receive window\n")
         self.multi_loop_text.insert("9.0", "# 6. get contents in main window and match for strings you want\n")
+
+        # 清除undo/redo的历史，保证上面几行插入的内容不会被撤销影响
+        self.multi_loop_text.edit_reset()
         
         # 用于高亮（蓝色）所有函数名
         self.multi_loop_text.tag_config("func", foreground="blue") # #9CDCFE blue  189, 99, 128 = BD6380 #569CD6
@@ -410,7 +521,7 @@ class SerialGUI:
         re_funcs = [name for name, obj in vars(re).items() if callable(obj)]
         # 自定义的函数
         custom_funcs = [
-            "send", "wait","wait_for","wait for",     # 例如你脚本里定义的函数
+            "send", "wait","wait_for","wait for","wait_for_any","visa_init","visa_query","visa_write","visa_read",     # 例如你脚本里定义的函数
             "open_powershell",      # 以及其它任意名字
             "powershell_send",
             "send_line",
@@ -854,6 +965,49 @@ class SerialGUI:
                     last_index = current_index
             return False
 
+        def wait_for_any(target_list, timeout):
+            """
+            在 self.text_area 中等待任意一个字符串出现。
+            :param target_list: 要等待的字符串列表
+            :param timeout:     最长等待时间（秒）
+            :return:            第一个出现的字符串，若超时或 loop_stop 则返回 None
+            """
+            start_time = time.time()
+            last_index = self.text_area.index("end-1c")
+
+            while True:
+                if self.loop_stop:
+                    return None
+
+                # 超时判断
+                if time.time() - start_time >= timeout:
+                    return None
+
+                current_index = self.text_area.index("end-1c")
+
+                # ─── 新增：处理 text_area 内容被清理／删除的情况 ───
+                # 如果 last_index 跳到后面去了（说明旧内容被删），则重置为文本开头
+                if self.text_area.compare(last_index, ">", current_index):
+                    # 尝试退回最近一次 auto_delete 行数
+                    try:
+                        line, col = map(int, last_index.split('.'))
+                        new_start = max(1, line - self.last_auto_delete_lines)
+                        last_index = f"{new_start}.{col}"
+                    except Exception:
+                        last_index = "1.0"
+                # ─────────────────────────────────────────────────
+
+                # 获取新增的文本
+                new_text = self.text_area.get(last_index, current_index)
+
+                # 查找列表中任意一个出现
+                for target in target_list:
+                    if target in new_text:
+                        return target
+
+                last_index = current_index
+                time.sleep(0.1)
+
         def set_port(port_name):
             # 把 port_name 转成字符串（以防参数不是字符串字面量）
             port_str = str(port_name)
@@ -874,6 +1028,7 @@ class SerialGUI:
         local_namespace = {
             "open_powershell": self.open_powershell,
             "powershell_send": powershell_send,
+            "wait_for_any":   wait_for_any,
             "wait_for":       wait_for,
             "wait":           wait,
             "send_line":      send_line,
@@ -1338,10 +1493,40 @@ class SerialGUI:
             cell_title = current_single_line_text
         edit_win.title(cell_title)
         # 多行文本框用于编辑待发送内容
-        multi_text = scrolledtext.ScrolledText(edit_win)
-        #multi_text = tk.Text(edit_win)
+        #multi_text = scrolledtext.ScrolledText(edit_win)
+        multi_text = scrolledtext.ScrolledText(
+            edit_win,
+            undo=True,               # 启用撤销栈
+            autoseparators=False,    # 关闭自动分隔
+            maxundo=-1               # 不限撤销步数
+        )
         multi_text.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
-        multi_text.insert(tk.END, self.current_cell.custom_data)
+        multi_text.insert(tk.END, cell.custom_data)   # 保留原有内容
+        # 2) 重置撤销栈 —— 这样初始插入不再可撤销
+        multi_text.edit_reset()
+
+        # 每次按键或删除后插入撤销分隔，确保每次撤销只回退一个字符操作
+        def _on_multi_edit_keyrelease(event):
+            if event.char or event.keysym in ("BackSpace", "Delete"):
+                multi_text.after_idle(multi_text.edit_separator)
+
+        multi_text.bind("<KeyRelease>", _on_multi_edit_keyrelease)
+
+        # 绑定 Ctrl+Z / Ctrl+Y 到撤销／重做，并阻止默认行为
+        def _multi_edit_undo(event):
+            multi_text.edit_undo()
+            return "break"
+
+        def _multi_edit_redo(event):
+            multi_text.edit_redo()
+            return "break"
+
+        multi_text.bind("<Control-z>", _multi_edit_undo)
+        multi_text.bind("<Control-y>", _multi_edit_redo)
+
+        #multi_text = tk.Text(edit_win)
+        #multi_text.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+        #multi_text.insert(tk.END, self.current_cell.custom_data)
         # 创建一个控制区域，将新功能按钮和原有保存按钮放在同一行
         ctrl_frame = tk.Frame(edit_win)
         ctrl_frame.grid(row=2, column=0, padx=10, pady=(5,10), sticky="ew")
