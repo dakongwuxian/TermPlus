@@ -10,6 +10,7 @@
 如需商业授权或有任何疑问，请联系：[dakongwuxian@gmail.com]
 """
 
+from logging import raiseExceptions
 import tkinter as tk
 from tkinter import scrolledtext, ttk, Canvas, simpledialog, messagebox, filedialog
 import tkinter.font as tkFont
@@ -91,6 +92,9 @@ class SerialGUI:
         self.last_saved_index = "1.0"  # 记录 autosave 时最后保存的位置
         self.auto_save_stop = False   # 控制 autosave 线程停止的标志
         self.root = root
+        self.last_send_index = None
+        self.wait_for_initial_index  = None
+        self.allow_auto_delete = True
 
         # 初始化 PyVISA ResourceManager，psu 初始为 None
         self.rm  = pyvisa.ResourceManager()
@@ -166,8 +170,9 @@ class SerialGUI:
         # About 菜单
         self.about_menu = tk.Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="关于", menu=self.about_menu)
-        self.about_menu.add_command(label="Developed By Xian.Wu", state="disabled")
+        self.about_menu.add_command(label="Developed by Xian.Wu", state="disabled")
         self.about_menu.add_command(label="dakongwuxian@gmail.com", state="disabled")
+        self.about_menu.add_command(label="vesion 20250618", state="disabled")
         
         # 用于单元格右键菜单的剪贴板（复制功能），存储元组 (text, custom_data)
         self.cell_clipboard = ("", "")
@@ -215,7 +220,7 @@ class SerialGUI:
             wrap=tk.WORD,
             undo=True,              # 启用撤销栈
             autoseparators=False,   # 关闭自动分隔
-            maxundo=-1              # 不限撤销步数
+            maxundo=20              # 不限撤销步数
         )
 
         # 2. 用 <KeyRelease> + after_idle 来插入分隔符：
@@ -378,21 +383,26 @@ class SerialGUI:
         self.row_4_frame = tk.Frame(self.main_frame, width=730, height=32)
         self.row_4_frame.grid(row=4, column=0, sticky="nw", padx=10, pady=(0,10))
 
+        # 自动清屏 check box
+        self.auto_clear_onoff = tk.BooleanVar(value=True)
+        self.auto_clear_check = ttk.Checkbutton(self.row_4_frame, text="自动清屏",variable=self.auto_clear_onoff, style='Custom.TCheckbutton')
+        self.auto_clear_check.place(relx=0, rely=0.5, anchor="w",x=560)  
+
         # “清屏”按钮
         self.clear_screen_btn = tk.Button(self.row_4_frame, text="清屏", command=self.clear_text_area, width=10)
         self.clear_screen_btn.place(relx=0, rely=0.5, anchor="w",x=650-10)
 
         # 等待符号
         self.send_all_terminal_label = tk.Label(self.row_4_frame, text="等待符号:")
-        self.send_all_terminal_label.place(relx=0, rely=0.5, anchor="w",x=350)
+        self.send_all_terminal_label.place(relx=0, rely=0.5, anchor="w",x=0)
         # 等待符号选择框
         self.send_all_terminal_menu = ttk.Combobox(self.row_4_frame, textvariable='#', values=["#","$"], width=2)
-        self.send_all_terminal_menu.place(relx=0, rely=0.5, anchor="w",x=430)
+        self.send_all_terminal_menu.place(relx=0, rely=0.5, anchor="w",x=80)
         # Terminal wait over time label and entry
         self.send_all_over_time_label = tk.Label(self.row_4_frame, text="超时时间 (s):")
-        self.send_all_over_time_label.place(relx=0, rely=0.5, anchor="w",x=500-10)
+        self.send_all_over_time_label.place(relx=0, rely=0.5, anchor="w",x=140)
         self.send_all_over_time_entry = tk.Entry(self.row_4_frame, width=5)
-        self.send_all_over_time_entry.place(relx=0, rely=0.5, anchor="w",x=600-10)
+        self.send_all_over_time_entry.place(relx=0, rely=0.5, anchor="w",x=240)
         self.send_all_over_time_entry.insert(0, "5")
 
         # Row 5: Notebook区域（标签页区域），创建一个一行两列的区域，让notebook占据第一行一列，第一行第二列固定宽度。
@@ -459,17 +469,32 @@ class SerialGUI:
         
         # Row 7
         # 多行文本框
-        self.row_7_frame = tk.Frame(self.main_frame,width=730, height=100)
+        
+        self.row_7_frame = tk.Frame(self.main_frame,width=730, height=150)
         self.row_7_frame.grid(row=7, column=0, sticky="ew", padx=10, pady=(0,10))
         self.row_7_frame.grid_propagate(False) # 固定该父容器
         #self.multi_loop_text = scrolledtext.ScrolledText(self.row_7_frame,height=10)
         self.multi_loop_text = scrolledtext.ScrolledText(
             self.row_7_frame,
-            height=10,
+            height=15,
             undo=True,               # 打开撤销功能 :contentReference[oaicite:0]{index=0}
             autoseparators=False,     # 禁用自动分隔编辑操作 :contentReference[oaicite:1]{index=1}
-            maxundo=-1               # 不限制撤销步数 :contentReference[oaicite:2]{index=2}
+            maxundo=20               # 不限制撤销步数 :contentReference[oaicite:2]{index=2}
         )
+        '''
+        # 让第7行随着窗口垂直伸缩
+        self.main_frame.grid_rowconfigure(7, weight=1)
+        self.row_7_frame = tk.Frame(self.main_frame)
+        self.row_7_frame.grid(row=7, column=0, sticky="nsew", padx=10, pady=(0,10))
+        # 允许内部控件撑满
+        self.row_7_frame.grid_propagate(True)
+        # ScrolledText 不再指定固定高度，使用 sticky 填满
+        self.multi_loop_text = scrolledtext.ScrolledText(self.row_7_frame, undo=True, autoseparators=False, maxundo=-1)
+        self.multi_loop_text.grid(row=0, column=0, sticky="nsew")
+        # 使滚动条可见并随着 frame 伸缩
+        self.row_7_frame.grid_columnconfigure(0, weight=1)
+        self.row_7_frame.grid_rowconfigure(0, weight=1)
+        '''
         def _on_key(event):
             # 只对可见字符和删除键插入撤销分隔
             if event.char or event.keysym in ("BackSpace", "Delete"):
@@ -508,6 +533,9 @@ class SerialGUI:
         
         # 用于高亮（蓝色）所有函数名
         self.multi_loop_text.tag_config("func", foreground="blue") # #9CDCFE blue  189, 99, 128 = BD6380 #569CD6
+
+        # 用于指示当前运行的行
+        self.multi_loop_text.tag_configure("highlight", background="yellow")
 
         # 绑定修改事件，用于自动高亮
         self.multi_loop_text.bind("<<Modified>>", self.on_multi_loop_modified)
@@ -679,6 +707,12 @@ class SerialGUI:
         self.loop_sending = False
         self.loop_thread = None
         self.current_color_theme_light = True
+        self.button_send_check_terminal_new_text = None
+        self.button_send_wait_for_new_text = None
+        self.script_wait_for_new_text = None
+        self.script_wait_for_any_new_text = None
+        self.auto_clear_all_content = None
+        self.auto_save_new_text = None
         # ─── 新增：PowerShell 进程句柄 ───
         self.ps_proc = None
         self.last_auto_delete_lines = 0
@@ -795,104 +829,34 @@ class SerialGUI:
             self.paused = False
             self.pause_button.config(text="暂停")
 
+
+
     def run_custom_script(self):
-        """
-        预处理多行循环发送文本框中的代码：
-          - 行以 "wait for" 开头，转换为 wait_for("xx", yy)
-          - 行以 "wait" 开头（但不包含 "wait for"）转换为 wait(x)
-          - 行以 "send " 开头，转换为 send_line("xx")
-            如果 default_delay_time_entry 中的数字 T > 0，则在该行后追加一行 wait(T/1000)
-          - open power shell        → 打开 Windows PowerShell
-          - PS send <命令文本>      → 在 PowerShell 中执行该命令
-          - 其它行不做转换
-        根据 loop_count_entry 的值决定执行次数，且每次执行更新当前循环计数。
-        """
-
-
-
-        # 读取默认延时（毫秒）和循环次数
         try:
             T = float(self.default_delay_time_entry.get().strip())
-        except:
+        except ValueError:
             T = 0
         try:
             loop_count = int(self.loop_count_entry.get().strip())
-        except:
-            loop_count = 0  # 0 表示无限循环
+        except ValueError:
+            loop_count = 0
 
-        # 读取并拆分脚本
-        code = self.multi_loop_text.get("1.0", tk.END)
-        lines = code.splitlines()
-        processed_lines = []
-        import re
-        import subprocess
+        original_script_content = self.multi_loop_text.get("1.0", tk.END)
+        original_lines = original_script_content.splitlines()
 
-
-        for i,line in enumerate(lines):
-            leading_whitespace = re.match(r'^\s*', line).group()
-            stripped = line.strip()
-            if not stripped:
-                continue
-            low = stripped.lower()
-
-            # open power shell
-            if low == "open power shell":
-                processed_lines.append(f"{leading_whitespace}open_powershell()")
-                continue
-            if low.startswith("power shell send "):
-                prefix = "power shell send "
-                arg = stripped[len(prefix):].strip()
-                processed_lines.append(f"{leading_whitespace}powershell_send({repr(arg)})")
-                continue
-
-            if stripped.startswith("wait for "):
-                m = re.match(r'^wait\s+for\s+(.+?)\s+for\s+(.+)$', stripped)
-                if m:
-                    target = m.group(1).strip()
-                    duration = m.group(2).strip()
-                    if not (target.startswith('"') or target.startswith("'")):
-                        target = f'"{target}"'
-                    new_line = f"{leading_whitespace}wait_for({target}, {duration})"
-                    processed_lines.append(new_line)
-                else:
-                    processed_lines.append(stripped)
-            elif stripped.startswith("wait "):
-                m = re.match(r'^wait\s+(\d+(\.\d+)?).*$', stripped)
-                if m:
-                    duration = m.group(1)
-                    new_line = f"{leading_whitespace}wait({duration})"
-                    processed_lines.append(new_line)
-                else:
-                    processed_lines.append(stripped)
-            elif stripped.startswith("send "):
-                arg = stripped[len("send "):].strip()
-                if not (arg.startswith('"') or arg.startswith("'")):
-                    arg = f'"{arg}"'
-                new_line = f"{leading_whitespace}send_line({arg})"
-                if T > 0:
-                    # 判断下一行是否存在且是否以 "wait" 或 "wait for" 开头（忽略大小写）
-                    if i < len(lines) - 1:
-                        next_line_stripped = lines[i+1].strip().lower()
-                        if not (next_line_stripped.startswith("wait") or next_line_stripped.startswith("wait for")):
-                            new_line += f"\n{leading_whitespace}wait({T/1000})"
-                    else:
-                        new_line += f"\n{leading_whitespace}wait({T/1000})"
-                processed_lines.append(new_line)
-            else:
-                processed_lines.append(line)
-        processed_code = "\n".join(processed_lines)
-
+        # Define local functions for the exec environment
+        # These will be directly called within the user's script
         def open_powershell():
             if self.ps_proc is None or self.ps_proc.poll() is not None:
                 try:
                     self.ps_proc = subprocess.Popen(
                         ["powershell", "-NoExit"],
                         stdin=subprocess.PIPE,
-                        stdout=None,  # 取消对输出的捕获
-                        stderr=None,  # 取消对错误的捕获
+                        stdout=None,
+                        stderr=None,
                         creationflags=subprocess.CREATE_NEW_CONSOLE
                     )
-                    time.sleep(0.1)  # 等待窗口启动
+                    time.sleep(0.1)
                 except Exception as e:
                     messagebox.showerror("错误", f"无法打开 PowerShell: {e}")
 
@@ -906,158 +870,330 @@ class SerialGUI:
             else:
                 messagebox.showwarning("警告", "请先执行 open power shell")
 
-
         def send_line(text):
-            #if not (self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open):
-            #    messagebox.showwarning("警告", "串口未打开，循环发送终止")
-            #    raise Exception("串口未打开")
-            #text_to_send = text + '\n'
-            ##self.send_data(text_to_send)
-            #self.serial_conn.send_data(text_to_send)
-            #self.text_area.insert(tk.END, text_to_send)
-            #self.text_area.yview(tk.END)
-            #self.sent_bytes += len(text_to_send.encode())
-            #self.update_data_stats()
-            # 复用 send_via_serial，支持 PowerShell 拦截
-            if not (self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open):
-                messagebox.showwarning("警告", "串口未打开，循环发送终止")
-                raise Exception("串口未打开")
+            if not text or str(text).strip() == "":
+                print("send_line 跳过空字符串")
+                return
             self.send_via_serial(text)
 
-        # 修改后的 wait 函数，检查 self.loop_stop 标志，允许立即中断
         def wait(seconds):
             interval = 0.1
             elapsed = 0
             while elapsed < seconds:
-                self.pause_event.wait() # 阻塞直到未暂停；如果当前处于暂停状态，此处将阻塞
+                self.pause_event.wait()
                 if self.loop_stop:
                     raise StopLoopException("循环已停止")
                 time.sleep(interval)
                 elapsed += interval
+                self.root.update_idletasks()
 
         def wait_for(target_string, over_time):
-            # 如果字符串为空，则不执行该函数
-            if target_string=='':
+            if target_string == '':
                 messagebox.showwarning("Warning", "wait for must have a target string.")
-                return
-            # 如果over_time小于等于0，则不执行该函数
+                return False
             if over_time <= 0:
                 messagebox.showwarning("Warning", "Over time must be positive.")
-                return
+                return False
+
+            self.allow_auto_delete = False
+            self.script_wait_for_new_text = ""
             start_time = time.time()
             last_index = self.text_area.index("end-1c")
-            while time.time() - start_time < over_time:
-                if self.loop_stop:
-                    raise StopLoopException("循环已停止")
-                current_index = self.text_area.index("end-1c")
-                # 如果发生了删除操作，导致 last_index 大于 current_index，则重置 last_index 为文本起始位置
-                if self.text_area.compare(last_index, ">", current_index):
-                    last_index_line,last_index_col = map(int,last_index.split('.'))
-                    last_index_new_line = max(1, last_index_line - self.last_auto_delete_lines)
-                    last_index = f"{last_index_new_line}.{last_index_col}"
-                new_text = self.text_area.get(last_index, current_index)
-                if target_string in new_text:
-                    return True
-                time.sleep(0.1)
-                try:
-                    last_index = self.text_area.index(f"{current_index} - {len(target_string)}c")
-                except Exception:
-                    last_index = current_index
+            start_index = last_index
+            try:
+                while time.time() - start_time < over_time:
+                    if self.loop_stop:
+                        raise StopLoopException("循环已停止")
+                    self.root.update_idletasks()
+                    current_index = self.text_area.index("end-1c")
+                    if self.text_area.compare(last_index, ">", current_index):
+                        try:
+                            last_index_line, last_index_col = map(int, last_index.split('.'))
+                            last_index_new_line = max(1, last_index_line - self.last_auto_delete_lines)
+                            last_index = f"{last_index_new_line}.{last_index_col}"
+                            line, col = map(int, start_index.split('.'))
+                            new_start = max(1, line - self.last_auto_delete_lines)
+                            start_index = f"{new_start}.{col}"
+                            print(f"wait_for get function find index changed.\n")
+                        except Exception:
+                            messagebox.showerror("脚本执行错误", "wait_for index auto change error 1")
+                            return False
+                    try:
+                        self.script_wait_for_new_text = self.text_area.get(last_index, current_index)
+                    except Exception as e:
+                        print(f"wait_for get text fault, index might be changed and not corrected right: {e}")
+                        self.script_wait_for_new_text = ""
+                    if target_string in self.script_wait_for_new_text:
+                        return True
+                    time.sleep(0.1)
+                    try:
+                        if self.text_area.compare("end-1c", "==", "1.0") and target_string != "":
+                            last_index = "1.0"
+                        else:
+                            last_index = self.text_area.index(f"{current_index} - {max(1, len(target_string))}c")
+                            if self.text_area.compare(last_index, "<", start_index):
+                                last_index = start_index
+                    except Exception:
+                        messagebox.showerror("脚本执行错误", "wait_for index auto change error 2")
+                        return False
+            finally:
+                self.allow_auto_delete = True
             return False
 
         def wait_for_any(target_list, timeout):
-            """
-            在 self.text_area 中等待任意一个字符串出现。
-            :param target_list: 要等待的字符串列表
-            :param timeout:     最长等待时间（秒）
-            :return:            第一个出现的字符串，若超时或 loop_stop 则返回 None
-            """
-            start_time = time.time()
-            last_index = self.text_area.index("end-1c")
+            if not target_list:
+                messagebox.showwarning("Warning", "wait_for_any must have a non-empty target list.")
+                return None
+            if timeout <= 0:
+                messagebox.showwarning("Warning", "Timeout must be positive.")
+                return None
 
-            while True:
-                if self.loop_stop:
-                    return None
+            self.allow_auto_delete = False
+            self.script_wait_for_any_new_text = ""
+            try:
+                start_time = time.time()
+                last_index = self.text_area.index("end-1c")
+                start_index = last_index
 
-                # 超时判断
-                if time.time() - start_time >= timeout:
-                    return None
+                if not target_list:
+                    length_of_longest_string = 0
+                else:
+                    longest_string = max(target_list, key=len)
+                    length_of_longest_string = len(longest_string)
 
-                current_index = self.text_area.index("end-1c")
-
-                # ─── 新增：处理 text_area 内容被清理／删除的情况 ───
-                # 如果 last_index 跳到后面去了（说明旧内容被删），则重置为文本开头
-                if self.text_area.compare(last_index, ">", current_index):
-                    # 尝试退回最近一次 auto_delete 行数
+                while True:
+                    if self.loop_stop:
+                        return None
+                    self.root.update_idletasks()
+                    if time.time() - start_time >= timeout:
+                        return None
+                    current_index = self.text_area.index("end-1c")
+                    if self.text_area.compare(last_index, ">", current_index):
+                        try:
+                            line, col = map(int, last_index.split('.'))
+                            new_start = max(1, line - self.last_auto_delete_lines)
+                            last_index = f"{new_start}.{col}"
+                            line, col = map(int, start_index.split('.'))
+                            new_start = max(1, line - self.last_auto_delete_lines)
+                            start_index = f"{new_start}.{col}"
+                        except Exception:
+                            messagebox.showerror("脚本执行错误", "wait_for_any index auto change error 1")
+                            return None
                     try:
-                        line, col = map(int, last_index.split('.'))
-                        new_start = max(1, line - self.last_auto_delete_lines)
-                        last_index = f"{new_start}.{col}"
+                        self.script_wait_for_any_new_text = self.text_area.get(last_index, current_index)
+                    except Exception as e:
+                        print(f"wait_for_any get 出错: {e}")
+                        self.script_wait_for_any_new_text = ""
+                    for target in target_list:
+                        if target in self.script_wait_for_any_new_text:
+                            return target
+                    time.sleep(0.1)
+                    try:
+                        if self.text_area.compare("end-1c", "==", "1.0") and length_of_longest_string > 0:
+                            last_index = "1.0"
+                        else:
+                            last_index = self.text_area.index(f"{current_index} - {max(1, length_of_longest_string)}c")
+                            if self.text_area.compare(last_index, "<", start_index):
+                                last_index = start_index
                     except Exception:
-                        last_index = "1.0"
-                # ─────────────────────────────────────────────────
-
-                # 获取新增的文本
-                new_text = self.text_area.get(last_index, current_index)
-
-                # 查找列表中任意一个出现
-                for target in target_list:
-                    if target in new_text:
-                        return target
-
-                last_index = current_index
-                time.sleep(0.1)
+                        messagebox.showerror("脚本执行错误", "wait_for_any index auto change error 2")
+                        return None
+            finally:
+                self.allow_auto_delete = True
 
         def set_port(port_name):
-            # 把 port_name 转成字符串（以防参数不是字符串字面量）
             port_str = str(port_name)
-            # 设置下拉框
             try:
                 self.port_menu.set(port_str)
-                # 刷新串口列表后，如果需要可先调用 refresh_ports()
-                # self.refresh_ports()
-            except Exception:
-                pass
+            except Exception as e:
+                messagebox.showerror("错误", f"设置端口失败: {e}")
 
         def set_baudrate(baud):
             baud_str = str(baud)
-            self.baud_var.set(baud_str)
+            try:
+                self.baud_var.set(baud_str)
+            except Exception as e:
+                messagebox.showerror("错误", f"设置波特率失败: {e}")
 
-        # 定义局部命名空间并注入预定义函数
-        # 构建执行环境
+        # This function will be injected into the user's script
+        # It handles highlighting and pausing
+        def _highlight_and_wait(line_nums):
+            self.multi_loop_text.tag_remove("highlight", "1.0", tk.END)
+            if line_nums:
+                first_line_num = line_nums[0]
+                last_line_num = line_nums[-1]
+                self.multi_loop_text.tag_add("highlight", f"{first_line_num}.0", f"{last_line_num}.end")
+                self.multi_loop_text.see(f"{first_line_num}.0")
+            self.root.update_idletasks()
+            self.pause_event.wait()
+            if self.loop_stop:
+                raise StopLoopException("循环已停止")
+            time.sleep(0.05) # Small pause for visual feedback
+
         local_namespace = {
-            "open_powershell": self.open_powershell,
+            "open_powershell": open_powershell,
             "powershell_send": powershell_send,
-            "wait_for_any":   wait_for_any,
-            "wait_for":       wait_for,
-            "wait":           wait,
-            "send_line":      send_line,
-            "re":             re,
-            "gui":            self,
-            "messagebox":     messagebox,
+            "wait_for_any": wait_for_any,
+            "wait_for": wait_for,
+            "wait": wait,
+            "send_line": send_line,
+            "re": re,
+            "gui": self,
+            "messagebox": messagebox,
             "StopLoopException": StopLoopException,
-            "tk":             tk,        # 让脚本能用 tk.END
-            "END":            tk.END,    # 或者只暴露 END
+            "tk": tk,
+            "END": tk.END,
             "toggle_serial": self.toggle_serial,
             "connect_serial": self.connect_serial,
             "close_serial": self.close_serial,
             "set_port": set_port,
             "set_baudrate": set_baudrate,
+            "_highlight_and_wait": _highlight_and_wait, # Inject the helper function
         }
 
+        processed_script_lines = []
+        
+        # Keep track of current indentation level for injecting highlight calls
+        # This will be tricky, but necessary.
+        last_indent_level = 0
+        
+        for i, original_line in enumerate(original_lines):
+            original_line_num = i + 1
+            stripped_line = original_line.strip()
+            leading_whitespace = re.match(r'^\s*', original_line).group()
+            current_indent_level = len(leading_whitespace)
+
+            # Skip empty lines or full-line comments from processing, but still add highlight calls if needed
+            if not stripped_line or stripped_line.startswith('#'):
+                # We still want to highlight comments/empty lines for progress tracking
+                processed_script_lines.append(f"{leading_whitespace}_highlight_and_wait([{original_line_num}])")
+                processed_script_lines.append(original_line) # Add the original comment/empty line back
+                continue
+
+            low = stripped_line.lower()
+            processed_line = original_line # Default to original if no special command
+
+            # --- Special Command Processing ---
+            # These will be replaced by the Python function calls
+            if low == "open power shell":
+                processed_line = f"{leading_whitespace}open_powershell()"
+            elif low.startswith("power shell send "):
+                arg = stripped_line[len("power shell send "):].strip()
+                processed_line = f"{leading_whitespace}powershell_send({repr(arg)})"
+            elif stripped_line.startswith("wait for "):
+                m = re.match(r'^wait\s+for\s+(.+?)\s+for\s+(.+)$', stripped_line)
+                if m:
+                    target = m.group(1).strip()
+                    duration = m.group(2).strip()
+                    if not (target.startswith('"') or target.startswith("'")):
+                        target = f'"{target}"'
+                    processed_line = f"{leading_whitespace}wait_for({target}, {duration})"
+            elif stripped_line.startswith("wait "):
+                m = re.match(r'^wait\s+(\d+(\.\d+)?).*$', stripped_line)
+                if m:
+                    duration = m.group(1)
+                    processed_line = f"{leading_whitespace}wait({duration})"
+            elif stripped_line.startswith("send "):
+                arg = stripped_line[len("send "):].strip()
+                if not arg:
+                    print(f"Skipping empty send command on line {original_line_num}")
+                    processed_line = None # Don't add if empty send
+                else:
+                    if not (arg.startswith('"') or arg.startswith("'")):
+                        arg = f'"{arg}"'
+                    processed_line = f"{leading_whitespace}send_line({arg})"
+                    # Add implicit wait after send, handled by injecting another highlight and wait call
+                    if T > 0:
+                         # We need to make sure this wait is at the same indentation level as the send
+                        processed_script_lines.append(f"{leading_whitespace}_highlight_and_wait([])") # No line num, just a pause point
+                        processed_script_lines.append(f"{leading_whitespace}wait({T/1000})")
+
+            elif stripped_line.startswith("wait for any "):
+                 m = re.match(r'^wait\s+for\s+any\s+\[(.*?)\]\s+for\s+(.+)$', stripped_line)
+                 if m:
+                     targets_str = m.group(1).strip()
+                     duration = m.group(2).strip()
+                     try:
+                         target_list = ast.literal_eval(f"[{targets_str}]")
+                         if not isinstance(target_list, list) or not all(isinstance(x, str) for x in target_list):
+                             raise ValueError("Invalid target list format.")
+                         processed_line = f"{leading_whitespace}wait_for_any({target_list}, {duration})"
+                     except (ValueError, SyntaxError) as e:
+                         print(f"Error parsing wait for any target list on line {original_line_num}: {e}")
+                         processed_line = original_line # Fallback to original if parsing fails
+                 else:
+                     processed_line = original_line # Fallback if regex fails
+
+
+            # --- Injecting the highlight_and_wait call ---
+            # Inject before the processed line
+            if processed_line is not None:
+                # For control flow statements (e.g., while, if) and their immediate bodies,
+                # we want to highlight the *entire block* that is being executed together.
+                # However, for single-line commands, just that line.
+
+                # Determine if this line ends a block or is a new standalone statement.
+                # Simplistic way: if it's a colon-ending line, or its indentation
+                # is less than the previous *meaningful* line (not just a comment/empty line)
+                # or if it's the very first code line.
+                
+                # This indentation logic will be tricky and might need refinement for all edge cases
+                # A robust solution might require a full Python parser.
+                # For now, let's keep it simple: inject before every executable line.
+                
+                # This will give "line by line" highlight for everything, which is what the user wants for wait/send
+                # and also provides progress for normal python code.
+                
+                processed_script_lines.append(f"{leading_whitespace}_highlight_and_wait([{original_line_num}])")
+                processed_script_lines.append(processed_line)
+            
+            last_indent_level = current_indent_level # Update for next iteration
+
+        # --- Final script assembly ---
+        # Wrap the processed script in a function to ensure it runs in a clean scope
+        # and we can easily call it.
+        # Ensure initial indentation for the _highlight_and_wait call is correct.
+        
+        # Add a final cleanup highlight remove after the script finishes
+        processed_script_lines.append("\ngui.multi_loop_text.tag_remove('highlight', '1.0', tk.END)\n")
+
+
+        full_executable_script = "\n".join(processed_script_lines)
+        
+        # --- Execution loop ---
         iteration = 0
         self.loop_stop = False
+        
         while (loop_count == 0 or iteration < loop_count) and not self.loop_stop:
             iteration += 1
             self.root.after(0, lambda i=iteration: self.current_loop_count.set(f"当前循环：{i}"))
+
             try:
-                exec(processed_code, {}, local_namespace)
-            # 当检测到停止标志时，不显示错误窗口，直接退出循环
+                # Compile the entire script string once
+                # Use '<exec_script>' as filename for better traceback
+                compiled_script = compile(full_executable_script, '<exec_script>', 'exec')
+                
+                # Execute the compiled script
+                exec(compiled_script, globals(), local_namespace)
+                
             except StopLoopException:
+                self.loop_stop = True
                 break
             except Exception as e:
-                messagebox.showerror("脚本执行错误", str(e))
+                # Tkinter's tracebacks for exec'd code can be messy.
+                # Try to extract the relevant part, but it's hard without parsing.
+                # The line number in the traceback will refer to the *modified* script.
+                messagebox.showerror("脚本执行错误", f"Script execution failed:\nError: {e}")
+                self.loop_stop = True
                 break
+
+            if self.loop_stop:
+                break
+
+        # Final cleanup regardless of how the loop ended
+        self.multi_loop_text.tag_remove("highlight", "1.0", tk.END)
+        print("Script execution finished.")
+
         self.loop_sending = False
         self.root.after(0, lambda: self.start_button.config(state=tk.NORMAL))
         self.root.after(0, lambda: self.stop_button.config(state=tk.DISABLED))
@@ -1136,13 +1272,15 @@ class SerialGUI:
         proc = self.ps_proc
         for raw in proc.stdout:
             try:
-                text = raw.decode('utf-8', errors='ignore')
+                text = raw.decode('gbk', errors='ignore')
             except:
                 continue
             # 回到主线程安全地更新 UI
             self.text_area.after(0, self._append_text, text)
 
     def _append_text(self, text):
+        if not isinstance(text, str) or text.strip() == "":
+            return
         """在 text_area 末尾插入文本，并自动滚动。"""
         # 使用after lambda的形式是为了让子进程不会冲突
         self.text_area.after(0, lambda: (
@@ -1464,8 +1602,27 @@ class SerialGUI:
     def cell_edit(self):
         if not self.current_cell:
             return
+        # ——— 根据主题选配色 ———
+        if self.current_color_theme_light:
+            # 浅色主题
+            window_bg_color = "#F0F0F0"   # (240,240,240)
+            text_bg_color   = "#FFFFFF"   # (255,255,255)
+            text_fg_color   = "#000000"   # (0,0,0)
+            cursor_color    = "#000000"   # 黑色光标
+            btn_bg_color    = "#E0E0E0"   # 浅灰按钮
+            btn_fg_color    = "#000000"
+        else:
+            # 深色主题
+            window_bg_color = "#252A38"   # (37,42,56)
+            text_bg_color   = "#171b26"   # (23,27,38)
+            text_fg_color   = "#d9dce4"   # (217,220,228)
+            cursor_color    = "#FFFFFF"   # 白色光标
+            btn_bg_color    = "#3A3F4B"   # 深灰按钮
+            btn_fg_color    = "#d9dce4"
+
         cell = self.current_cell
         edit_win = tk.Toplevel(self.root)
+        edit_win.configure(bg=window_bg_color)
         # 将编辑窗口放在屏幕正中心
         edit_win.update_idletasks()
         screen_width = edit_win.winfo_screenwidth()
@@ -1482,7 +1639,14 @@ class SerialGUI:
         edit_win.rowconfigure(1, weight=1)
 
         # 单行文本框用于编辑显示内容
-        single_entry = tk.Entry(edit_win, width=50)
+        single_entry = tk.Entry(
+            edit_win, 
+            width=50,
+            bg=text_bg_color,
+            fg=text_fg_color,
+            insertbackground=cursor_color,  # 光标颜色
+            insertborderwidth=1
+        )
         single_entry.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
         single_entry.insert(tk.END, self.current_cell.cget("text"))
         # 获取单行文本框中的内容，设置为窗口标题
@@ -1498,12 +1662,50 @@ class SerialGUI:
             edit_win,
             undo=True,               # 启用撤销栈
             autoseparators=False,    # 关闭自动分隔
-            maxundo=-1               # 不限撤销步数
+            maxundo=20,               # 不限撤销步数
+            bg=text_bg_color,
+            fg=text_fg_color,
+            insertbackground=cursor_color,  # 光标颜色
+            insertborderwidth=1
         )
         multi_text.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
         multi_text.insert(tk.END, cell.custom_data)   # 保留原有内容
         # 2) 重置撤销栈 —— 这样初始插入不再可撤销
         multi_text.edit_reset()
+
+        # ——— 新增：灰色注释高亮 ———
+
+        # 拿到当前文本框默认字体
+        current_font = tkFont.nametofont(multi_text.cget("font"))
+        # 拷贝一份并设置为斜体
+        italic_font = current_font.copy()
+        italic_font.configure(slant="italic")
+
+        # 配置 gray tag：绿色 + 斜体
+        multi_text.tag_config(
+            "gray",
+            foreground="green",
+            font=italic_font
+        )
+
+        # 2. 当内容被修改时，扫描每一行，给以 '#' 开头的行打上灰色标签
+        def _highlight_comments(event=None):
+            # 只在真正修改后才处理
+            if not multi_text.edit_modified():
+                return
+            # 清除旧标签
+            multi_text.tag_remove("gray", "1.0", "end")
+            # 遍历所有行
+            for idx, line in enumerate(multi_text.get("1.0", "end-1c").splitlines(), start=1):
+                if line.lstrip().startswith("#"):
+                    start = f"{idx}.0"
+                    end   = f"{idx}.end"
+                    multi_text.tag_add("gray", start, end)
+            # 重置 modified 状态，以便下次继续触发
+            multi_text.edit_modified(False)
+
+        # 3. 绑定 <<Modified>> 事件
+        multi_text.bind("<<Modified>>", _highlight_comments)
 
         # 每次按键或删除后插入撤销分隔，确保每次撤销只回退一个字符操作
         def _on_multi_edit_keyrelease(event):
@@ -1529,14 +1731,17 @@ class SerialGUI:
         #multi_text.insert(tk.END, self.current_cell.custom_data)
         # 创建一个控制区域，将新功能按钮和原有保存按钮放在同一行
         ctrl_frame = tk.Frame(edit_win)
+        ctrl_frame.configure(background=window_bg_color)
         ctrl_frame.grid(row=2, column=0, padx=10, pady=(5,10), sticky="ew")
         ctrl_frame.columnconfigure(0, weight=1)
         ctrl_frame.columnconfigure(1, weight=1)
         # 左侧区域：发送相关按钮
         left_frame = tk.Frame(ctrl_frame)
+        left_frame.configure(background=window_bg_color)
         left_frame.grid(row=0, column=0, sticky="w")
         # 右侧区域：保存按钮
         right_frame = tk.Frame(ctrl_frame)
+        right_frame.configure(background=window_bg_color)
         right_frame.grid(row=0, column=1, sticky="e")
         
         # cell的三个按钮，发送当前行、发送当前行并移动至下一行、发送全部
@@ -1615,11 +1820,11 @@ class SerialGUI:
             edit_win.title(new_text)
             if close_after:
                 edit_win.destroy()
-        btn_send_row = tk.Button(left_frame, text="Send(F1)", command=send_current_row)
+        btn_send_row = tk.Button(left_frame, text="Send(F1)", command=send_current_row,bg=btn_bg_color, fg=btn_fg_color,activebackground=btn_bg_color, activeforeground=btn_fg_color)
         btn_send_row.pack(side=tk.LEFT, padx=5)
-        btn_send_row_move = tk.Button(left_frame, text="Send & Next(F5)", command=send_current_row_and_move)
+        btn_send_row_move = tk.Button(left_frame, text="Send & Next(F5)", command=send_current_row_and_move,bg=btn_bg_color, fg=btn_fg_color,activebackground=btn_bg_color, activeforeground=btn_fg_color)
         btn_send_row_move.pack(side=tk.LEFT, padx=5)
-        btn_send_all = tk.Button(left_frame, text="Send All(F9)", command=lambda: self.send_all(multi_text.get("1.0", tk.END)))
+        btn_send_all = tk.Button(left_frame, text="Send All(F9)", command=lambda: self.send_all(multi_text.get("1.0", tk.END)),bg=btn_bg_color, fg=btn_fg_color,activebackground=btn_bg_color, activeforeground=btn_fg_color)
         btn_send_all.pack(side=tk.LEFT, padx=5)
 
         # 给编辑窗口绑定功能键事件
@@ -1627,9 +1832,9 @@ class SerialGUI:
         edit_win.bind("<F5>", lambda event: send_current_row_and_move())
         edit_win.bind("<F9>", lambda event: self.send_all(multi_text.get("1.0", tk.END)))
 
-        btn_save = tk.Button(right_frame, text="Save", command=lambda: save_action(False))
+        btn_save = tk.Button(right_frame, text="Save", command=lambda: save_action(False),bg=btn_bg_color, fg=btn_fg_color,activebackground=btn_bg_color, activeforeground=btn_fg_color)
         btn_save.pack(side=tk.LEFT, padx=5)
-        btn_save_close = tk.Button(right_frame, text="Save & close", command=lambda: save_action(True))
+        btn_save_close = tk.Button(right_frame, text="Save & close", command=lambda: save_action(True),bg=btn_bg_color, fg=btn_fg_color,activebackground=btn_bg_color, activeforeground=btn_fg_color)
         btn_save_close.pack(side=tk.LEFT, padx=5)
 
         # 确保窗口拥有键盘焦点，以捕获按键
@@ -1653,20 +1858,31 @@ class SerialGUI:
             self._send_next_command(all_lines, index + 1)
             return
 
+        # 处理注释行：以 # 开头的行，跳过并执行下一条
+        if re.match(r'^\s*#', command):
+            # 直接开始下一条命令
+            self._send_next_command(all_lines, index + 1)
+            return
+
         # 处理 "wait for <substring> for <seconds>"
         match_wait_for = re.match(r'^wait for (.+) for (\d+)$', command, re.IGNORECASE)
         if match_wait_for:
             wait_str = match_wait_for.group(1)
             wait_time = int(match_wait_for.group(2))
 
-            initial_text = self.text_area.get("1.0", tk.END)
-            initial_length = len(initial_text)
+            self.wait_for_initial_index  = self.text_area.index("end-1c")
             start_time = time.time()
 
             def check_received():
-                current_text = self.text_area.get("1.0", tk.END)
-                new_text = current_text[initial_length:]
-                if wait_str in new_text or (time.time() - start_time >= wait_time):
+                current_index = self.text_area.index("end-1c")
+                if self.text_area.compare(self.wait_for_initial_index, ">", current_index):
+                    initial_index_line,initial_index_col = map(int, self.wait_for_initial_index.split('.'))
+                    initial_index_new_line = max(1, initial_index_line - self.last_auto_delete_lines)
+                    self.wait_for_initial_index = f"{initial_index_new_line}.{initial_index_col}"
+                        
+                self.button_send_wait_for_new_text = self.text_area.get(self.wait_for_initial_index, current_index)
+
+                if wait_str in self.button_send_wait_for_new_text or (time.time() - start_time >= wait_time):
                     self._send_next_command(all_lines, index + 1)  # 继续执行下一行
                 else:
                     self.text_area.after(100, check_received)  # 100ms 后再次检查
@@ -1701,14 +1917,18 @@ class SerialGUI:
             except Exception:
                 timeout = 0
             if timeout > 0:
-                # 记录发送命令时文本区域的末尾位置
-                initial_text = self.text_area.get("1.0", tk.END)
-                initial_length = len(initial_text)
                 start_time = time.time()
                 def check_terminal():
-                    current_text = self.text_area.get("1.0", tk.END)
-                    new_text = current_text[initial_length:]
-                    if terminal_str in new_text:
+                    # 如果发生了删除操作，导致 last_send_index 大于 current_index，则根据self.last_auto_delete_lines记录中删除了多少行，重置 last_index 的坐标
+                    current_index = self.text_area.index("end-1c")
+                    if self.text_area.compare(self.last_send_index, ">", current_index):
+                        last_send_index_line,last_send_index_col = map(int,self.last_send_index.split('.'))
+                        last_send_index_new_line = max(1, last_send_index_line - self.last_auto_delete_lines)
+                        self.last_send_index = f"{last_send_index_new_line}.{last_send_index_col}"
+                        
+                    self.button_send_check_terminal_new_text = self.text_area.get(self.last_send_index, current_index)
+
+                    if terminal_str in self.button_send_check_terminal_new_text:
                         # 检测到终止符，继续执行下一行命令
                         self._send_next_command(all_lines, index + 1)
                     elif time.time() - start_time >= timeout:
@@ -1847,6 +2067,10 @@ class SerialGUI:
         # （2）真正写入串口并显示
         raw = data + ("\n" if add_newline else "")
         self.serial_conn.send_data(raw)
+        
+
+        
+        
         # 判断是否向主窗口写入发送的字符串
         if insert_display:
             # 安全地在主线程插入并滚动
@@ -1854,6 +2078,9 @@ class SerialGUI:
                 self.text_area.insert(tk.END, raw),
                 self.text_area.yview(tk.END)
             ))
+        # 在此处更新发送后的窗口的最后的位置
+        self.last_send_index = self.text_area.index("end-1c")
+
         # （3）更新统计
         self.sent_bytes += len(data.encode())
         self.update_data_stats()
@@ -2233,10 +2460,10 @@ class SerialGUI:
             #获取当前文本框末尾的索引
             current_index = self.text_area.index("end-1c")
             # 获取从上次保存到当前的新内容
-            new_text = self.text_area.get(self.last_saved_index, current_index)
-            if new_text and self.auto_save_file:
+            self.auto_save_new_text = self.text_area.get(self.last_saved_index, current_index)
+            if self.auto_save_new_text and self.auto_save_file:
                 try:
-                    self.auto_save_file.write(new_text)
+                    self.auto_save_file.write(self.auto_save_new_text)
                     self.auto_save_file.flush()
                     self.last_saved_index = current_index  # 更新最后保存位置
 
@@ -2250,26 +2477,34 @@ class SerialGUI:
                         # 文件超过最大容量，关闭当前文件并重新创建新文件
                         self.auto_save_file.close()
                         self.auto_save_file = self.create_auto_save_file()
+                        self.text_area.edit_reset()  # 清空 undo/redo 历史
                         # 重置 last_saved_index 为当前末尾
-                        self.last_saved_index = self.text_area.index("end-1c")
+                        #self.last_saved_index = self.text_area.index("end-1c")
                 except Exception as e:
                     print("Autosave error:", e)
         """
         检查 text_area 中字符数量，如果超过100000，则仅保留后一半的行的内容
         """
-        content = self.text_area.get("1.0", "end-1c")
-        if len(content) > 100000:
-            # 获取当前总行数和 text_area 的显示行数（高度）
-            total_lines = int(self.text_area.index("end-1c").split('.')[0])
-            # 如果总行数大于2，则仅保留后一半的行
-            if total_lines > 2:
-                start_line = int(total_lines/2) + 1
-                # 删除从第一行到 start_line 行的起始部分
-                self.text_area.delete("1.0", f"{start_line}.0")
-                self.last_auto_delete_lines = start_line - 1				
-                # 更新文本框的内容后，重新记录最后保存的位置
-                self.last_saved_index = self.text_area.index("end-1c")
-        # 10秒后再次检测
+        if self.auto_clear_onoff.get():
+            # 如果wait for /wait for any函数将该标志位关闭，则不进行自动删除，避免引起index变化导致的问题
+            if not self.allow_auto_delete:
+                return
+            self.auto_clear_all_content = self.text_area.get("1.0", "end-1c")
+            if len(self.auto_clear_all_content) > 100000:
+                # 获取当前总行数和 text_area 的显示行数（高度）
+                total_lines = int(self.text_area.index("end-1c").split('.')[0])
+                # 如果总行数大于2，则仅保留后一半的行
+                if total_lines > 2:
+                    start_line = int(total_lines/2) + 1
+                    # 清除要删除区间所有标签的标记范围
+                    for tag in self.text_area.tag_names():
+                        self.text_area.tag_remove(tag, "1.0", f"{start_line}.0")
+                    # 删除从第一行到 start_line 行的起始部分
+                    self.text_area.delete("1.0", f"{start_line}.0")
+                    self.last_auto_delete_lines = start_line - 1				
+                    # 更新文本框的内容后，重新记录最后保存的位置
+                    self.last_saved_index = self.text_area.index("end-1c")
+            # 10秒后再次检测
         self.text_area.after(10000, self.auto_save_and_auto_delete)
     
     def save_setup(self):
