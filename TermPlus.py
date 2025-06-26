@@ -27,6 +27,7 @@ import builtins
 import keyword
 import subprocess
 import pyvisa
+rm = pyvisa.ResourceManager('@py')
 from pyvisa.constants import AccessModes
 
 
@@ -49,6 +50,26 @@ class SerialComm:
                 self.ser.write(data.encode())
             except serial.SerialException:
                 print("发送数据失败")
+
+    def send_byte_data(self, data_bytes):
+        """
+        直接发送字节数据到串口。
+        传入的数据必须是 bytes 或 bytearray 类型。
+        """
+        if self.ser and self.ser.is_open:
+            try:
+                # 检查传入的数据是否为字节类型
+                if isinstance(data_bytes, (bytes, bytearray)):
+                    self.ser.write(data_bytes)
+                    # print(f"发送了原始字节: {data_bytes!r}") # 用于调试
+                else:
+                    print(f"错误: send_byte_data 函数只接受 bytes 或 bytearray 类型，传入了 {type(data_bytes)}。")
+            except serial.SerialException as e:
+                print(f"发送字节数据失败: {e}")
+            except Exception as e:
+                print(f"发送字节数据时发生未知错误: {e}")
+        else:
+            print("串口未打开，无法发送字节数据。")
 
     def receive_data(self, end_char='\n'):
         if self.ser and self.ser.is_open:
@@ -172,7 +193,7 @@ class SerialGUI:
         self.menu_bar.add_cascade(label="关于", menu=self.about_menu)
         self.about_menu.add_command(label="Developed by Xian.Wu", state="disabled")
         self.about_menu.add_command(label="dakongwuxian@gmail.com", state="disabled")
-        self.about_menu.add_command(label="vesion 20250618", state="disabled")
+        self.about_menu.add_command(label="vesion 20250626", state="disabled")
         
         # 用于单元格右键菜单的剪贴板（复制功能），存储元组 (text, custom_data)
         self.cell_clipboard = ("", "")
@@ -264,9 +285,6 @@ class SerialGUI:
         # 记录按下enter和点击发送按键后发送的字符串
         self.sent_commands = [] # 用于保存最后10个发送的命令
         self.sent_commands_number = -1   # 用于跟踪当前浏览的命令索引
-
-        # 启动定时检查任务，每30秒检测一次 text_area 内容是否过大需要删除
-        self.text_area.after(30000, self.auto_save_and_auto_delete)
 
         # Row 2：发送文本标签、发送文本框、发送按钮和发送新行复选框
         self.row_2_frame = tk.Frame(self.main_frame, width=730, height=32)
@@ -719,6 +737,9 @@ class SerialGUI:
         self.refresh_ports()
         # 初始化完成后，尝试加载之前保存的配置
         self.load_setup()
+
+        # 启动定时检查任务，每10秒检测一次 text_area 内容是否过大需要删除
+        self.auto_save_and_auto_delete()
 
 
 
@@ -1863,7 +1884,7 @@ class SerialGUI:
             # 直接开始下一条命令
             self._send_next_command(all_lines, index + 1)
             return
-
+        
         # 处理 "wait for <substring> for <seconds>"
         match_wait_for = re.match(r'^wait for (.+) for (\d+)$', command, re.IGNORECASE)
         if match_wait_for:
@@ -2318,6 +2339,52 @@ class SerialGUI:
          - 左右键时移动光标
          - 不再直接写入 autosave 文件，由后台线程统一处理
         """
+
+        # 捕获 Alt 键状态
+        alt_pressed = (event.state & 0x8) != 0 # 0x8 表示 Alt 键 (Mod1) 被按下
+
+        # --- Linux 快捷键处理 (使用 send_byte_data, 现在是 Alt 组合键) ---
+        if alt_pressed:
+            if event.keysym == "c":
+                self.serial_conn.send_byte_data(b'\x03') # Alt+C -> Ctrl+C (ETX)
+                print("发送 Alt+C (0x03) 信号到串口。")
+                return "break" # 阻止Tkinter处理此按键
+
+            elif event.keysym == "d":
+                self.serial_conn.send_byte_data(b'\x04') # Alt+D -> Ctrl+D (EOT)
+                print("发送 Alt+D (0x04) 信号到串口。")
+                return "break"
+
+            elif event.keysym == "z":
+                self.serial_conn.send_byte_data(b'\x1A') # Alt+Z -> Ctrl+Z (SUB)
+                print("发送 Alt+Z (0x1A) 信号到串口。")
+                return "break"
+
+            elif event.keysym == "l":
+                self.serial_conn.send_byte_data(b'\x0C') # Alt+L -> Ctrl+L (FF - Form Feed, Clear Screen)
+                print("发送 Alt+L (0x0C) 信号到串口。")
+                return "break"
+
+            elif event.keysym == "a":
+                self.serial_conn.send_byte_data(b'\x01') # Alt+A -> Ctrl+A (SOH - Start of Header, Go to Beginning of Line)
+                print("发送 Alt+A (0x01) 信号到串口。")
+                return "break"
+
+            elif event.keysym == "e":
+                self.serial_conn.send_byte_data(b'\x05') # Alt+E -> Ctrl+E (ENQ - Enquiry, Go to End of Line)
+                print("发送 Alt+E (0x05) 信号到串口。")
+                return "break"
+
+            elif event.keysym == "k":
+                self.serial_conn.send_byte_data(b'\x0B') # Alt+K -> Ctrl+K (VT - Vertical Tab, Cut to End of Line)
+                print("发送 Alt+K (0x0B) 信号到串口。")
+                return "break"
+
+            elif event.keysym == "u":
+                self.serial_conn.send_byte_data(b'\x15') # Alt+U -> Ctrl+U (NAK - Negative Acknowledge, Cut to Beginning of Line)
+                print("发送 Alt+U (0x15) 信号到串口。")
+                return "break"
+        # --- Linux 快捷键处理结束 ---
         # 如果主键盘和小键盘的回车键被按下
         if event.keysym in ("Return", "KP_Enter"):
             # Enter key pressed
@@ -2441,9 +2508,11 @@ class SerialGUI:
             self.last_saved_index = self.text_area.index("end-1c")
             self.auto_save_stop = False
             self.auto_save_btn.config(text="ON", bg="green")
+            # 开启自动保存和关闭自动保存时，都立即执行一次是否清屏的检查并执行一次保存
+            self.auto_save_and_auto_delete_onetime()
         else:
             # 先立即执行一次保存操作，然后再停止
-            self.auto_save_and_auto_delete()
+            self.auto_save_and_auto_delete_onetime()
             # 关闭自动保存
             self.auto_save_stop = True
             if self.auto_save_file:
@@ -2451,10 +2520,7 @@ class SerialGUI:
                 self.auto_save_file = None
             self.auto_save_btn.config(text="OFF", bg="gray")
 
-    def auto_save_and_auto_delete(self):
-        """
-        每10秒，如果自动保存标志位打开，则执行自动保存操作。
-        """
+    def auto_save_and_auto_delete_onetime(self):
         # 执行自动保存操作（如果标志位打开）
         if not self.auto_save_stop:
             #获取当前文本框末尾的索引
@@ -2487,23 +2553,29 @@ class SerialGUI:
         """
         if self.auto_clear_onoff.get():
             # 如果wait for /wait for any函数将该标志位关闭，则不进行自动删除，避免引起index变化导致的问题
-            if not self.allow_auto_delete:
-                return
-            self.auto_clear_all_content = self.text_area.get("1.0", "end-1c")
-            if len(self.auto_clear_all_content) > 100000:
-                # 获取当前总行数和 text_area 的显示行数（高度）
-                total_lines = int(self.text_area.index("end-1c").split('.')[0])
-                # 如果总行数大于2，则仅保留后一半的行
-                if total_lines > 2:
-                    start_line = int(total_lines/2) + 1
-                    # 清除要删除区间所有标签的标记范围
-                    for tag in self.text_area.tag_names():
-                        self.text_area.tag_remove(tag, "1.0", f"{start_line}.0")
-                    # 删除从第一行到 start_line 行的起始部分
-                    self.text_area.delete("1.0", f"{start_line}.0")
-                    self.last_auto_delete_lines = start_line - 1				
-                    # 更新文本框的内容后，重新记录最后保存的位置
-                    self.last_saved_index = self.text_area.index("end-1c")
+            if self.allow_auto_delete:                
+                self.auto_clear_all_content = self.text_area.get("1.0", "end-1c")
+                if len(self.auto_clear_all_content) > 100000:
+                    # 获取当前总行数和 text_area 的显示行数（高度）
+                    total_lines = int(self.text_area.index("end-1c").split('.')[0])
+                    # 如果总行数大于2，则仅保留后一半的行
+                    if total_lines > 2:
+                        start_line = int(total_lines/2) + 1
+                        # 清除要删除区间所有标签的标记范围
+                        for tag in self.text_area.tag_names():
+                            self.text_area.tag_remove(tag, "1.0", f"{start_line}.0")
+                        # 删除从第一行到 start_line 行的起始部分
+                        self.text_area.delete("1.0", f"{start_line}.0")
+                        self.last_auto_delete_lines = start_line - 1				
+                        # 更新文本框的内容后，重新记录最后保存的位置
+                        self.last_saved_index = self.text_area.index("end-1c")
+
+    def auto_save_and_auto_delete(self):
+        """
+        每10秒，如果自动保存标志位打开，则执行自动保存操作。
+        """
+        self.auto_save_and_auto_delete_onetime()
+        
             # 10秒后再次检测
         self.text_area.after(10000, self.auto_save_and_auto_delete)
     
