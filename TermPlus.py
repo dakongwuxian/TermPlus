@@ -193,7 +193,7 @@ class SerialGUI:
         self.menu_bar.add_cascade(label="关于", menu=self.about_menu)
         self.about_menu.add_command(label="Developed by Xian.Wu", state="disabled")
         self.about_menu.add_command(label="dakongwuxian@gmail.com", state="disabled")
-        self.about_menu.add_command(label="vesion 20250626", state="disabled")
+        self.about_menu.add_command(label="vesion 20250626v2", state="disabled")
         
         # 用于单元格右键菜单的剪贴板（复制功能），存储元组 (text, custom_data)
         self.cell_clipboard = ("", "")
@@ -274,6 +274,18 @@ class SerialGUI:
 
         # 在接受文本框中输入内容的处理
         self.text_area.bind("<Key>", self.on_key_press)
+
+        # --- 为 Alt 组合键单独绑定事件 ---
+        # 注意：这里的 <Alt-c> 会在 Alt 和 c 同时按下时触发
+        self.text_area.bind("<Alt-c>", self.on_alt_c_press)
+        self.text_area.bind("<Alt-d>", self.on_alt_d_press)
+        self.text_area.bind("<Alt-z>", self.on_alt_z_press)
+        self.text_area.bind("<Alt-l>", self.on_alt_l_press)
+        self.text_area.bind("<Alt-a>", self.on_alt_a_press)
+        self.text_area.bind("<Alt-e>", self.on_alt_e_press)
+        self.text_area.bind("<Alt-k>", self.on_alt_k_press)
+        self.text_area.bind("<Alt-u>", self.on_alt_u_press)
+
         self.input_buffer = ""  # Buffer to store user input
         self.input_buffer_cursor = 0 # 光标，用于记录左右键的移动，以便删除合适的字符
         self.received_data = ''
@@ -2328,6 +2340,47 @@ class SerialGUI:
         # 创建新窗口时，传入 center=False，不让其居中
         SerialGUI(new_win, center=False)
         new_win.geometry(f"+{new_x}+{new_y}")
+
+    # --- 新增的 Alt 组合键处理函数 ---
+    def on_alt_c_press(self, event):
+        self.serial_conn.send_byte_data(b'\x03') # Alt+C -> Ctrl+C (ETX)
+        print("发送 Alt+C (0x03) 信号到串口。")
+        return "break"
+
+    def on_alt_d_press(self, event):
+        self.serial_conn.send_byte_data(b'\x04') # Alt+D -> Ctrl+D (EOT)
+        print("发送 Alt+D (0x04) 信号到串口。")
+        return "break"
+
+    def on_alt_z_press(self, event):
+        self.serial_conn.send_byte_data(b'\x1A') # Alt+Z -> Ctrl+Z (SUB)
+        print("发送 Alt+Z (0x1A) 信号到串口。")
+        return "break"
+
+    def on_alt_l_press(self, event):
+        self.serial_conn.send_byte_data(b'\x0C') # Alt+L -> Ctrl+L (FF - Form Feed, Clear Screen)
+        print("发送 Alt+L (0x0C) 信号到串口。")
+        return "break"
+
+    def on_alt_a_press(self, event):
+        self.serial_conn.send_byte_data(b'\x01') # Alt+A -> Ctrl+A (SOH - Start of Header, Go to Beginning of Line)
+        print("发送 Alt+A (0x01) 信号到串口。")
+        return "break"
+
+    def on_alt_e_press(self, event):
+        self.serial_conn.send_byte_data(b'\x05') # Alt+E -> Ctrl+E (ENQ - Enquiry, Go to End of Line)
+        print("发送 Alt+E (0x05) 信号到串口。")
+        return "break"
+
+    def on_alt_k_press(self, event):
+        self.serial_conn.send_byte_data(b'\x0B') # Alt+K -> Ctrl+K (VT - Vertical Tab, Cut to End of Line)
+        print("发送 Alt+K (0x0B) 信号到串口。")
+        return "break"
+
+    def on_alt_u_press(self, event):
+        self.serial_conn.send_byte_data(b'\x15') # Alt+U -> Ctrl+U (NAK - Negative Acknowledge, Cut to Beginning of Line)
+        print("发送 Alt+U (0x15) 信号到串口。")
+        return "break"
     
     def on_key_press(self, event):
         """
@@ -2339,52 +2392,6 @@ class SerialGUI:
          - 左右键时移动光标
          - 不再直接写入 autosave 文件，由后台线程统一处理
         """
-
-        # 捕获 Alt 键状态
-        alt_pressed = (event.state & 0x8) != 0 # 0x8 表示 Alt 键 (Mod1) 被按下
-
-        # --- Linux 快捷键处理 (使用 send_byte_data, 现在是 Alt 组合键) ---
-        if alt_pressed:
-            if event.keysym == "c":
-                self.serial_conn.send_byte_data(b'\x03') # Alt+C -> Ctrl+C (ETX)
-                print("发送 Alt+C (0x03) 信号到串口。")
-                return "break" # 阻止Tkinter处理此按键
-
-            elif event.keysym == "d":
-                self.serial_conn.send_byte_data(b'\x04') # Alt+D -> Ctrl+D (EOT)
-                print("发送 Alt+D (0x04) 信号到串口。")
-                return "break"
-
-            elif event.keysym == "z":
-                self.serial_conn.send_byte_data(b'\x1A') # Alt+Z -> Ctrl+Z (SUB)
-                print("发送 Alt+Z (0x1A) 信号到串口。")
-                return "break"
-
-            elif event.keysym == "l":
-                self.serial_conn.send_byte_data(b'\x0C') # Alt+L -> Ctrl+L (FF - Form Feed, Clear Screen)
-                print("发送 Alt+L (0x0C) 信号到串口。")
-                return "break"
-
-            elif event.keysym == "a":
-                self.serial_conn.send_byte_data(b'\x01') # Alt+A -> Ctrl+A (SOH - Start of Header, Go to Beginning of Line)
-                print("发送 Alt+A (0x01) 信号到串口。")
-                return "break"
-
-            elif event.keysym == "e":
-                self.serial_conn.send_byte_data(b'\x05') # Alt+E -> Ctrl+E (ENQ - Enquiry, Go to End of Line)
-                print("发送 Alt+E (0x05) 信号到串口。")
-                return "break"
-
-            elif event.keysym == "k":
-                self.serial_conn.send_byte_data(b'\x0B') # Alt+K -> Ctrl+K (VT - Vertical Tab, Cut to End of Line)
-                print("发送 Alt+K (0x0B) 信号到串口。")
-                return "break"
-
-            elif event.keysym == "u":
-                self.serial_conn.send_byte_data(b'\x15') # Alt+U -> Ctrl+U (NAK - Negative Acknowledge, Cut to Beginning of Line)
-                print("发送 Alt+U (0x15) 信号到串口。")
-                return "break"
-        # --- Linux 快捷键处理结束 ---
         # 如果主键盘和小键盘的回车键被按下
         if event.keysym in ("Return", "KP_Enter"):
             # Enter key pressed
