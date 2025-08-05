@@ -200,11 +200,11 @@ class SerialGUI:
         self.menu_bar.add_cascade(label="关于", menu=self.about_menu)
         self.about_menu.add_command(label="Developed by Xian.Wu", state="disabled")
         self.about_menu.add_command(label="dakongwuxian@gmail.com", state="disabled")
-        #self.about_menu.add_command(label="vesion 20250626v2", state="disabled")
 
-        # 获取当前的日期，作为打包时的版本信息
-        str_version_with_date = datetime.now().strftime("Version %Y%m%d")
-        self.about_menu.add_command(label=str_version_with_date, state="disabled")
+        from version_info import VERSION
+
+        self.about_menu.add_command(label=VERSION, state="disabled")
+
         self.about_menu.add_command(label="Donation Here.",command=self.show_about_window,state="normal")
         
         # 用于单元格右键菜单的剪贴板（复制功能），存储元组 (text, custom_data)
@@ -530,20 +530,7 @@ class SerialGUI:
             autoseparators=False,     # 禁用自动分隔编辑操作 :contentReference[oaicite:1]{index=1}
             maxundo=20               # 不限制撤销步数 :contentReference[oaicite:2]{index=2}
         )
-        '''
-        # 让第7行随着窗口垂直伸缩
-        self.main_frame.grid_rowconfigure(7, weight=1)
-        self.row_7_frame = tk.Frame(self.main_frame)
-        self.row_7_frame.grid(row=7, column=0, sticky="nsew", padx=10, pady=(0,10))
-        # 允许内部控件撑满
-        self.row_7_frame.grid_propagate(True)
-        # ScrolledText 不再指定固定高度，使用 sticky 填满
-        self.multi_loop_text = scrolledtext.ScrolledText(self.row_7_frame, undo=True, autoseparators=False, maxundo=-1)
-        self.multi_loop_text.grid(row=0, column=0, sticky="nsew")
-        # 使滚动条可见并随着 frame 伸缩
-        self.row_7_frame.grid_columnconfigure(0, weight=1)
-        self.row_7_frame.grid_rowconfigure(0, weight=1)
-        '''
+
         def _on_key(event):
             # 只对可见字符和删除键插入撤销分隔
             if event.char or event.keysym in ("BackSpace", "Delete"):
@@ -940,7 +927,7 @@ class SerialGUI:
 
         # Define local functions for the exec environment
         # These will be directly called within the user's script
-        def open_powershell():
+        '''def open_powershell():
             if self.ps_proc is None or self.ps_proc.poll() is not None:
                 try:
                     self.ps_proc = subprocess.Popen(
@@ -962,7 +949,7 @@ class SerialGUI:
                 except Exception as e:
                     messagebox.showerror("错误", f"PowerShell 发送失败: {e}")
             else:
-                messagebox.showwarning("警告", "请先执行 open power shell")
+                messagebox.showwarning("警告", "请先执行 open power shell")'''
 
         def send_line(text):
             if not text or str(text).strip() == "":
@@ -1125,8 +1112,8 @@ class SerialGUI:
             time.sleep(0.05) # Small pause for visual feedback
 
         local_namespace = {
-            "open_powershell": open_powershell,
-            "powershell_send": powershell_send,
+            "open_powershell": self.open_powershell,
+            "powershell_send": self.powershell_send,
             "wait_for_any": wait_for_any,
             "wait_for": wait_for,
             "wait": wait,
@@ -1147,25 +1134,47 @@ class SerialGUI:
 
         processed_script_lines = []
         
-        # Keep track of current indentation level for injecting highlight calls
-        # This will be tricky, but necessary.
-        #last_indent_level = 0
-        
+        last_code_indent = ""  # 记录最近一行代码的缩进，用于空行缩进对齐
+
         for i, original_line in enumerate(original_lines):
             original_line_num = i + 1
-            stripped_line = original_line.strip()
-            leading_whitespace = re.match(r'^\s*', original_line).group()
+            # 把行开头的tab转换成4个空格
+            # 注意：expandtabs会替换行中所有tab，不只是开头，但一般脚本里tab都是缩进用的
+            line_with_spaces = original_line.expandtabs(4)
+            stripped_line = line_with_spaces.strip()
+            leading_whitespace = re.match(r'^\s*', line_with_spaces).group()
             current_indent_level = len(leading_whitespace)
 
-            # Skip empty lines or full-line comments from processing, but still add highlight calls if needed
-            if not stripped_line or stripped_line.startswith('#'):
-                # We still want to highlight comments/empty lines for progress tracking
-                processed_script_lines.append(f"{leading_whitespace}_highlight_and_wait([{original_line_num}])")
-                processed_script_lines.append(original_line) # Add the original comment/empty line back
+
+            # 处理空行
+            if stripped_line == "":
+                # 空行的缩进用上一次有效代码行的缩进
+                processed_script_lines.append(line_with_spaces)
                 continue
 
+            # 处理注释行
+            if stripped_line.startswith("#"):
+                processed_script_lines.append(line_with_spaces)
+                continue
+            
+            # 结构控制语句判断逻辑
+            control_keywords = ['if', 'elif', 'else', 'for', 'while', 'try', 'except', 'finally']
+            # 去除末尾冒号后再判断 token
+            token = stripped_line.split()[0].rstrip(":") if stripped_line.split() else ""
+            is_control_stmt = (
+                (token in control_keywords and stripped_line.endswith(":"))
+                or token in ["pass", "break", "continue", "raise"]
+            )
+
+            if is_control_stmt:
+                processed_script_lines.append(line_with_spaces)
+                continue
+
+            # 非空非注释行，更新最近代码缩进
+            last_code_indent = leading_whitespace
+
             low = stripped_line.lower()
-            processed_line = original_line # Default to original if no special command
+            processed_line = line_with_spaces # Default to original if no special command
 
             # --- Special Command Processing ---
             # These will be replaced by the Python function calls
@@ -1174,7 +1183,7 @@ class SerialGUI:
             elif low.startswith("power shell send "):
                 arg = stripped_line[len("power shell send "):].strip()
                 processed_line = f"{leading_whitespace}powershell_send({repr(arg)})"
-            elif stripped_line.startswith("wait for "):
+            elif low.startswith("wait for "):
                 m = re.match(r'^wait\s+for\s+(.+?)\s+for\s+(.+)$', stripped_line)
                 if m:
                     target = m.group(1).strip()
@@ -1182,12 +1191,12 @@ class SerialGUI:
                     if not (target.startswith('"') or target.startswith("'")):
                         target = f'"{target}"'
                     processed_line = f"{leading_whitespace}wait_for({target}, {duration})"
-            elif stripped_line.startswith("wait "):
+            elif low.startswith("wait "):
                 m = re.match(r'^wait\s+(\d+(\.\d+)?).*$', stripped_line)
                 if m:
                     duration = m.group(1)
                     processed_line = f"{leading_whitespace}wait({duration})"
-            elif stripped_line.startswith("send "):
+            elif low.startswith("send "):
                 arg = stripped_line[len("send "):].strip()
                 if not arg:
                     print(f"Skipping empty send command on line {original_line_num}")
@@ -1202,8 +1211,8 @@ class SerialGUI:
                         processed_script_lines.append(f"{leading_whitespace}_highlight_and_wait([])") # No line num, just a pause point
                         processed_script_lines.append(f"{leading_whitespace}wait({T/1000})")
 
-            elif stripped_line.startswith("wait for any "):
-                 m = re.match(r'^wait\s+for\s+any\s+\[(.*?)\]\s+for\s+(.+)$', stripped_line)
+            elif low.startswith("wait for any "):
+                 m = re.match(r'^wait\s+for\s+any\s+\[(.*?)\]\s+for\s+(.+)$', low)
                  if m:
                      targets_str = m.group(1).strip()
                      duration = m.group(2).strip()
@@ -1213,10 +1222,10 @@ class SerialGUI:
                              raise ValueError("Invalid target list format.")
                          processed_line = f"{leading_whitespace}wait_for_any({target_list}, {duration})"
                      except (ValueError, SyntaxError) as e:
-                         print(f"Error parsing wait for any target list on line {original_line_num}: {e}")
-                         processed_line = original_line # Fallback to original if parsing fails
+                         print(f"Error parsing wait for any target list on line {line_with_spaces}: {e}")
+                         processed_line = line_with_spaces # Fallback to original if parsing fails
                  else:
-                     processed_line = original_line # Fallback if regex fails
+                     processed_line = line_with_spaces # Fallback if regex fails
 
 
             # --- Injecting the highlight_and_wait call ---
@@ -1238,7 +1247,9 @@ class SerialGUI:
                 # This will give "line by line" highlight for everything, which is what the user wants for wait/send
                 # and also provides progress for normal python code.
                 
-                processed_script_lines.append(f"{leading_whitespace}_highlight_and_wait([{original_line_num}])")
+                #processed_script_lines.append(f"{leading_whitespace}_highlight_and_wait([{original_line_num}])")
+                highlight_line = f"{leading_whitespace}_highlight_and_wait([{original_line_num}])"
+                processed_script_lines.append(highlight_line)
                 processed_script_lines.append(processed_line)
             
             #last_indent_level = current_indent_level # Update for next iteration
@@ -1343,18 +1354,26 @@ class SerialGUI:
 
         try:
             # 启动 PowerShell，stdin/stdout 都走管道，同时新开控制台
+            print("[ps start] launching PowerShell")
             self.ps_proc = subprocess.Popen(
                 ["powershell", "-NoExit"],
                 stdin = subprocess.PIPE,
                 stdout= subprocess.PIPE,
                 stderr= subprocess.STDOUT,
+                bufsize=1,
+                universal_newlines=True,
                 #creationflags = subprocess.CREATE_NEW_CONSOLE
             )
+            print("[ps start] launching read thread")
             # 启动镜像线程：从管道读，再写回 CONOUT$
             threading.Thread(
                 target=self._read_ps_output,
                 daemon=True
             ).start()
+
+            # 发送一条测试命令
+            self.ps_proc.stdin.write("Write-Output 'PowerShell Ready'\n")
+            self.ps_proc.stdin.flush()
 
             # 原有的延时或其他初始化
             time.sleep(0.1)
@@ -1363,18 +1382,19 @@ class SerialGUI:
             messagebox .showerror("错误", f"无法打开 PowerShell: {e}")
 
     def _read_ps_output(self):
-        """
-        后台执行：从 ps_proc.stdout 实时读取，
-        然后调度到主线程插入到 text_area。
-        """
-        proc = self.ps_proc
+        print("[_read_ps_output] thread started")
+        for line in self.ps_proc.stdout:
+            print(f"[ps stdout] {line.strip()}")
+            self.text_area.after(0, self._append_text, line)
+
+        '''proc = self.ps_proc
         for raw in proc.stdout:
             try:
                 text = raw.decode('gbk', errors='ignore')
             except:
                 continue
             # 回到主线程安全地更新 UI
-            self.text_area.after(0, self._append_text, text)
+            self.text_area.after(0, self._append_text, text)'''
 
     def _append_text(self, text):
         if not isinstance(text, str) or text.strip() == "":
@@ -1391,7 +1411,7 @@ class SerialGUI:
         """类方法：向已打开的 PowerShell 窗口发送命令"""
         if getattr(self, 'ps_proc', None) and self.ps_proc.stdin:
             try:
-                self.ps_proc.stdin.write((cmd_text + "\n").encode("utf-8"))
+                self.ps_proc.stdin.write(cmd_text + "\n")
                 self.ps_proc.stdin.flush()
             except Exception as e:
                 messagebox.showerror("错误", f"PowerShell 发送失败: {e}")

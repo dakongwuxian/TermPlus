@@ -1,0 +1,43 @@
+# 本示例展示了获取主窗口中的内容，搜索指定字符串，获取该字符串同一行后方的数字，判断该数字是否大于30，如果大于30则弹出窗口提示并结束脚本运行，如果没有大于30则继续后续的执行。
+# 示例中使用的函数
+# gui.text_area.index()获取主窗口指定位置的光标位置值
+# send xxx
+# wait t
+# gui.text_area.get()获取主窗口指定位置的内容
+# re.search()在字符串中查找指定内容
+# messagebox.showinfo()弹出提示窗口
+# raise StopLoopException("stop") 停止脚本的运行
+
+# 定义变量
+temp = 0
+
+# 发送命令
+send ts r
+
+# 等待命令回复结束
+wait for $ for 3
+
+# 获取文本区域的当前结束位置索引
+end_index = gui.text_area.index("end-1c")
+
+# 从结束位置往回数 n 行，如果文本内容少于 n 行，则会自动从文本开头开始搜索
+start_index = gui.text_area.index(f"{end_index} - {n} lines")
+
+# 获取主窗口中2个索引位置中间的文本
+response = gui.text_area.get(start_idx, end_index) 
+
+# match for words "Board" and temp number
+match_result = re.search(r'Board\s*:\s*([\d.]+)', response)
+
+# get temp number
+if match_result:
+    temp = float(m.group(1))
+if temp > 30:# decide if temp >30
+    messagebox.showinfo("提示", "board temp>30 detected")# pop out message
+    raise StopLoopException("stop")# stop running
+
+# 脚本需要遵守python的缩进规则，python通过缩进来识别哪些属于一个大括号（if/for/while等）中的内容。
+# 缩进建议全部使用4n个空格或者全部使用tab。
+# 本示例可能出现长其运行后某次运行异常的问题，因为长其运行后会触发自动删除窗口中前一半行的功能，会导致start_idx实际指向的位置错误
+
+
