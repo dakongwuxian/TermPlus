@@ -1,0 +1,29 @@
+# 本示例展示了配置串口设备的IP地址，以及使用Power Shell相关函数，通过SCP方法，实现将文件从本程序运行的电脑复制到指定IP地址的操作。
+# 示例中使用的函数
+# send xxx
+# wait t
+# open power shell，本命令会打开一个power shell窗口，该窗口无法手动操作，仅能通过TermPlus操作
+# power shell send xxx，本命令会操作power shell的命令发送，power shell中的响应会直接显示在TermPlus中，原本的power shell窗口则不会显示任何内容，本条命令执行前需要先运行open power shell
+
+send ifconfig eth0 10.166.147.42 netmask 255.255.255.128 broadcast 10.166.147.127
+wait 1
+send route add default gw 10.166.147.1
+wait 1
+send ifconfig eth0
+wait 1
+send ping -c 4 10.166.147.42
+wait 5
+open power shell
+wait 1
+power shell send cd C:\4485\4485_R1C_JESD_DL_lane4_CRC_issue_debug\krypton_bin\aapl_3.2.7
+# 如果power shell通过cd命令要访问的路径有空格，则需要在路径的头尾加上单引号
+wait 1
+power shell send scp aapl_krypton0 root@10.166.147.42:/usr/bin
+wait 3
+send cd ..
+wait 1
+send ls /usr/bin/aapl_krypton0
+wait 1
+
+
+
