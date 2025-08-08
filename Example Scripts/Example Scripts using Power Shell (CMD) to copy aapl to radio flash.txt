@@ -18,12 +18,18 @@ wait 1
 power shell send cd C:\4485\4485_R1C_JESD_DL_lane4_CRC_issue_debug\krypton_bin\aapl_3.2.7
 # 如果power shell通过cd命令要访问的路径有空格，则需要在路径的头尾加上单引号
 wait 1
-power shell send scp aapl_krypton0 root@10.166.147.42:/usr/bin
+# scp加上-v选项可以显示命令运行的详细信息，从而可以看到是否正常完成，termplus无法看到复制的进度条，可以通过增加-v来确认是否成功
+power shell send scp -v aapl_krypton0 root@10.166.147.42:/usr/bin
 wait 3
 send cd ..
 wait 1
 send ls /usr/bin/aapl_krypton0
 wait 1
+
+# 复制成功可以看到如下打印
+# Transferred: sent 203453672, received 356080 bytes, in 17.6 seconds
+# Bytes per second: sent 11570386.2, received 20250.2
+# debug1: Exit status 0
 
 
 
