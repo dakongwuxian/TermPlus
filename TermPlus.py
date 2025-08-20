@@ -23,6 +23,7 @@ import re # 加载脚本文件
 import configparser
 import ast
 from datetime import datetime
+import traceback
 import builtins
 import keyword
 import subprocess
@@ -32,7 +33,13 @@ from pyvisa.constants import AccessModes
 import base64
 from io import BytesIO
 from PIL import Image, ImageTk
-import traceback
+import paramiko
+import sys
+import io
+import platform
+import textwrap
+import inspect
+from version_info import VERSION
 
 # 嵌入的二维码 base64 字符串（PNG 格式）
 img_base64 = (
@@ -227,8 +234,6 @@ class SerialGUI:
         self.menu_bar.add_cascade(label="关于", menu=self.about_menu)
         self.about_menu.add_command(label="Developed by Xian.Wu", state="disabled")
         self.about_menu.add_command(label="dakongwuxian@gmail.com", state="disabled")
-
-        from version_info import VERSION
 
         self.about_menu.add_command(label=VERSION, state="disabled")
 
@@ -476,11 +481,13 @@ class SerialGUI:
         self.send_all_terminal_label = tk.Label(self.row_4_frame, text="等待符号:")
         self.send_all_terminal_label.place(relx=0, rely=0.5, anchor="w",x=0)
         # 等待符号选择框
-        self.send_all_terminal_entry = ttk.Entry(self.row_4_frame, text="#,$", width=5)
+        self.send_all_terminal_entry = tk.Entry(self.row_4_frame, width=5) # 如果直接让text等于某个字符串，会导致多个窗口时共享同一个text变量，会一起被手动修改
         self.send_all_terminal_entry.place(relx=0, rely=0.5, anchor="w",x=70)
+        self.send_all_terminal_entry.insert(0,"#,$") # 在entry被创建后，插入内容，这个内容就不会导致多个窗口被同步修改
         # Terminal wait over time label and entry
         self.send_all_over_time_label = tk.Label(self.row_4_frame, text="超时时间 (s):")
         self.send_all_over_time_label.place(relx=0, rely=0.5, anchor="w",x=140)
+
         self.send_all_over_time_entry = tk.Entry(self.row_4_frame, width=5)
         self.send_all_over_time_entry.place(relx=0, rely=0.5, anchor="w",x=240)
         self.send_all_over_time_entry.insert(0, "5")
@@ -512,19 +519,22 @@ class SerialGUI:
         self.row_6_frame = tk.Frame(self.main_frame, width=730, height=34)
         self.row_6_frame.grid(row=6, column=0, sticky="nw", padx=(10,0), pady=(0,0))
 
-        # 文字“多行循环发送”
-        self.multi_loop_label = tk.Label(self.row_6_frame, text="多行循环")
+        # 文字“脚本区域”
+        self.multi_loop_label = tk.Label(self.row_6_frame, text="脚本区域")
         self.multi_loop_label.place(relx=0, rely=0.5, anchor="w",x=0)
+
+        # “行间延时ms:”文字
+        self.default_delay_time_label = tk.Label(self.row_6_frame, text="行间延时ms:")
+        self.default_delay_time_label.place(relx=0, rely=0.5, anchor="w",x=235)
+
         # 文字，当前执行循环：x
-        self.current_loop_count = tk.StringVar(value="当前循环：0")
+        self.current_loop_count = tk.StringVar(value="当前循环：0000")
         self.current_loop_count_label = tk.Label(self.row_6_frame, textvariable=self.current_loop_count)
-        self.current_loop_count_label.place(relx=0, rely=0.5, anchor="w",x=290-55)
-        # “默认间隔时间”文字
-        self.default_delay_time_label = tk.Label(self.row_6_frame, text="默认间隔ms:")
-        self.default_delay_time_label.place(relx=0, rely=0.5, anchor="w",x=390-55)
-        # 单行文本框,“默认间隔时间”右侧
+        self.current_loop_count_label.place(relx=0, rely=0.5, anchor="w",x=365)
+
+        # 行间延时ms:单行文本框
         self.default_delay_time_entry = tk.Entry(self.row_6_frame, width=5)
-        self.default_delay_time_entry.place(relx=0, rely=0.5, anchor="w",x=470-55)
+        self.default_delay_time_entry.place(relx=0, rely=0.5, anchor="w",x=315)
         self.default_delay_time_entry.insert(0,0)
         # “循环次数”文字
         self.loop_count_label = tk.Label(self.row_6_frame, text="循环次数:")
@@ -672,8 +682,8 @@ class SerialGUI:
         self.port_var = tk.StringVar()
         self.port_menu = ttk.Combobox(self.right_frame, textvariable=self.port_var, values=self.get_ports(), state="readonly", width=10)
         self.port_menu.pack(fill="x", pady=2, anchor="se")
-        # 刷新串口
-        self.refresh_btn = tk.Button(self.right_frame, text="刷新串口", command=self.refresh_ports, width=10)
+        # 检测可用串口
+        self.refresh_btn = tk.Button(self.right_frame, text="检测可用串口", command=self.refresh_ports, width=10)
         self.refresh_btn.pack(fill="x", pady=2, anchor="se")
         # 选择或输入波特率
         self.baud_label = tk.Label(self.right_frame, text="波特率:")
@@ -690,6 +700,15 @@ class SerialGUI:
         # 将状态画布放在按钮右侧，设置一些水平间距
         self.status_canvas = Canvas(self.toggle_frame, width=20, height=20, bg="gray", highlightthickness=0)
         self.status_canvas.pack(side="left", padx=5, anchor="se")
+        # 配置SSH
+        self.ssh_frame = tk.Frame(self.right_frame)
+        self.ssh_frame.pack(fill="x", pady=2, anchor="se")
+        self.ssh_config_btn = tk.Button(self.ssh_frame, text="配置SSH", command=self.open_ssh_config_window, width=10)
+        self.ssh_config_btn.pack(side="left", anchor="se")
+        # 将状态画布放在按钮右侧，设置一些水平间距
+        self.ssh_status_canvas = Canvas(self.ssh_frame, width=20, height=20, bg="gray", highlightthickness=0)
+        self.ssh_status_canvas.pack(side="left", padx=5, anchor="se")
+
         # 文字“自动保存路径”
         self.auto_save_path_label = tk.Label(self.right_frame, text="自动保存路径")
         self.auto_save_path_label.pack(anchor="sw")
@@ -705,8 +724,9 @@ class SerialGUI:
         self.save_file_name_label = tk.Label(self.right_frame, text="保存文件名")
         self.save_file_name_label.pack(anchor="sw")
         # 文本框
-        self.file_name_entry = tk.Entry(self.right_frame, width=10, justify="left", textvariable="AutoSave")
+        self.file_name_entry = tk.Entry(self.right_frame, width=10, justify="left")
         self.file_name_entry.pack(fill="x", pady=2, anchor="se")
+        self.file_name_entry.insert(0,"AutoSave")
         # 自动保存状态 按钮
         self.auto_save_frame = tk.Frame(self.right_frame)
         self.auto_save_frame.pack(fill="x", pady=5)
@@ -727,50 +747,80 @@ class SerialGUI:
         self.max_capacity_entry.insert(0, "10")
         self.MB_label = tk.Label(self.file_capacity_frame, text="MB")
         self.MB_label.pack(side="left", padx=2, anchor="se")
+
         # 脚本路径选择框：上方标签、文本框及小三角按钮
-        self.script_path_label = tk.Label(self.right_frame, text="脚本路径")
+        self.script_path_label = tk.Label(self.right_frame, text="按键路径 / 选择")
         self.script_path_label.pack(anchor="sw")
         self.path_frame = tk.Frame(self.right_frame)
         self.path_frame.pack(fill="x", pady=2, anchor="se")
         # 文本框宽度与关闭串口按钮一致，文本右对齐
         self.script_path_entry = tk.Entry(self.path_frame, width=10, justify="right")
         self.script_path_entry.grid(row=0, column=0, sticky="ew")
+        #self.script_path_entry.pack(side="left", padx=2)
         self.path_frame.columnconfigure(0, weight=1)
-        # 按钮区域：使用固定尺寸的 Frame 保证按钮宽高相等
-        button_size = 5  # 可根据实际情况调整
-        self.button_frame = tk.Frame(self.path_frame, width=button_size, height=button_size)
+        # 按钮区域
+        self.button_frame = tk.Frame(self.path_frame, width=5, height=5)
         self.button_frame.grid(row=0, column=1, padx=(1,0))
         self.button_frame.grid_propagate(False)
         self.script_path_button = tk.Button(self.button_frame, text="…", command=self.choose_script_path)
         self.script_path_button.pack(fill="both", expand=True)
         # 在脚本路径文本框下方增加一个下拉选择框，用于显示脚本路径下所有 .ts 文件
-        self.script_file_label = tk.Label(self.right_frame, text="脚本文件")
-        self.script_file_label.pack(anchor="sw", pady=(5,0))
+        #self.script_file_label = tk.Label(self.right_frame, text="按键文件")
+        #self.script_file_label.pack(anchor="sw", pady=(5,0))
         self.script_file_combo = ttk.Combobox(self.right_frame, values=[], width=10, state="readonly")
         self.script_file_combo.pack(fill="x", pady=2, anchor="se")
-        # 新增加载脚本按钮
-        self.load_script_button = tk.Button(self.right_frame, text="加载脚本", command=self.load_script)
-        self.load_script_button.pack(fill="x", pady=2, anchor="se")
-        # 在右侧区域新增保存脚本按钮，放置在加载脚本按钮下方
-        self.save_script_button = tk.Button(self.right_frame, text="保存脚本", command=self.save_script)
-        self.save_script_button.pack(fill="x", pady=2, anchor="se")
-        # 在右侧区域“保存脚本”按钮下方新增“保存为新脚本”按钮
-        self.save_as_script_button = tk.Button(self.right_frame, text="另存为", command=self.save_as_new_script)
-        self.save_as_script_button.pack(fill="x", pady=2, anchor="se")
 
-        # 新增：空行，用于分隔
-        #tk.Label(self.right_frame, text="").pack(pady=5)
-        # 新增：标题“多行循环发送”
-        self.config_multi_loop_label = tk.Label(self.right_frame, text="多行循环")
-        self.config_multi_loop_label.pack(anchor="sw")
-        # 新增三个按键所在的容器
+        # script_buttons_frame
+        self.script_buttons_frame = tk.Frame(self.right_frame)
+        self.script_buttons_frame.pack(anchor="se", pady=2)
+        # 新增加载脚本按钮
+        self.load_script_button = tk.Button(self.script_buttons_frame, text="加载", command=self.load_script)
+        self.load_script_button.pack(side="left", padx=2)
+        # 在右侧区域新增保存脚本按钮，放置在加载脚本按钮下方
+        self.save_script_button = tk.Button(self.script_buttons_frame, text="保存", command=self.save_script)
+        self.save_script_button.pack(side="left", padx=2)
+        # 在右侧区域“保存脚本”按钮下方新增“保存为新脚本”按钮
+        self.save_as_script_button = tk.Button(self.script_buttons_frame, text="另存", command=self.save_as_new_script)
+        self.save_as_script_button.pack(side="left", padx=2)
+
+        # 脚本相关配置控件
+        # multi_script_path_label
+        self.multi_script_path_label = tk.Label(self.right_frame, text="脚本路径 / 选择")
+        self.multi_script_path_label.pack(anchor="sw")
+
+        # 设置frame，用于控制输入框和按钮的宽度
+        self.multi_path_frame = tk.Frame(self.right_frame)
+        self.multi_path_frame.pack(fill="x", pady=2, anchor="se")
+
+        # 路径选择文本框
+        self.multi_script_path_entry = tk.Entry(self.multi_path_frame, width=10, justify="right")
+        self.multi_script_path_entry.grid(row=0, column=0, sticky="ew")
+
+        self.multi_path_frame.columnconfigure(0, weight=1)
+
+        # 设置frame，用于控制输入框和按钮的宽度
+        self.multi_button_frame = tk.Frame(self.multi_path_frame, width=5, height=5)
+        self.multi_button_frame.grid(row=0, column=1, padx=(1,0))
+        self.multi_button_frame.grid_propagate(False)
+
+        # 路径按钮
+        self.multi_script_path_button = tk.Button(self.multi_button_frame, text="…", command=self.multi_choose_script_path)
+        self.multi_script_path_button.pack(fill="both", expand=True)
+        
+        # 文件选择下拉框
+        self.multi_script_file_combo = ttk.Combobox(self.right_frame, values=[], width=10, state="readonly")
+        self.multi_script_file_combo.pack(fill="x", pady=2, anchor="se")
+
+        # multi_script_buttons_frame
+        self.multi_script_buttons_frame = tk.Frame(self.right_frame)
+        self.multi_script_buttons_frame.pack(anchor="se", pady=2)
         # 垂直排列三个按键
-        self.open_multi_loop_btn = tk.Button(self.right_frame, text="打开", command=self.open_multi_loop_file, width=15)
-        self.open_multi_loop_btn.pack(fill="x", pady=2, anchor="se")
-        self.save_multi_loop_btn = tk.Button(self.right_frame, text="保存", command=self.save_multi_loop_file, width=15)
-        self.save_multi_loop_btn.pack(fill="x", pady=2, anchor="se")
-        self.save_as_multi_loop_btn = tk.Button(self.right_frame, text="另存为", command=self.save_multi_loop_file_as, width=15)
-        self.save_as_multi_loop_btn.pack(fill="x", pady=2, anchor="se")
+        self.open_multi_loop_btn = tk.Button(self.multi_script_buttons_frame, text="打开", command=self.open_multi_loop_file)
+        self.open_multi_loop_btn.pack(side="left", padx=2)
+        self.save_multi_loop_btn = tk.Button(self.multi_script_buttons_frame, text="保存", command=self.save_multi_loop_file)
+        self.save_multi_loop_btn.pack(side="left", padx=2)
+        self.save_as_multi_loop_btn = tk.Button(self.multi_script_buttons_frame, text="另存", command=self.save_multi_loop_file_as)
+        self.save_as_multi_loop_btn.pack(side="left", padx=2)
 
         # 保存原始的 grid 配置
         self.row_5_grid_info = self.row_5_frame.grid_info()
@@ -802,14 +852,30 @@ class SerialGUI:
 
         # 启动定时检查任务，每10秒检测一次 text_area 内容是否过大需要删除
         self.auto_save_and_auto_delete()
-    
+
     def report_callback_exception(self, exc, val, tb):
+        """
+        Tkinter 回调异常处理：记录日志 + 弹窗提示 + 保持主循环继续
+        """
+
+        # 记录错误到日志
         err_msg = ''.join(traceback.format_exception(exc, val, tb))
         with open("TermPlus_crash.log", "a", encoding="utf-8") as f:
             f.write("\n\n==== Tkinter Callback Exception on {} ====\n".format(
-                __import__("datetime").datetime.now()))
+                datetime.now()))
             f.write(err_msg)
-        messagebox.showerror("程序异常", f"发生异常:\n{val}")
+
+        # 控制台也打印，方便调试
+        print("[Tkinter Callback Exception]", err_msg)
+
+        # 弹出错误提示，但不中断程序
+        try:
+            messagebox.showerror("程序异常", f"发生异常:\n{val}")
+        except Exception:
+            # 避免在没有主窗口或多线程时弹窗崩溃
+            pass
+
+        # 不抛出异常，让 Tkinter 事件循环继续
 
     def show_about_window(self):
         top = tk.Toplevel(root)
@@ -853,20 +919,24 @@ class SerialGUI:
 
     # 打开 按键
     def open_multi_loop_file(self):
-        """打开一个 .txt 文件，并将其中的内容替换到多行循环发送文本框中，同时记录文件路径"""
-        file_path = filedialog.askopenfilename(
-            title="选择文本文件",
-            filetypes=(("Text Files", "*.txt"), ("All Files", "*.*"))
-        )
-        if file_path:
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    content = f.read()
+        """打开指定文件夹路径和文件名的 .txt 文件，并将其中的内容替换到多行循环发送文本框中，同时记录文件路径"""
+        dir_path = self.multi_script_path_entry.get().strip()
+        file_name = self.multi_script_file_combo.get().strip()
+        if not dir_path or not file_name:
+            messagebox.showwarning("警告", "请选择脚本路径和脚本文件")
+            return
+        full_path = os.path.join(dir_path, file_name)
+        try:
+            # term的ts文件本来是ANSI格式的，
+            #with open(full_path, "r", encoding="utf-8-sig") as f:
+            with open(full_path, "r", encoding="utf-8") as f:
+                content = f.read()
                 self.multi_loop_text.delete("1.0", tk.END)
                 self.multi_loop_text.insert("1.0", content)
-                self.multi_loop_txt_filepath = file_path
-            except Exception as e:
-                messagebox.showerror("错误", f"打开文件失败: {e}")
+                self.multi_loop_txt_filepath = full_path
+        except Exception as e:
+            messagebox.showerror("错误", f"加载脚本失败：{e}")
+            return
 
     # 保存 按键
     def save_multi_loop_file(self):
@@ -898,7 +968,17 @@ class SerialGUI:
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(self.multi_loop_text.get("1.0", tk.END))
                 self.multi_loop_txt_filepath = file_path
+                # 获取当前 Combobox 的所有选项
+                current_values = list(self.multi_script_file_combo['values'])
+                file_name = os.path.basename(file_path)
+                # 如果文件名不在选项中，则加入
+                if file_name not in current_values:
+                    current_values.append(file_name)
+                    self.multi_script_file_combo.config(values=current_values)
+                # 将当前选中项设置为新保存的文件
+                self.multi_script_file_combo.set(file_name)
                 messagebox.showinfo("提示", "保存成功")
+
             except Exception as e:
                 messagebox.showerror("错误", f"保存文件失败: {e}")
 
@@ -908,9 +988,9 @@ class SerialGUI:
         self.root.title(new_title)
 
     def clear_text_area(self):
-        raise RuntimeError("测试异常触发")
+        #raise RuntimeError("测试异常触发")
         """清除接收文本框中的所有内容，并重置发送和接收的字符计数"""
-        self.text_area.delete("1.0", "end")
+        self.text_area.after(0, lambda: (self.text_area.delete("1.0", "end")))
         self.sent_bytes = 0
         self.received_bytes = 0
         self.update_data_stats()
@@ -925,8 +1005,8 @@ class SerialGUI:
 
     def _delete_selection(self):
         try:
-            sel = self.text_area.get(tk.SEL_FIRST, tk.SEL_LAST)
-            self.text_area.delete(tk.SEL_FIRST, tk.SEL_LAST)
+            #sel = self.text_area.get(tk.SEL_FIRST, tk.SEL_LAST)
+            self.text_area.after(0, lambda: (self.text_area.delete(tk.SEL_FIRST, tk.SEL_LAST)))
         except tk.TclError:
             pass  # 没有选中内容时不报错
         
@@ -1148,6 +1228,111 @@ class SerialGUI:
             finally:
                 self.allow_auto_delete = True
 
+        def show_str(string_to_show):
+            if string_to_show == "":
+                messagebox.showerror("函数错误", "show_str函数的输入值不能为空.")
+                return
+            self.text_area.insert(tk.END, string_to_show)
+            self.text_area.see(tk.END)
+
+        def show_date_time():
+            self.text_area.insert(tk.END, str(datetime.now()) + "\n")
+            self.text_area.see(tk.END)
+
+        def get_last_n_lines(line_amount):
+            if line_amount<1:
+                return None
+            end_index = self.text_area.index("end-1c")
+            start_index = self.text_area.index(f"{end_index} - {line_amount} lines")
+            text_to_return = self.text_area.get(start_index,end_index)
+            return text_to_return
+
+        def get_future_n_lines_or_till_overtime(line_amount,over_time):
+            if line_amount<1:
+                return None
+            if over_time <= 0:
+                messagebox.showwarning("Warning", "Over time must be positive.")
+                return None
+
+            self.allow_auto_delete = False
+            self.script_wait_for_new_text = ""
+            collected_text = ""   # 新增
+            start_time = time.time()
+            last_index = self.text_area.index("end-1c")
+            try:
+                while time.time() - start_time < over_time:
+                    if self.loop_stop:
+                        raise StopLoopException("循环已停止")
+                    self.root.update_idletasks()
+                    current_index = self.text_area.index("end-1c")
+                    if self.text_area.compare(last_index, ">", current_index):
+                        print(f"get_future_lines function failed due to last index bigger than current index.\n")
+                        messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index.")
+                        return None
+                    if self.text_area.compare(last_index, "==", current_index):
+                        self.script_wait_for_new_text = ""
+                    else:
+                        try:
+                            self.script_wait_for_new_text = self.text_area.get(last_index, current_index)
+                        except Exception as e:
+                            print(f"get text fault, index might be changed and not corrected right: {e}")
+                            self.script_wait_for_new_text = ""
+                    last_index = current_index
+                    collected_text += self.script_wait_for_new_text
+                    self.script_wait_for_new_text = ""
+                    lines = collected_text.splitlines()
+                    if len(lines) >= line_amount:
+                        collected_text = '\n'.join(lines[:line_amount])
+                        return collected_text
+                    time.sleep(0.1)
+            finally:
+                self.allow_auto_delete = True
+            return collected_text
+
+
+        def get_future_lines_till_str_or_overtime(end_str,over_time):
+            if end_str == '':
+                messagebox.showwarning("Warning", "end_str must not be empty.")
+                return None
+            if over_time <= 0:
+                messagebox.showwarning("Warning", "Over time must be positive.")
+                return None
+
+            self.allow_auto_delete = False
+            self.script_wait_for_new_text = ""
+            collected_text = ""   # 新增
+            start_time = time.time()
+            last_index = self.text_area.index("end-1c")
+            try:
+                while time.time() - start_time < over_time:
+                    if self.loop_stop:
+                        raise StopLoopException("循环已停止")
+                    self.root.update_idletasks()
+                    current_index = self.text_area.index("end-1c")
+                    if self.text_area.compare(last_index, ">", current_index):
+                        print(f"get_future_lines function failed due to last index bigger than current index.\n")
+                        messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index.")
+                        return None
+                    if self.text_area.compare(last_index, "==", current_index):
+                        self.script_wait_for_new_text = ""
+                    else:
+                        try:
+                            self.script_wait_for_new_text = self.text_area.get(last_index, current_index)
+                        except Exception as e:
+                            print(f"get text fault, index might be changed and not corrected right: {e}")
+                            self.script_wait_for_new_text = ""
+                    last_index = current_index
+                    collected_text += self.script_wait_for_new_text
+                    self.script_wait_for_new_text = ""
+                    if end_str in collected_text:
+                        return collected_text
+                    time.sleep(0.1)
+            finally:
+                self.allow_auto_delete = True
+            return collected_text
+
+
+
         def set_port(port_name):
             port_str = str(port_name)
             try:
@@ -1196,11 +1381,16 @@ class SerialGUI:
             "set_port": set_port,
             "set_baudrate": set_baudrate,
             "_highlight_and_wait": _highlight_and_wait, # Inject the helper function
+            "get_last_n_lines": get_last_n_lines,
+            "get_future_n_lines_or_till_overtime": get_future_n_lines_or_till_overtime,
+            "get_future_lines_till_str_or_overtime": get_future_lines_till_str_or_overtime,
+            "show_str": show_str,
+            "show_date_time": show_date_time,
         }
 
         processed_script_lines = []
         
-        last_code_indent = ""  # 记录最近一行代码的缩进，用于空行缩进对齐
+        #last_code_indent = ""  # 记录最近一行代码的缩进，用于空行缩进对齐
 
         for i, original_line in enumerate(original_lines):
             original_line_num = i + 1
@@ -1209,7 +1399,7 @@ class SerialGUI:
             line_with_spaces = original_line.expandtabs(4)
             stripped_line = line_with_spaces.strip()
             leading_whitespace = re.match(r'^\s*', line_with_spaces).group()
-            current_indent_level = len(leading_whitespace)
+            #current_indent_level = len(leading_whitespace)
 
 
             # 处理空行
@@ -1237,7 +1427,7 @@ class SerialGUI:
                 continue
 
             # 非空非注释行，更新最近代码缩进
-            last_code_indent = leading_whitespace
+            #last_code_indent = leading_whitespace
 
             low = stripped_line.lower()
             processed_line = line_with_spaces # Default to original if no special command
@@ -1340,26 +1530,155 @@ class SerialGUI:
             self.root.after(0, lambda i=iteration: self.current_loop_count.set(f"当前循环：{i}"))
 
             try:
-                # Compile the entire script string once
-                # Use '<exec_script>' as filename for better traceback
+                # 重定向 stdout 捕获 print 输出
+                stdout_buffer = io.StringIO()
+                stderr_buffer = io.StringIO()
+                old_stdout, old_stderr = sys.stdout, sys.stderr
+                sys.stdout, sys.stderr = stdout_buffer, stderr_buffer
+                output_text = ""  # 提前初始化
+
+                # 编译并执行脚本
                 compiled_script = compile(full_executable_script, '<exec_script>', 'exec')
-                
-                # Execute the compiled script
                 exec(compiled_script, globals(), local_namespace)
-                
+
             except StopLoopException:
                 self.loop_stop = True
-                break
-            except Exception as e:
-                # Tkinter's tracebacks for exec'd code can be messy.
-                # Try to extract the relevant part, but it's hard without parsing.
-                # The line number in the traceback will refer to the *modified* script.
-                messagebox.showerror("脚本执行错误", f"Script execution failed:\nError: {e}")
-                self.loop_stop = True
+                output_text = stdout_buffer.getvalue()
                 break
 
-            if self.loop_stop:
+            except Exception as e:
+                self.loop_stop = True
+                output_text = stdout_buffer.getvalue()
+                error_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                tb_str = traceback.format_exc()
+
+                # 从 sys.exc_info() 获取 traceback，定位最后一帧 frame
+                exc_type, exc_value, exc_tb = sys.exc_info()
+                last_tb = exc_tb
+                last_frame = None
+                while last_tb:
+                    last_frame = last_tb.tb_frame
+                    lineno = last_tb.tb_lineno
+                    last_tb = last_tb.tb_next
+
+                # 获取出错行源码
+                if last_frame:
+                    filename = last_frame.f_code.co_filename
+                    if filename == "<exec_script>":
+                        script_lines = full_executable_script.splitlines()
+                        if 0 < lineno <= len(script_lines):
+                            last_tb_line = script_lines[lineno - 1].strip()
+                        else:
+                            last_tb_line = "<无法获取行内容>"
+                    else:
+                        import linecache
+                        last_tb_line = linecache.getline(filename, lineno).strip()
+                else:
+                    last_tb_line = "<未知代码行>"
+
+                # 从代码行中解析可能的变量名
+                #import re
+                var_names = set(re.findall(r'\b[a-zA-Z_]\w*\b', last_tb_line))
+
+                # 收集变量值
+                vars_in_line = {}
+                if last_frame:
+                    for name in var_names:
+                        if name in last_frame.f_locals:
+                            vars_in_line[name] = repr(last_frame.f_locals[name])
+                        elif name in last_frame.f_globals:
+                            vars_in_line[name] = repr(last_frame.f_globals[name])
+                        else:
+                            vars_in_line[name] = "<未定义>"
+                vars_in_line_str = "\n".join([f"{k} = {v}" for k, v in vars_in_line.items()])
+
+                # 获取 text_area 内容
+                try:
+                    text_area_content = self.text_area.get("1.0", tk.END)
+                except Exception:
+                    text_area_content = "<无法获取 text_area 内容>"
+
+                # 获取所有局部变量
+                try:
+                    local_vars_str = "\n".join([f"{k}={v!r}" for k, v in local_namespace.items()])
+                except Exception:
+                    local_vars_str = "<无法获取局部变量>"
+
+                # 获取全局变量（排除内建）
+                try:
+                    global_vars_str = "\n".join([f"{k}={v!r}" for k, v in globals().items() if k not in ("__builtins__",)])
+                except Exception:
+                    global_vars_str = "<无法获取全局变量>"
+
+                # 获取 GUI 控件状态
+                gui_vars_str = ""
+                try:
+                    gui_vars_str = "\n".join([f"{name}={entry.get()}" for name, entry in getattr(self, "entries_dict", {}).items()])
+                except Exception:
+                    gui_vars_str = "<无法获取 GUI 控件状态>"
+
+                # 系统信息
+                system_info = f"Python版本: {sys.version}\n平台: {platform.platform()}\n当前目录: {os.getcwd()}"
+
+                # 生成完整错误信息
+                error_info = f"""
+==== Script Execution Error ====
+时间: {error_time}
+循环次数: {iteration}
+异常类型: {type(e).__name__}
+异常信息: {e}
+Traceback:
+{tb_str}
+
+出错行信息:
+{last_tb_line}
+
+出错行相关变量:
+{vars_in_line_str}
+
+脚本输出(print):
+{output_text}
+
+当前执行脚本内容:
+{full_executable_script}
+
+局部变量:
+{local_vars_str}
+
+全局变量:
+{global_vars_str}
+
+GUI 控件状态:
+{gui_vars_str}
+
+当前 text_area 内容:
+{text_area_content}
+
+系统信息:
+{system_info}
+===============================
+"""
+
+                try:
+                    with open("script_error_info.txt", "a", encoding="utf-8") as f:
+                        f.write(error_info)
+                except Exception:
+                    pass
+
+                messagebox.showerror(
+                    "脚本执行错误",
+                    f"错误原因:\n{e}\n\n"
+                    f"出错位置：\n{last_tb_line}\n\n"
+                    f"错误详情：\n{tb_str}\n\n"
+                    f"详细信息参见 script_error_info.txt"
+                )
+
                 break
+            else:
+                output_text = stdout_buffer.getvalue()
+
+            finally:
+                sys.stdout, sys.stderr = old_stdout, old_stderr
 
         # Final cleanup regardless of how the loop ended
         self.multi_loop_text.tag_remove("highlight", "1.0", tk.END)
@@ -1551,6 +1870,30 @@ class SerialGUI:
             self.script_file_combo['values'] = ts_files
             if ts_files:
                 self.script_file_combo.current(0)
+
+    def multi_choose_script_path(self):
+        # 尝试使用 tk_chooseDirectory 并设置右下角按钮文本为“选择”
+        try:
+            path = self.root.tk.call('tk_chooseDirectory')
+        except Exception:
+            path = filedialog.askdirectory(title="选择文件夹")
+        if path:
+            self.multi_script_path_entry.delete(0, tk.END)
+            self.multi_script_path_entry.insert(0, path)
+            self.multi_script_path_entry.icursor(tk.END)      # 将光标移到文本末尾
+            self.multi_script_path_entry.update_idletasks()     # 强制更新界面
+            self.multi_script_path_entry.xview_moveto(1.0)        # 滚动显示到文本末尾
+            # 扫描路径下所有后缀为 .ts 的文件
+            try:
+                ts_files = [f for f in os.listdir(path)
+                            if os.path.isfile(os.path.join(path, f)) and f.lower().endswith('.txt')]
+            except Exception as e:
+                ts_files = []
+            # 更新下拉选择框
+            self.multi_script_file_combo['values'] = ts_files
+            if ts_files:
+                self.multi_script_file_combo.current(0)
+
     def load_script(self):
         dir_path = self.script_path_entry.get().strip()
         file_name = self.script_file_combo.get().strip()
@@ -2112,11 +2455,11 @@ class SerialGUI:
         # 如果下一行不是以wait开头，则执行后面的内容
         # 检查 send_all_terminal_entry 是否有字符，以及 send_all_over_time_entry 是否有数字
         #terminal_str = self.send_all_terminal_entry.get().strip()
-        terminal_strs = [s.strip() for s in self.send_all_terminal_entry.get().split(',') if s.strip()]
-        over_time_str = self.send_all_over_time_entry.get().strip()
-        if terminal_strs and over_time_str:
+        self.terminal_strs = [s.strip() for s in self.send_all_terminal_entry.get().split(',') if s.strip()]
+        self.over_time_str = self.send_all_over_time_entry.get().strip()
+        if self.terminal_strs and self.over_time_str:
             try:
-                timeout = float(over_time_str)
+                timeout = float(self.over_time_str)
             except Exception:
                 timeout = 0
             if timeout > 0:
@@ -2134,13 +2477,15 @@ class SerialGUI:
                     #if terminal_str in self.button_send_check_terminal_new_text:
                         # 检测到终止符，继续执行下一行命令
                         #self._send_next_command(all_lines, index + 1)
-                    if any(term in self.button_send_check_terminal_new_text for term in terminal_strs):
+                    if any(term in self.button_send_check_terminal_new_text for term in self.terminal_strs):
                         # 检测到任意一个终止符，继续执行下一行命令
                         self._send_next_command(all_lines, index + 1)
                     elif time.time() - start_time >= timeout:
                         # 超时未检测到终止符，在主窗口中显示超时，直接终止函数执行
-                        self.text_area.insert(tk.END, "串口未收到设置的等待符号，发送终止，请设置或去掉等待符号。", "red")
-                        self.text_area.yview(tk.END)
+                        self.text_area.after(0, lambda: (
+                            self.text_area.insert(tk.END, "串口未收到设置的等待符号，发送终止，请设置或去掉等待符号。", "red"),
+                            self.text_area.yview(tk.END)
+                        ))
                         return
                     else:
                         self.text_area.after(100, check_terminal)
@@ -2181,8 +2526,14 @@ class SerialGUI:
          - visa_write(command)
          - visa_read()
         """
-        if not (self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open):
-            messagebox.showwarning("警告", "串口未打开")
+        if not (
+            (self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open)  # 串口打开
+            or
+            (hasattr(self, 'ssh_channel') and self.ssh_channel and not self.ssh_channel.closed)  # SSH 打开
+        ):
+            # 将SSH状态色块置为灰色
+            self.ssh_status_canvas.config(bg="gray")
+            messagebox.showwarning("警告", "串口或 SSH 未连接")
             return
         key = data.strip().lower()
         # 拦截打开 PowerShell
@@ -2208,74 +2559,80 @@ class SerialGUI:
                         open_timeout=3000                    # ⑥ 等待 3 s
                     )
                     self.psu = VisaComm(visa_res)
-                    self.text_area.insert(tk.END, f"√ VISA 初始化成功: {addr}\n")
+                    self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"√ VISA 初始化成功: {addr}\n")))
                 except Exception as e:
-                    self.text_area.insert(tk.END, f"× VISA 初始化失败: {e}\n")
+                    self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"× VISA 初始化失败: {e}\n")))
             else:
-                self.text_area.insert(tk.END, "× visa_init 格式错误，应为 visa_init(ADDRESS)\n")
-            self.text_area.see(tk.END)
+                self.text_area.after(0, lambda: (self.text_area.insert(tk.END, "× visa_init 格式错误，应为 visa_init(ADDRESS)\n")))
+            self.text_area.after(0, lambda: (self.text_area.see(tk.END)))
             return
 
         # 2) QUERY
         if key.startswith("visa_query"):
             if not self.psu:
-                self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n")
+                self.text_area.after(0, lambda: (self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n")))
             else:
                 m = re.match(r'visa_query\(\s*(.+?)\s*\)', data.strip(), re.IGNORECASE)
                 if m:
                     cmd = m.group(1)
                     try:
                         resp = self.psu.query(cmd)
-                        self.text_area.insert(tk.END, f">>> VISA QUERY: {cmd}\n{resp}\n")
+                        self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f">>> VISA QUERY: {cmd}\n{resp}\n")))
                     except Exception as e:
-                        self.text_area.insert(tk.END, f"× VISA QUERY 错误: {e}\n")
+                        self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"× VISA QUERY 错误: {e}\n")))
                 else:
-                    self.text_area.insert(tk.END, "× visa_query 格式错误，应为 visa_query(COMMAND)\n")
-            self.text_area.see(tk.END)
+                    self.text_area.after(0, lambda: (self.text_area.insert(tk.END, "× visa_query 格式错误，应为 visa_query(COMMAND)\n")))
+            self.text_area.after(0, lambda: (self.text_area.see(tk.END)))
             return
 
         # 3) WRITE
         if key.startswith("visa_write"):
             if not self.psu:
-                self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n")
+                self.text_area.after(0, lambda: (self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n")))
             else:
                 m = re.match(r'visa_write\(\s*(.+?)\s*\)', data.strip(), re.IGNORECASE)
                 if m:
                     cmd = m.group(1)
                     try:
                         self.psu.write(cmd)
-                        self.text_area.insert(tk.END, f"√ VISA WRITE: {cmd}\n")
+                        self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"√ VISA WRITE: {cmd}\n")))
                     except Exception as e:
-                        self.text_area.insert(tk.END, f"× VISA WRITE 错误: {e}\n")
+                        self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"× VISA WRITE 错误: {e}\n")))
                 else:
-                    self.text_area.insert(tk.END, "× visa_write 格式错误，应为 visa_write(COMMAND)\n")
-            self.text_area.see(tk.END)
+                    self.text_area.after(0, lambda: (self.text_area.insert(tk.END, "× visa_write 格式错误，应为 visa_write(COMMAND)\n")))
+            self.text_area.after(0, lambda: (self.text_area.see(tk.END)))
             return
 
         # 4) READ
         if key.startswith("visa_read"):
             if not self.psu:
-                self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n")
+                self.text_area.after(0, lambda: (self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n")))
             else:
                 try:
                     resp = self.psu.read()
-                    self.text_area.insert(tk.END, f">>> VISA READ:\n{resp}\n")
+                    self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f">>> VISA READ:\n{resp}\n")))
                 except Exception as e:
-                    self.text_area.insert(tk.END, f"× VISA READ 错误: {e}\n")
-            self.text_area.see(tk.END)
+                    self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"× VISA READ 错误: {e}\n")))
+            self.text_area.after(0, lambda: (self.text_area.see(tk.END)))
             return
 
         # 默认走串口
         # （1）插入可选的时间戳
         if self.timestamp_onoff.get():
             ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-            self.text_area.insert(tk.END, f"\nSend at    {ts}\n", "blue")
+            self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"\nSend at    {ts}\n", "blue")))
         # （2）真正写入串口并显示
         raw = data + ("\n" if add_newline else "")
-        self.serial_conn.send_data(raw)
-        
 
-        
+        # ========== 新增 SSH / 串口选择 ==========
+        if hasattr(self, 'ssh_channel') and self.ssh_channel and not self.ssh_channel.closed:
+            try:
+                self.ssh_channel.send(raw)
+            except Exception as e:
+                messagebox.showerror("SSH 发送失败", str(e))
+                return
+        else:
+            self.serial_conn.send_data(raw)  
         
         # 判断是否向主窗口写入发送的字符串
         if insert_display:
@@ -2345,18 +2702,24 @@ class SerialGUI:
                 self.baud_menu.config(state="disabled")
                 self.refresh_btn.config(state="disabled")
                 self.status_canvas.config(bg="green")
-                self.text_area.insert(tk.END, f"串口已打开: {port} @ {baudrate}bps\n")
-                self.text_area.yview(tk.END)
+                self.text_area.after(0, lambda: (
+                    self.text_area.insert(tk.END, f"串口已打开: {port} @ {baudrate}bps\n"),
+                    self.text_area.yview(tk.END)
+                ))
                 self.stop_reading = False
                 self.reading_thread = threading.Thread(target=self.read_from_serial, daemon=True)
                 self.reading_thread.start()
             else:
                 # 串口未打开成功，给出错误提示
-                self.text_area.insert(tk.END, f"错误: 无法连接到 {port}\n")
-                self.text_area.yview(tk.END)
+                self.text_area.after(0, lambda: (
+                    self.text_area.insert(tk.END, f"错误: 无法连接到 {port}\n"),
+                    self.text_area.yview(tk.END)
+                ))
         except Exception as e:
-            self.text_area.insert(tk.END, f"错误: 无法连接到 {port}\n")
-            self.text_area.yview(tk.END)   
+            self.text_area.after(0, lambda: (
+                self.text_area.insert(tk.END, f"错误: 无法连接到 {port}\n"),
+                self.text_area.yview(tk.END)   
+            ))
 
     def close_serial(self):
         if self.serial_conn:
@@ -2372,12 +2735,105 @@ class SerialGUI:
             self.baud_menu.config(state="readonly")
             self.refresh_btn.config(state="normal")
             self.status_canvas.config(bg="gray")
-            self.text_area.insert(tk.END, "串口已关闭\n")
-            self.text_area.yview(tk.END)
+            self.text_area.after(0, lambda: (
+                self.text_area.insert(tk.END, "串口已关闭\n"),
+                self.text_area.yview(tk.END)
+            ))
             if self.loop_sending:
                 self.loop_sending = False
                 self.single_loop_send_btn.config(text="单行循环")
-    
+
+    def open_ssh_config_window(self):
+        win = tk.Toplevel(self.root)
+        win.title("SSH 串口配置")
+
+        # 固定初始大小
+        width, height = 200, 180
+        screen_w = win.winfo_screenwidth()
+        screen_h = win.winfo_screenheight()
+        x = (screen_w - width) // 2
+        y = (screen_h - height) // 2
+        win.geometry(f"{width}x{height}+{x}+{y}")
+
+        tk.Label(win, text="IP 地址:").pack()
+        ip_entry = tk.Entry(win)
+        ip_entry.pack()
+        ip_entry.insert(0, getattr(self, 'ssh_ip', ''))
+
+        tk.Label(win, text="用户名:").pack()
+        user_entry = tk.Entry(win)
+        user_entry.pack()
+        user_entry.insert(0, getattr(self, 'ssh_user', ''))
+
+        tk.Label(win, text="密码:").pack()
+        pwd_entry = tk.Entry(win, show="*")
+        pwd_entry.pack()
+        pwd_entry.insert(0, getattr(self, 'ssh_password', ''))
+
+        def connect_ssh():
+            self.ssh_ip = ip_entry.get().strip()
+            self.ssh_user = user_entry.get().strip()
+            self.ssh_password = pwd_entry.get().strip()
+
+            threading.Thread(target=self._ssh_connect_thread, daemon=True).start()
+
+        def disconnect_ssh():
+            self._ssh_disconnect()
+
+        btn_frame = tk.Frame(win)
+        btn_frame.pack(pady=5)
+
+        tk.Button(btn_frame, text="连接", command=connect_ssh).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="断开", command=disconnect_ssh).pack(side=tk.LEFT, padx=5)
+
+    def _ssh_connect_thread(self):
+        try:
+            # 创建 SSH 客户端
+            self.ssh_client = paramiko.SSHClient()
+            self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self.ssh_client.connect(
+                hostname=self.ssh_ip,
+                username=self.ssh_user,
+                password=self.ssh_password
+            )
+
+            # 创建交互式 shell
+            self.ssh_channel = self.ssh_client.invoke_shell()
+            self.ssh_channel.settimeout(0.0)  # 非阻塞模式
+
+            # 更新状态颜色
+            self.ssh_status_canvas.config(bg="green")
+
+            # 启动接收线程
+            threading.Thread(target=self._ssh_receive_loop, daemon=True).start()
+
+        except Exception as e:
+            messagebox.showerror("SSH 连接失败", str(e))
+
+    def _ssh_disconnect(self):
+        try:
+            if hasattr(self, 'ssh_channel'):
+                self.ssh_channel.close()
+            if hasattr(self, 'ssh_client'):
+                self.ssh_client.close()
+            self.ssh_status_canvas.config(bg="gray")
+        except:
+            pass
+
+    def _ssh_receive_loop(self):
+        """接收 SSH 数据并写入 text_area"""
+        try:
+            while True:
+                if not self.ssh_channel.recv_ready():
+                    time.sleep(0.05)
+                    continue
+                data = self.ssh_channel.recv(4096).decode('utf-8', errors='ignore')
+                if not data:
+                    break
+                self.text_area.after(0, self._append_text, data)
+        except Exception:
+            pass
+
     # 创建自动保存文件
     def create_auto_save_file(self):
         path = self.auto_save_path_entry.get().strip()
@@ -2444,9 +2900,7 @@ class SerialGUI:
                 if self.timestamp_onoff.get():
                     timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                     # 使用 after(0, lambda: ( 将要执行的语句包住，可以让子进程不会跟其他进程冲突
-                    self.text_area.after(0, lambda: (
-                        self.text_area.insert(tk.END, f"\nSend at    {timestamp_str}\n", "blue")
-                    ))
+                    self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"\nSend at    {timestamp_str}\n", "blue")))
                 self.serial_conn.send_data(data_to_send)
                 # 使用 after(0, lambda: ( 将要执行的语句包住，可以让子进程不会跟其他进程冲突
                 self.text_area.after(0, lambda: (
@@ -2477,11 +2931,12 @@ class SerialGUI:
                         # 如果选中时间戳，则先插入接收时间
                         if self.timestamp_onoff.get() and self.allow_new_timestamp:
                             timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                            self.text_area.insert(tk.END, f"\nReceive at {timestamp_str}\n", "green")
+                            self.text_area.after(0, lambda: self.text_area.insert(tk.END, f"\nReceive at {timestamp_str}\n", "green"))
                             self.allow_new_timestamp = False  # 插入一次时间戳后禁止后续插入
                         received_str = data_bytes.decode(errors='replace')
-                        self.text_area.insert(tk.END, received_str)
-                        self.text_area.yview(tk.END)  # 自动滚动到末尾
+                        #self.text_area.insert(tk.END, received_str)
+                        self.text_area.after(0, lambda: self.text_area.insert(tk.END, received_str))
+                        self.text_area.after(0, lambda: self.text_area.yview(tk.END))  # 自动滚动到末尾
                         self.received_bytes += len(data_bytes)
                         self.update_data_stats()
                     else:
@@ -2583,7 +3038,7 @@ class SerialGUI:
                 # 缓冲区为空时，仅发送一个回车
                 self.send_via_serial("",
                                      add_newline=True,insert_display=False)
-            self.text_area.yview(tk.END)
+            self.text_area.after(0, lambda: (self.text_area.yview(tk.END)))
             self.update_data_stats()
             # 只要按下回车，就在文本框中进行换行
             #self.append_to_text_area(f"\n")
@@ -2591,8 +3046,10 @@ class SerialGUI:
             self.input_buffer = ""
             self.input_buffer_cursor = 0
             # Move cursor to the end of the text area
-            self.text_area.mark_set("insert", "end")
-            self.text_area.see("end")
+            self.text_area.after(0, lambda: (
+                self.text_area.mark_set("insert", "end"),
+                self.text_area.see("end")
+            ))
             #return "break"  # Prevent default newline insertion
         
             # 处理 BackSpace 键：删除光标前的一个字符
@@ -2651,15 +3108,15 @@ class SerialGUI:
         if 0 <= self.sent_commands_number < len(self.sent_commands):
             command = self.sent_commands[self.sent_commands_number]
             # 删除当前输入缓冲区的内容
-            self.text_area.delete("insert -%dc" % len(self.input_buffer), "insert")
+            self.text_area.after(0, lambda: (self.text_area.delete("insert -%dc" % len(self.input_buffer), "insert")))
             # 插入历史命令
-            self.text_area.insert("insert", command)
+            self.text_area.after(0, lambda: (self.text_area.insert("insert", command)))
             self.input_buffer = command
             self.input_buffer_cursor = len(command)
 
     def _clear_input_buffer(self):
         """清空输入缓冲区。"""
-        self.text_area.delete("insert -%dc" % len(self.input_buffer), "insert")
+        self.text_area.after(0, lambda: (self.text_area.delete("insert -%dc" % len(self.input_buffer), "insert")))
         self.input_buffer = ""
         self.input_buffer_cursor = 0
 
@@ -2743,9 +3200,9 @@ class SerialGUI:
                         start_line = int(total_lines/2) + 1
                         # 清除要删除区间所有标签的标记范围
                         for tag in self.text_area.tag_names():
-                            self.text_area.tag_remove(tag, "1.0", f"{start_line}.0")
+                            self.text_area.after(0, lambda: (self.text_area.tag_remove(tag, "1.0", f"{start_line}.0")))
                         # 删除从第一行到 start_line 行的起始部分
-                        self.text_area.delete("1.0", f"{start_line}.0")
+                        self.text_area.after(0, lambda: (self.text_area.delete("1.0", f"{start_line}.0")))
                         self.last_auto_delete_lines = start_line - 1				
                         # 更新文本框的内容后，重新记录最后保存的位置
                         self.last_saved_index = self.text_area.index("end-1c")
@@ -2774,6 +3231,8 @@ class SerialGUI:
             'file_max_capacity': self.max_capacity_entry.get(),
             'script_path': self.script_path_entry.get(),
             'script_file': self.script_file_combo.get(),
+            'multi_script_path': self.multi_script_path_entry.get(),
+            'multi_script_file': self.multi_script_file_combo.get(),
             'loop_interval': self.loop_interval_entry.get(),
             'default_delay_time': self.default_delay_time_entry.get(),
             'loop_count': self.loop_count_entry.get(),
@@ -2929,7 +3388,11 @@ class SerialGUI:
         self.auto_save_path_frame.configure(background=window_bg_color)
         self.auto_save_frame.configure(background=window_bg_color)
         self.button_frame.configure(background=window_bg_color)
+        self.multi_button_frame.configure(background=window_bg_color)
         self.path_frame.configure(background=window_bg_color)
+        self.script_buttons_frame.configure(background=window_bg_color)
+        self.multi_script_buttons_frame.configure(background=window_bg_color)
+        self.multi_path_frame.configure(background=window_bg_color)
         self.file_capacity_frame.configure(background=window_bg_color)
 
         # 设置窗口背景色
@@ -2946,21 +3409,21 @@ class SerialGUI:
                         self.multi_loop_label, self.current_loop_count_label,
                         self.default_delay_time_label, self.loop_count_label, self.window_name_label, self.choose_port_label, 
                         self.baud_label, self.auto_save_label,self.auto_save_path_label,self.save_file_name_label,self.file_max_volume_label,
-                        self.MB_label,self.script_path_label,self.script_file_label,self.config_multi_loop_label]:
+                        self.MB_label,self.script_path_label,self.multi_script_path_label]:
             widget.configure(background=window_bg_color, foreground=text_fg_color)
            
         # 设置所有Entry的颜色
         for widget in [ self.loop_interval_entry, self.send_all_terminal_entry,
                         self.send_all_over_time_entry, self.default_delay_time_entry,
                         self.loop_count_entry, self.window_name_entry,self.file_name_entry,
-                        self.max_capacity_entry,self.script_path_entry]:
-            widget.configure(background=window_bg_color, foreground=text_fg_color, insertbackground=cursor_color)
+                        self.max_capacity_entry,self.script_path_entry,self.multi_script_path_entry]:
+            widget.configure(background=window_bg_color, foreground=text_fg_color) #, insertbackground=cursor_color
             
         # 设置所有Button的颜色
         for widget in [self.show_keys_btn, self.show_script_btn, self.toggle_sidebar_btn,self.theme_btn,
                         self.send_btn, self.single_loop_send_btn, self.clear_screen_btn,
                         self.start_button, self.pause_button, self.stop_button,
-                        self.refresh_btn, self.toggle_port_btn, self.square_button,self.script_path_button,
+                        self.refresh_btn, self.toggle_port_btn, self.square_button,self.script_path_button,self.multi_script_path_button,
                         self.load_script_button,self.save_script_button,self.save_as_script_button,self.open_multi_loop_btn,
                         self.save_multi_loop_btn,self.save_as_multi_loop_btn]:
             widget.configure(background=window_bg_color, foreground=text_fg_color)
@@ -3027,7 +3490,7 @@ class SerialGUI:
                 self.max_capacity_entry.delete(0, 'end')
                 self.max_capacity_entry.insert(0, setup['file_max_capacity'])
             
-            # 脚本路径
+            # 按键路径
             if 'script_path' in setup:
                 self.script_path_entry.delete(0, 'end')
                 self.script_path_entry.insert(0, setup['script_path'])
@@ -3045,13 +3508,38 @@ class SerialGUI:
                 #if ts_files:
                     #self.script_file_combo.current(0)
             
-            # 脚本文件下拉框
+            # 按键文件下拉框
             if 'script_file' in setup:
                 ts_files = list(self.script_file_combo['values'])  # 先将可选值转为列表
                 if setup['script_file'] in ts_files:
                     idx = ts_files.index(setup['script_file'])
                     self.script_file_combo.current(idx)
                     self.load_script()
+            # 脚本路径
+            if 'multi_script_path' in setup:
+                self.multi_script_path_entry.delete(0, 'end')
+                self.multi_script_path_entry.insert(0, setup['script_path'])
+                self.multi_script_path_entry.icursor(tk.END)      # 将光标移到文本末尾
+                self.multi_script_path_entry.update_idletasks()     # 强制更新界面
+                self.multi_script_path_entry.xview_moveto(1.0)        # 滚动显示到文本末尾
+                # 扫描路径下所有后缀为 .ts 的文件
+                try:
+                    ts_files = [f for f in os.listdir(setup['multi_script_path'])
+                                if os.path.isfile(os.path.join(setup['multi_script_path'], f)) and f.lower().endswith('.txt')]
+                except Exception as e:
+                    ts_files = []
+                # 更新下拉选择框
+                self.multi_script_file_combo['values'] = ts_files
+                #if ts_files:
+                    #self.script_file_combo.current(0)
+            
+            # 脚本文件下拉框
+            if 'multi_script_file' in setup:
+                ts_files = list(self.multi_script_file_combo['values'])  # 先将可选值转为列表
+                if setup['multi_script_file'] in ts_files:
+                    idx = ts_files.index(setup['multi_script_file'])
+                    self.multi_script_file_combo.current(idx)
+                    self.open_multi_loop_file()
             
             # 循环间隔
             if 'loop_interval' in setup:
@@ -3109,7 +3597,7 @@ try:
     root.mainloop()
 except Exception:
     with open("TermPlus_crash.log", "a", encoding="utf-8") as f:
-        f.write("\n\n==== Crash on {} ====\n".format(datetime.datetime.now()))
+        f.write("\n\n==== Crash on {} ====\n".format(datetime.now()))
         f.write(traceback.format_exc())
     messagebox.showerror("程序异常", "发生未捕获异常，程序已记录日志，参见TermPlus_crash.log。")
 
