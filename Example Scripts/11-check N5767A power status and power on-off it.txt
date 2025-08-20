@@ -1,0 +1,28 @@
+# 本示例展示了如何初始化SCPI设备并访问其接口
+# 示例使用的函数：
+# visa_init()
+# visa_query()
+# visa_write()
+# visa_read() read函数未进行展示，该电源的开关不需要进行单独的read操作
+
+# to control N5767A, your computer must install 'Keysight Connection Expert' first
+# you could see the address for visa_init in 'Keysight Connection Expert' when N5767A is connected to your computer via USB
+# this init fucntion is working under sharing mode, it would not stop "Keysight Connection Expert' to work at the same time
+
+# 函数初始化的地址为示例，需要在使用前通过'Keysight Connection Expert'进行确认你要操作的设备的地址
+send visa_init(USB0::0x0957::0xA407::US19E8463P::0::INSTR)
+wait 1
+send visa_query(OUTP?)
+wait 1
+send visa_write(OUTP OFF)
+wait 1
+send visa_query(OUTP?)
+wait 3
+send visa_write(OUTP ON)
+wait 1
+send visa_query(OUTP?)
+wait 1
+
+
+
+
