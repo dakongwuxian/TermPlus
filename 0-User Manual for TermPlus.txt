@@ -1,10 +1,18 @@
-TermPlus 用户手册
+
+TermPlus 用户手册 - last edit on 2025.8.27 by xian wu
 
 0、简介
 
 本软件由Xian Wu个人开发，为单一exe文件的GUI程序，可在windows系统上运行（如果要在其他操作系统上运行需要使用原代码重新打包），使用python 3.10和VS2022的环境，借助了ChatGPT的帮助。
 
-开发该软件的主要目的为解决Term和IPOP软件的缺陷，满足对易用性需求（循环测试语句不好写，自动保存日志不方便，长期运行容易崩溃，循环发送会占用进程等），同时增加对Power Shell（CMD终端）和SCPI（程控电源）的支持（实现对指定IP的linux设备的文件写入操作和程控电源的掉电重启的需求）。
+开发该软件的主要目的为解决Term和IPOP软件的缺陷，满足对易用性需求（循环测试语句不好写，自动保存日志不方便，长期运行容易崩溃，循环发送会占用进程等）。
+
+该软件还增加了几个额外的功能，包括：
+-对Power Shell（CMD终端）的支持，可以通过该GUI的脚本直接控制power shell
+-和SCPI（程控电源）的支持（实现对指定IP的linux设备的文件写入操作和程控电源的掉电重启的需求）
+-对SSH远程端口的访问，可以直接远程连接SSH server的虚拟串口
+-可以通过简化后的python的代码获取串口回复的内容，进行匹配、判断和后续操作
+-可以通过脚本开启/关闭COM口，以及修改COM口的配置
 
 该软件同时也增加了时间戳、上下键访问历史发送指令、简易循环脚本语法、脚本关键字高亮、自动清屏（长时间运行更稳定）和日志保存等功能。
 
@@ -14,7 +22,14 @@ TermPlus 用户手册
 
 双击TermPlus.exe，窗口启动，选择串口下拉框，选择想要打开的COM口，选择合适的波特率（如果没有合适的波特率可以直接输入一个波特率），点击“打开串口”。
 
-如果启动程序时还没插入串口设备，等串口设备插入后，点击刷新串口，则可以重新获取到可连接的串口设备。
+如果启动程序时还没插入串口设备，等串口设备插入后，点击“检测可用串口”，则可以重新获取到可连接的串口设备。
+
+也可以点击“SSH配置”进入SSH界面，可以远程访问其他设备的SSH server的虚拟串口，跟直接连接物理串口的效果是相同的。
+
+通过"配置SSH"的按键弹出的窗口来设置IP-账号-密码，例如10.166.1xx.xx - root - （密码为空），点击连接，等待连接成功或报告失败。
+
+串口或SSH虚拟串口连接成功后，可以看到对应的状态颜色指示块变成绿色。
+
 
 1.2 主窗口发送和接收
 
@@ -38,37 +53,46 @@ TermPlus 用户手册
 
 点击ON，则按键切换为OFF，自动保存关闭。
 
-自动保存的同时会检测当前主窗口中的字符数量是否超过1万，超过则会将当前屏幕之前的所有内容删除。
+自动保存的同时会检测当前主窗口中的字符数量是否超过1万，超过则会删除整个窗口中前一半的字符。
 
-1.5 加载脚本和标签页区域
+自动删除功能会被脚本区域的wait for等函数暂时禁用，不影响实际使用。
 
-点击脚本路径下方的按键，选择文件夹，脚本文件下拉选择框会将该路径下的所有.ts文件显示出来，选择想要加载的文件，点击“加载脚本”按键，则该脚本文件中包含的内容都会加载到标签页区域。
+1.5 按键区域
 
-使用Notepad++打开.ts文件时有可能会更改该文件的编码格式，导致无法被本软件正常加载，可以使用Notepad++将文件编码格式转变为ANSI即可。
+点击“按键路径/选择”下方的按键，选择文件夹，下拉选择框会将该路径下的所有.ts文件显示出来，选择想要加载的文件，点击“加载”按键，则该文件中包含的内容都会加载到标签页区域。
 
-单击标签页区域的按键，则该按键的多行命令会逐行发送出去，如果“等待字符”中有字符且“超时时间”中有数字，则每次发送后会等待该字符再发送下一行，如果超时则会停止发送。如果“等待字符”或”超时时间“为空，则默认每行发送间等待100ms。
+单击按键标签页区域的按键，则该按键的多行字符串会逐行发送出去。
+如果“等待符号”或”超时时间“为空，则默认每行发送间等待100ms。
+如果“等待符号”中有单个字符或多个用逗号分隔开的字符，且“超时时间”中有数字，则每次发送后会在任意等待字符出现后再发送下一行，如果超时则会停止发送。
 
 发送的命令中，如果有wait t或wait for x for t，则会执行延时和等待指定内容的延时操作，其他内容会直接被逐行发送出去。
 
 右键点击标签页区域的按键，还可以编辑该按键的名称和内容，也可以在弹出的窗口中进行：发送当前行、发送当前行并移动到下一行、发送全部、保存、保存并退出等操作。
 
-标签页区域的内容，也可以通过保存脚本、另存为按键进行保存和另存为。
+按键标签页区域的内容，可以通过“保存”、“另存”按键进行保存和另存为。
 
-1.6 多行循环发送
+按键区域的任意按键，可以通过右键edit打开其内容窗口，在该窗口中有该按键的名称和实际发送的多行内容。
 
-多行循环发送区域，可以输入多行内容，当点击“多行循环”按键后，会逐行发送多行循环发送内的每一行，每次发送的间隔时间可以在“默认间隔时间”的文本框中进行指定，如果“循环次数”文本框中的数字为0，则会永久循环发送，如果为1，则发送1次后结束，如果为n，则循环n次后结束。当前的循环次数会显示在“当前执行循环”处。
+多行内容的任意一行可以用#在行的开头进行注释，被注释的行不会被发送，被注释的行会使用绿色的斜体进行显示。
 
-多行循环过程中，再次点击该按键，可以提前停止循环。
+1.6 脚本区域
 
-多行循环发送的文本框中的内容，可以打开.txt文件进行加载，也可以保存和另存为。
+脚本区域，可以输入多行内容，当点击“开始”按键后，会逐行运行脚本区域多行文本框内的每一行代码，对于send xxx和send_line(xxx)语句，“行间延时ms”文本框中有内容时，会使得send函数发送后延时对应的时间。
+脚本区域的send x的下一行如果没有wait或wait for，则执行时会增加一条wait函数，wait的时间为默认间隔时间。
 
-多行循环发送的send x的下一行如果没有wait或wait for，则执行时会增加一条wait函数，wait的时间为默认间隔时间。
+如果“循环次数”文本框中的数字为0，则会永久循环发送，如果为1，则发送1次后结束，如果为n，则循环n次后结束。
+当前的循环次数会显示在“当前执行循环”处。
+
+脚本运行过程中，可以使用暂停和停止按键，也可以在暂停后再次点击开始。
+
+脚本区域的文本框中的内容，可以指定文件夹路径，选择下拉文本框中的.txt文件，点击打开，即会将该txt文件的所有内容加载到文本框中。
+在文本框的内容修改后，也可以保存和另存为。
 
 1.7 界面调整按钮
 
 在左上方有“按键”、“脚本”、“配置”、“主题”等按钮，前三个按键按下后会切换对应区域的显示和隐藏，主题按键按下后会切换浅色和深色界面。
 
-由于tkinter控件的限制和windows系统的限制，窗口的标题栏和菜单栏无法进行颜色修改。
+窗口的标题栏和菜单栏无法进行颜色修改。
 
 2、细节说明
 
@@ -80,15 +104,20 @@ TermPlus 用户手册
 
 在主窗口中输入的字符，会暂存在buffer中，按下enter键时才会发送并清空buffer。
 
+主窗口支持撤销和恢复操作，可以使用ctrl+z和ctrl+y。
+这与linux的停止按键冲突了，linux的快捷键更改为了Alt+c/d/z/l/a/e/k/u。
+
+在主窗口中无法使用键盘的方向键进行自由的移动，仅能在输入的字符串区域内进行左右移动，上下键默认为历史命令的浏览键。
+
 2.2 自动保存设置和加载设置
 
 运行exe时，会检测是否存在.ini文件及其配置，如果存在则会将相关配置加载到整个界面。
 
 关闭exe时，会将配置保存到.ini文件中。
 
-2.3 多行循环发送
+2.3 脚本区域
 
-该文本框中的内容，相当于一个可供python代码运行的空间，点击循环发送后，会将所有的行合并成一个可执行的字符串，然后执行该字符串的代码。
+该文本框中的内容，相当于一个可供python代码运行的空间，点击“开始”，会将所有的行合并成一个可执行的代码字符串，然后执行代码。
 
 针对send x，wait t， wait for x for t三个函数，进行了特殊处理，这三个函数不满足python语法，但会转换成符合python语法的函数去执行。
 
@@ -96,9 +125,74 @@ send_line(text)
 wait(seconds)
 wait_for(target_string, over_time)
 
-可以参考example.txt的文档，了解for while循环，以及send x，wait t， wait for x for t函数的使用方法。
+可以参考Example Scripts文件夹中的txt文档，了解for while循环，以及所有自定义函数的使用方法。
 
-后续又增加了对Power Shell和SCPI函数的支持，参见对应的示例。
+-增加了对Power Shell和SCPI函数的支持，参见对应的示例。
+-增加了获取主窗口文本的函数，参见示例。
+-增加了显示show_str(“xxx”)函数。
+
+目前所有支持的自定义函数包括：
+	send xxx,等价于send_line(xxx)
+	wait x，等价于wait(x)
+	wait for xxxx for t，等价于wait_for(xxx,t)
+	wait_for_any(["xxx","yyy","zzz","www"],t)
+	messagebox.showinfo("title_str", "content_str")
+	raise StopLoopException("stop")
+	show_str(str_to_show)
+	show_date_time()
+	get_last_n_lines(line_amount)
+	get_future_n_lines_or_till_overtime(line_amount,overtime)
+	get_future_lines_till_str_or_overtime(str_to_end,overtime)
+	connect_serial()
+	close_serial()
+	toggle_serial()
+	set_port("COMx")
+	set_baudrate("xxxx")
+	visa_init()
+	visa_query()
+	visa_write()
+	visa_read() read函数未进行展示，电源的开关不需要进行单独的read操作
+	open power shell
+	power shell send xxx
+
+除了自定义函数，脚本区域可以运行大部分python内置的代码，如果有不支持的代码，也可以尝试使用termplus的源代码import库之后进行打包。
+
+目前已经import的库如下所示。
+
+from logging import raiseExceptions
+import tkinter as tk
+from tkinter import scrolledtext, ttk, Canvas, simpledialog, messagebox, filedialog
+import tkinter.font as tkFont
+import serial
+import serial.tools.list_ports
+import threading
+import time
+import os
+import re
+import configparser
+import ast
+from datetime import datetime
+import traceback
+import builtins
+import keyword
+import subprocess
+import pyvisa
+rm = pyvisa.ResourceManager('@py')
+from pyvisa.constants import AccessModes
+import base64
+from io import BytesIO
+from PIL import Image, ImageTk
+import paramiko
+import sys
+import io
+import platform
+import textwrap
+import inspect
+from version_info import VERSION
+
+脚本区域如果检测到代码有问题或运行时出现异常，会停止运行并报告该异常，可以从弹出的窗口中观察到具体的报错内容。
+
+该报错会生成一个script_error_info.txt，可以在exe相同目录下看到其内容。
 
 2.4 加载脚本
 
@@ -120,7 +214,7 @@ wait_for(target_string, over_time)
 
 每10秒会运行一次自动保存和自动“清屏”，如果自动保存未开启，则不保存。自动“清屏”一直都会进行。
 
-自动“清屏”指的是，如果主窗口中的字符数量超过10万，则会仅保留总行数后一半的行数的内容，删除掉前面的内容。
+自动“清屏”指的是，如果主窗口中的字符数量超过10万，则会删除掉前面一半字符数的内容。
 
 2.8 Power Shell
 
@@ -129,6 +223,13 @@ wait_for(target_string, over_time)
 2.9 SCPI
 
 增加了对SCPI的支持，可以控制程控电源等设备，参见Example Scripts。
+
+2.10 时间戳
+
+勾选时间戳box之后，发送和接收的内容前都会增加一个“Send at xx:xx:xx.xxx”和“Receive atxx:xx:xx.xxx”，分别为蓝色和绿色。
+
+接收时间戳会在第一个字符接收到后显示，显示后如果超过0.1秒没有持续接收到字符，才会显示下一个接收时间戳。
+
 
 
 
