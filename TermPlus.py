@@ -152,7 +152,7 @@ class SerialGUI:
 
         self.auto_save_file = None
         self.last_saved_index = "1.0"  # 记录 autosave 时最后保存的位置
-        self.auto_save_stop = False   # 控制 autosave 线程停止的标志
+        self.auto_save_stop = True   # 控制 autosave 线程停止的标志
         self.root = root
         self.last_send_index = None
         self.wait_for_initial_index  = None
@@ -172,7 +172,7 @@ class SerialGUI:
         window_width = 910
         window_height = 790
         # 窗口最小尺寸
-        root.minsize(910,600)
+        root.minsize(910,700)
         # 窗口关闭时的回调
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         # 新增：用于记录多行循环发送文本对应的文件路径
@@ -260,6 +260,8 @@ class SerialGUI:
         self.main_frame.grid_rowconfigure(5, weight=0)
         self.main_frame.grid_rowconfigure(6, weight=0)
         self.main_frame.grid_rowconfigure(7, weight=0)
+        self.main_frame.grid_rowconfigure(8, weight=0)
+        self.main_frame.grid_rowconfigure(9, weight=0)
         self.main_frame.grid_columnconfigure(0, weight=1)           # 第一列扩展
         self.main_frame.grid_columnconfigure(1, weight=0)
         
@@ -492,16 +494,49 @@ class SerialGUI:
         self.send_all_over_time_entry.place(relx=0, rely=0.5, anchor="w",x=240)
         self.send_all_over_time_entry.insert(0, "5")
 
-        # Row 5: Notebook区域（标签页区域），创建一个一行两列的区域，让notebook占据第一行一列，第一行第二列固定宽度。
-        self.row_5_frame = tk.Frame(self.main_frame, height=186)#width=730, 
-        self.row_5_frame.grid(row=5, column=0, sticky="nsew", padx=(0,20), pady=(0,10))
+        # row 5
+        # 按键控制控件行
+        self.row_5_frame = tk.Frame(self.main_frame, width=730, height=30)
+        self.row_5_frame.grid(row=5, column=0, sticky="ew", padx=(10,0), pady=(0,5))
+        self.row_5_frame.grid_propagate(False) # 固定该父容器
+
+        # 脚本路径选择框：上方标签、文本框及小三角按钮
+        self.script_path_label = tk.Label(self.row_5_frame, text="按键选择")
+        self.script_path_label.place(relx=0, rely=0.5, anchor="w",x=0)
+
+        # 文本框宽度与关闭串口按钮一致，文本右对齐
+        self.script_path_entry = tk.Entry(self.row_5_frame, width=25, justify="right")
+        self.script_path_entry.place(relx=0, rely=0.5, anchor="w",x=60)
+        # 路径浏览按键
+        self.script_path_button = tk.Button(self.row_5_frame, text="…", command=self.choose_script_path)
+        self.script_path_button.place(relx=0, rely=0.5, anchor="w",x=240)
+        # 下拉选择框，用于显示脚本路径下所有 .ts 文件
+        self.script_file_combo = ttk.Combobox(self.row_5_frame, values=[], width=42, state="readonly")
+        self.script_file_combo.place(relx=0, rely=0.5, anchor="w",x=270)
+
+        # 加载按钮
+        self.load_script_button = tk.Button(self.row_5_frame, width = 5, text="加载", command=self.load_script)
+        self.load_script_button.place(relx=0, rely=0.5, anchor="w",x=585)
+        # 保存按钮
+        self.save_script_button = tk.Button(self.row_5_frame,width = 5, text="保存", command=self.save_script)
+        self.save_script_button.place(relx=0, rely=0.5, anchor="w",x=635)
+        # 另存按钮
+        self.save_as_script_button = tk.Button(self.row_5_frame, width = 5,text="另存", command=self.save_as_new_script)
+        self.save_as_script_button.place(relx=0, rely=0.5, anchor="w",x=685)
+
+
+
+
+        # Row 6: Notebook区域（标签页区域），创建一个一行两列的区域，让notebook占据第一行一列，第一行第二列固定宽度。
+        self.row_6_frame = tk.Frame(self.main_frame, height=186)#width=730, 
+        self.row_6_frame.grid(row=6, column=0, sticky="nsew", padx=(0,20), pady=(0,10))
 
         # 设置 notebook_frame 内部的行和列，让第二列默认为0，使得第一列不会被右侧悬浮的控件们挡住
-        self.row_5_frame.grid_columnconfigure(0, weight=1)           # 第一列扩展
-        self.row_5_frame.grid_columnconfigure(1, weight=0)
+        self.row_6_frame.grid_columnconfigure(0, weight=1)           # 第一列扩展
+        self.row_6_frame.grid_columnconfigure(1, weight=0)
 
         #self.notebook = ttk.Notebook(self.row_5_frame, style='Custom.TCheckbutton')
-        self.notebook = ttk.Notebook(self.row_5_frame,)# 本身使用默认样式 'TNotebook' :contentReference[oaicite:5]{index=5}
+        self.notebook = ttk.Notebook(self.row_6_frame,)# 本身使用默认样式 'TNotebook' :contentReference[oaicite:5]{index=5}
         self.notebook.grid(row=0, column=0, columnspan=1, padx=(10,0), pady=0, sticky="nsew")
         self.add_tab("Tab 1")
         self.add_tab("Tab 2")
@@ -515,57 +550,57 @@ class SerialGUI:
         # 绑定右键事件到 notebook，弹出上下文菜单
         self.notebook.bind("<Button-3>", self.show_tab_menu)
 
-        # Row 6, “多行循环”等文字和按键
-        self.row_6_frame = tk.Frame(self.main_frame, width=730, height=34)
-        self.row_6_frame.grid(row=6, column=0, sticky="nw", padx=(10,0), pady=(0,0))
+        # Row 7, “多行循环”等文字和按键
+        self.row_7_frame = tk.Frame(self.main_frame, width=730, height=34)
+        self.row_7_frame.grid(row=7, column=0, sticky="nw", padx=(10,0), pady=(0,0))
 
         # 文字“脚本区域”
-        self.multi_loop_label = tk.Label(self.row_6_frame, text="脚本区域")
+        self.multi_loop_label = tk.Label(self.row_7_frame, text="脚本区域")
         self.multi_loop_label.place(relx=0, rely=0.5, anchor="w",x=0)
 
         # “行间延时ms:”文字
-        self.default_delay_time_label = tk.Label(self.row_6_frame, text="行间延时ms:")
+        self.default_delay_time_label = tk.Label(self.row_7_frame, text="行间延时ms:")
         self.default_delay_time_label.place(relx=0, rely=0.5, anchor="w",x=235)
 
         # 文字，当前执行循环：x
         self.current_loop_count = tk.StringVar(value="当前循环：0000")
-        self.current_loop_count_label = tk.Label(self.row_6_frame, textvariable=self.current_loop_count)
+        self.current_loop_count_label = tk.Label(self.row_7_frame, textvariable=self.current_loop_count)
         self.current_loop_count_label.place(relx=0, rely=0.5, anchor="w",x=365)
 
         # 行间延时ms:单行文本框
-        self.default_delay_time_entry = tk.Entry(self.row_6_frame, width=5)
+        self.default_delay_time_entry = tk.Entry(self.row_7_frame, width=5)
         self.default_delay_time_entry.place(relx=0, rely=0.5, anchor="w",x=315)
         self.default_delay_time_entry.insert(0,0)
         # “循环次数”文字
-        self.loop_count_label = tk.Label(self.row_6_frame, text="循环次数:")
+        self.loop_count_label = tk.Label(self.row_7_frame, text="循环次数:")
         self.loop_count_label.place(relx=0, rely=0.5, anchor="w",x=520-55)
         # 单行文本框,“循环次数”右侧
-        self.loop_count_entry = tk.Entry(self.row_6_frame, width=5)
+        self.loop_count_entry = tk.Entry(self.row_7_frame, width=5)
         self.loop_count_entry.place(relx=0, rely=0.5, anchor="w",x=580-55)
         self.loop_count_entry.insert(0,3)
         # “开始”按钮，放在单行文本框右侧
-        self.start_button = tk.Button(self.row_6_frame, width=5, text="开始", command=self.start_multi_loop_send, state=tk.NORMAL)
+        self.start_button = tk.Button(self.row_7_frame, width=5, text="开始", command=self.start_multi_loop_send, state=tk.NORMAL)
         self.start_button.place(relx=0, rely=0.5, anchor="w",x=640-55)
         # “暂停”按钮
-        self.pause_button = tk.Button(self.row_6_frame, width=5, text="暂停", command=self.pause_resume_multi_loop_send, state=tk.DISABLED)
+        self.pause_button = tk.Button(self.row_7_frame, width=5, text="暂停", command=self.pause_resume_multi_loop_send, state=tk.DISABLED)
         self.pause_button.place(relx=0, rely=0.5, anchor="w", x=690-55)
         # “停止”按钮
-        self.stop_button = tk.Button(self.row_6_frame, width=5, text="停止", command=self.stop_multi_loop_send, state=tk.DISABLED)
+        self.stop_button = tk.Button(self.row_7_frame, width=5, text="停止", command=self.stop_multi_loop_send, state=tk.DISABLED)
         self.stop_button.place(relx=0, rely=0.5, anchor="w", x=740-55)
          # 暂停控制的 Event，以及标记当前暂停状态
         self.pause_event = threading.Event()
         self.pause_event.set()   # 未暂停状态
         self.paused = False        # 标记是否处于暂停状态
         
-        # Row 7
+        # Row 8
         # 多行文本框
         
-        self.row_7_frame = tk.Frame(self.main_frame,width=730, height=150)
-        self.row_7_frame.grid(row=7, column=0, sticky="ew", padx=10, pady=(0,10))
-        self.row_7_frame.grid_propagate(False) # 固定该父容器
-        #self.multi_loop_text = scrolledtext.ScrolledText(self.row_7_frame,height=10)
+        self.row_8_frame = tk.Frame(self.main_frame,width=730, height=150)
+        self.row_8_frame.grid(row=8, column=0, sticky="ew", padx=10, pady=(0,0))
+        self.row_8_frame.grid_propagate(False) # 固定该父容器
+        #self.multi_loop_text = scrolledtext.ScrolledText(self.row_8_frame,height=10)
         self.multi_loop_text = scrolledtext.ScrolledText(
-            self.row_7_frame,
+            self.row_8_frame,
             height=15,
             undo=True,               # 打开撤销功能 :contentReference[oaicite:0]{index=0}
             autoseparators=False,     # 禁用自动分隔编辑操作 :contentReference[oaicite:1]{index=1}
@@ -662,10 +697,49 @@ class SerialGUI:
         pattern = r"\b(?:" + "|".join(escaped) + r")\b"
         self._func_highlight_re = re.compile(pattern)
         
+
+
+
+        # row 9
+        # 脚本控制区域
+        self.row_9_frame = tk.Frame(self.main_frame,width=730, height=30)
+        self.row_9_frame.grid(row=9, column=0, sticky="ew", padx=(10,0), pady=(2,0))
+        self.row_9_frame.grid_propagate(False) # 固定该父容器
+
+        # 脚本相关配置控件
+        # multi_script_path_label
+        self.multi_script_path_label = tk.Label(self.row_9_frame, text="脚本选择")
+        self.multi_script_path_label.place(relx=0, rely=0.5, anchor="w",x=0)
+
+        # 路径选择文本框
+        self.multi_script_path_entry = tk.Entry(self.row_9_frame, width=25, justify="right")
+        self.multi_script_path_entry.place(relx=0, rely=0.5, anchor="w",x=60)
+
+        # 路径按钮
+        self.multi_script_path_button = tk.Button(self.row_9_frame, text="…", command=self.multi_choose_script_path)
+        self.multi_script_path_button.place(relx=0, rely=0.5, anchor="w",x=240)
+        
+        # 文件选择下拉框
+        self.multi_script_file_combo = ttk.Combobox(self.row_9_frame, values=[], width=42, state="readonly")
+        self.multi_script_file_combo.place(relx=0, rely=0.5, anchor="w",x=270)
+
+        # 三个按键
+        self.open_multi_loop_btn = tk.Button(self.row_9_frame, text="打开", width=5, command=self.open_multi_loop_file)
+        self.open_multi_loop_btn.place(relx=0, rely=0.5, anchor="w",x=585)
+        self.save_multi_loop_btn = tk.Button(self.row_9_frame, text="保存", width=5, command=self.save_multi_loop_file)
+        self.save_multi_loop_btn.place(relx=0, rely=0.5, anchor="w",x=635)
+        self.save_as_multi_loop_btn = tk.Button(self.row_9_frame, text="另存", width=5, command=self.save_multi_loop_file_as)
+        self.save_as_multi_loop_btn.place(relx=0, rely=0.5, anchor="w",x=685)
+
+
+
+
+
+
         # right_frame 右侧功能区，使用grid放置在右下角
         self.right_frame = tk.Frame(self.main_frame) # , borderwidth=1, relief="raised" 边框可选项 flat raised sunken groove ridge
-        # 放到 main_frame 的 col=1，row=0~7 跨 8 行，占据右下角
-        self.right_frame.grid(row=0, column=1,rowspan=8,sticky="se",padx=(5,5), pady=(5,5))        # south-east，贴到右下
+        # 放到 main_frame 的 col=1，row=0~9 行，占据右下角
+        self.right_frame.grid(row=0, column=1,rowspan=10,sticky="ne",padx=(5,5), pady=(0,0))        # south-east，贴到右下
 
         # 窗口名输入框，默认“TermPlus”
         self.window_name_label = tk.Label(self.right_frame, text="窗口名:")
@@ -678,7 +752,7 @@ class SerialGUI:
         self.root.title(self.window_name_var.get())
 		# 选择串口
         self.choose_port_label = tk.Label(self.right_frame, text="选择串口:")
-        self.choose_port_label.pack(anchor="w")
+        self.choose_port_label.pack(anchor="w",pady=(20,0))
         self.port_var = tk.StringVar()
         self.port_menu = ttk.Combobox(self.right_frame, textvariable=self.port_var, values=self.get_ports(), state="readonly", width=10)
         self.port_menu.pack(fill="x", pady=2, anchor="se")
@@ -711,10 +785,10 @@ class SerialGUI:
 
         # 文字“自动保存路径”
         self.auto_save_path_label = tk.Label(self.right_frame, text="自动保存路径")
-        self.auto_save_path_label.pack(anchor="sw")
+        self.auto_save_path_label.pack(anchor="sw",pady=(20,0))
         # 文本框 方形按键
         self.auto_save_path_frame = tk.Frame(self.right_frame)
-        self.auto_save_path_frame.pack(fill="x", pady=2, anchor="se")
+        self.auto_save_path_frame.pack(fill="x", pady=0, anchor="se")
         self.auto_save_path_entry = tk.Entry(self.auto_save_path_frame, width=10, justify="right")
         self.auto_save_path_entry.pack(side="left", fill="x", expand=True, pady=2, anchor="se")
         # 按键 省略号
@@ -725,107 +799,39 @@ class SerialGUI:
         self.save_file_name_label.pack(anchor="sw")
         # 文本框
         self.file_name_entry = tk.Entry(self.right_frame, width=10, justify="left")
-        self.file_name_entry.pack(fill="x", pady=2, anchor="se")
+        self.file_name_entry.pack(fill="x", pady=0, anchor="se")
         self.file_name_entry.insert(0,"AutoSave")
         # 自动保存状态 按钮
         self.auto_save_frame = tk.Frame(self.right_frame)
-        self.auto_save_frame.pack(fill="x", pady=5)
+        self.auto_save_frame.pack(fill="x", pady=0)
         # 文字“自动保存”
         self.auto_save_label = tk.Label(self.auto_save_frame, text="自动保存")
         self.auto_save_label.pack(side="left", anchor="se")
         # 自动保存按键，初始背景为灰色，点击后切换颜色
         self.auto_save_btn = tk.Button(self.auto_save_frame, text="OFF", width=4, height=1, bg="gray", command=self.toggle_auto_save)
-        self.auto_save_btn.pack(side="right", padx=2, anchor="se")
+        self.auto_save_btn.pack(side="right", padx=(2,0), anchor="se")
         # 文件最大容量
         self.file_max_volume_label = tk.Label(self.right_frame, text="文件最大容量")
-        self.file_max_volume_label.pack(anchor="sw", pady=(2,0))
+        self.file_max_volume_label.pack(anchor="sw", pady=(0,0))
         # 文本框 右侧显示“MB”
         self.file_capacity_frame = tk.Frame(self.right_frame)
-        self.file_capacity_frame.pack(fill="x", pady=2, anchor="se")
+        self.file_capacity_frame.pack(fill="x", pady=0, anchor="se")
         self.max_capacity_entry = tk.Entry(self.file_capacity_frame, width=10, justify="right")
         self.max_capacity_entry.pack(side="left", fill="x", expand=True, anchor="se")
         self.max_capacity_entry.insert(0, "10")
         self.MB_label = tk.Label(self.file_capacity_frame, text="MB")
         self.MB_label.pack(side="left", padx=2, anchor="se")
 
-        # 脚本路径选择框：上方标签、文本框及小三角按钮
-        self.script_path_label = tk.Label(self.right_frame, text="按键路径 / 选择")
-        self.script_path_label.pack(anchor="sw")
-        self.path_frame = tk.Frame(self.right_frame)
-        self.path_frame.pack(fill="x", pady=2, anchor="se")
-        # 文本框宽度与关闭串口按钮一致，文本右对齐
-        self.script_path_entry = tk.Entry(self.path_frame, width=10, justify="right")
-        self.script_path_entry.grid(row=0, column=0, sticky="ew")
-        #self.script_path_entry.pack(side="left", padx=2)
-        self.path_frame.columnconfigure(0, weight=1)
-        # 按钮区域
-        self.button_frame = tk.Frame(self.path_frame, width=5, height=5)
-        self.button_frame.grid(row=0, column=1, padx=(1,0))
-        self.button_frame.grid_propagate(False)
-        self.script_path_button = tk.Button(self.button_frame, text="…", command=self.choose_script_path)
-        self.script_path_button.pack(fill="both", expand=True)
-        # 在脚本路径文本框下方增加一个下拉选择框，用于显示脚本路径下所有 .ts 文件
-        #self.script_file_label = tk.Label(self.right_frame, text="按键文件")
-        #self.script_file_label.pack(anchor="sw", pady=(5,0))
-        self.script_file_combo = ttk.Combobox(self.right_frame, values=[], width=10, state="readonly")
-        self.script_file_combo.pack(fill="x", pady=2, anchor="se")
-
-        # script_buttons_frame
-        self.script_buttons_frame = tk.Frame(self.right_frame)
-        self.script_buttons_frame.pack(anchor="se", pady=2)
-        # 新增加载脚本按钮
-        self.load_script_button = tk.Button(self.script_buttons_frame, text="加载", command=self.load_script)
-        self.load_script_button.pack(side="left", padx=2)
-        # 在右侧区域新增保存脚本按钮，放置在加载脚本按钮下方
-        self.save_script_button = tk.Button(self.script_buttons_frame, text="保存", command=self.save_script)
-        self.save_script_button.pack(side="left", padx=2)
-        # 在右侧区域“保存脚本”按钮下方新增“保存为新脚本”按钮
-        self.save_as_script_button = tk.Button(self.script_buttons_frame, text="另存", command=self.save_as_new_script)
-        self.save_as_script_button.pack(side="left", padx=2)
-
-        # 脚本相关配置控件
-        # multi_script_path_label
-        self.multi_script_path_label = tk.Label(self.right_frame, text="脚本路径 / 选择")
-        self.multi_script_path_label.pack(anchor="sw")
-
-        # 设置frame，用于控制输入框和按钮的宽度
-        self.multi_path_frame = tk.Frame(self.right_frame)
-        self.multi_path_frame.pack(fill="x", pady=2, anchor="se")
-
-        # 路径选择文本框
-        self.multi_script_path_entry = tk.Entry(self.multi_path_frame, width=10, justify="right")
-        self.multi_script_path_entry.grid(row=0, column=0, sticky="ew")
-
-        self.multi_path_frame.columnconfigure(0, weight=1)
-
-        # 设置frame，用于控制输入框和按钮的宽度
-        self.multi_button_frame = tk.Frame(self.multi_path_frame, width=5, height=5)
-        self.multi_button_frame.grid(row=0, column=1, padx=(1,0))
-        self.multi_button_frame.grid_propagate(False)
-
-        # 路径按钮
-        self.multi_script_path_button = tk.Button(self.multi_button_frame, text="…", command=self.multi_choose_script_path)
-        self.multi_script_path_button.pack(fill="both", expand=True)
         
-        # 文件选择下拉框
-        self.multi_script_file_combo = ttk.Combobox(self.right_frame, values=[], width=10, state="readonly")
-        self.multi_script_file_combo.pack(fill="x", pady=2, anchor="se")
 
-        # multi_script_buttons_frame
-        self.multi_script_buttons_frame = tk.Frame(self.right_frame)
-        self.multi_script_buttons_frame.pack(anchor="se", pady=2)
-        # 垂直排列三个按键
-        self.open_multi_loop_btn = tk.Button(self.multi_script_buttons_frame, text="打开", command=self.open_multi_loop_file)
-        self.open_multi_loop_btn.pack(side="left", padx=2)
-        self.save_multi_loop_btn = tk.Button(self.multi_script_buttons_frame, text="保存", command=self.save_multi_loop_file)
-        self.save_multi_loop_btn.pack(side="left", padx=2)
-        self.save_as_multi_loop_btn = tk.Button(self.multi_script_buttons_frame, text="另存", command=self.save_multi_loop_file_as)
-        self.save_as_multi_loop_btn.pack(side="left", padx=2)
+        
 
         # 保存原始的 grid 配置
         self.row_5_grid_info = self.row_5_frame.grid_info()
         self.row_6_grid_info = self.row_6_frame.grid_info()
         self.row_7_grid_info = self.row_7_frame.grid_info()
+        self.row_8_grid_info = self.row_8_frame.grid_info()
+        self.row_9_grid_info = self.row_9_frame.grid_info()
         self.right_frame_grid_info = self.right_frame.grid_info()
 
 
@@ -845,7 +851,7 @@ class SerialGUI:
         self.auto_save_new_text = None
         # ─── 新增：PowerShell 进程句柄 ───
         self.ps_proc = None
-        self.last_auto_delete_lines = 0
+        #self.last_auto_delete_lines = 0
         self.refresh_ports()
         # 初始化完成后，尝试加载之前保存的配置
         self.load_setup()
@@ -990,12 +996,17 @@ class SerialGUI:
     def clear_text_area(self):
         #raise RuntimeError("测试异常触发")
         """清除接收文本框中的所有内容，并重置发送和接收的字符计数"""
-        self.text_area.after(0, lambda: (self.text_area.delete("1.0", "end")))
+        # self.text_area.after(0, lambda: (
+        #     self.text_area.delete("1.0", "end"),
+        #     self.last_saved_index = self.text_area.index("end-1c")
+        #     ))
+        self.text_area.delete("1.0", "end"),
+        self.last_saved_index = "1.0"
         self.sent_bytes = 0
         self.received_bytes = 0
         self.update_data_stats()
         # 重置自动保存的位置
-        self.last_saved_index = self.text_area.index("end-1c")
+
 
     def _show_text_popup(self, event):
         try:
@@ -1057,7 +1068,6 @@ class SerialGUI:
             self.pause_button.config(text="暂停")
 
 
-
     def run_custom_script(self):
         try:
             T = float(self.default_delay_time_entry.get().strip())
@@ -1070,32 +1080,6 @@ class SerialGUI:
 
         original_script_content = self.multi_loop_text.get("1.0", tk.END)
         original_lines = original_script_content.splitlines()
-
-        # Define local functions for the exec environment
-        # These will be directly called within the user's script
-        '''def open_powershell():
-            if self.ps_proc is None or self.ps_proc.poll() is not None:
-                try:
-                    self.ps_proc = subprocess.Popen(
-                        ["powershell", "-NoExit"],
-                        stdin=subprocess.PIPE,
-                        stdout=None,
-                        stderr=None,
-                        creationflags=subprocess.CREATE_NEW_CONSOLE
-                    )
-                    time.sleep(0.1)
-                except Exception as e:
-                    messagebox.showerror("错误", f"无法打开 PowerShell: {e}")
-
-        def powershell_send(cmd_text):
-            if self.ps_proc and self.ps_proc.stdin:
-                try:
-                    self.ps_proc.stdin.write((cmd_text + "\n").encode("utf-8"))
-                    self.ps_proc.stdin.flush()
-                except Exception as e:
-                    messagebox.showerror("错误", f"PowerShell 发送失败: {e}")
-            else:
-                messagebox.showwarning("警告", "请先执行 open power shell")'''
 
         def send_line(text):
             if not text or str(text).strip() == "":
@@ -1112,7 +1096,7 @@ class SerialGUI:
                     raise StopLoopException("循环已停止")
                 time.sleep(interval)
                 elapsed += interval
-                self.root.update_idletasks()
+                #self.root.update_idletasks()
 
         def wait_for(target_string, over_time):
             if target_string == '':
@@ -1131,25 +1115,18 @@ class SerialGUI:
                 while time.time() - start_time < over_time:
                     if self.loop_stop:
                         raise StopLoopException("循环已停止")
-                    self.root.update_idletasks()
+                    #self.root.update_idletasks()
                     current_index = self.text_area.index("end-1c")
                     if self.text_area.compare(last_index, ">", current_index):
+                        print(f"wait_for get function find last index bigger than current index.\n")
+                        messagebox.showerror("脚本执行错误", "wait_for get function find last index bigger than current index. wait for function skipped")
+                        return False
+                    if self.text_area.compare(last_index, "<", current_index):    
                         try:
-                            last_index_line, last_index_col = map(int, last_index.split('.'))
-                            last_index_new_line = max(1, last_index_line - self.last_auto_delete_lines)
-                            last_index = f"{last_index_new_line}.{last_index_col}"
-                            line, col = map(int, start_index.split('.'))
-                            new_start = max(1, line - self.last_auto_delete_lines)
-                            start_index = f"{new_start}.{col}"
-                            print(f"wait_for get function find index changed.\n")
-                        except Exception:
-                            messagebox.showerror("脚本执行错误", "wait_for index auto change error 1")
-                            return False
-                    try:
-                        self.script_wait_for_new_text = self.text_area.get(last_index, current_index)
-                    except Exception as e:
-                        print(f"wait_for get text fault, index might be changed and not corrected right: {e}")
-                        self.script_wait_for_new_text = ""
+                            self.script_wait_for_new_text = self.text_area.get(last_index, current_index)
+                        except Exception as e:
+                            print(f"wait_for get text fault, index might be changed and not corrected right: {e}")
+                            self.script_wait_for_new_text = ""
                     if target_string in self.script_wait_for_new_text:
                         return True
                     time.sleep(0.1)
@@ -1191,26 +1168,20 @@ class SerialGUI:
                 while True:
                     if self.loop_stop:
                         return None
-                    self.root.update_idletasks()
+                    #self.root.update_idletasks()
                     if time.time() - start_time >= timeout:
                         return None
                     current_index = self.text_area.index("end-1c")
                     if self.text_area.compare(last_index, ">", current_index):
+                        print("wait for any index error, last index bigger than current index. wait for any skipped.")
+                        messagebox.showerror("脚本执行错误", "wait for any index error, last index bigger than current index. wait for any skipped.")
+                        return None
+                    if self.text_area.compare(last_index, "<", current_index):
                         try:
-                            line, col = map(int, last_index.split('.'))
-                            new_start = max(1, line - self.last_auto_delete_lines)
-                            last_index = f"{new_start}.{col}"
-                            line, col = map(int, start_index.split('.'))
-                            new_start = max(1, line - self.last_auto_delete_lines)
-                            start_index = f"{new_start}.{col}"
-                        except Exception:
-                            messagebox.showerror("脚本执行错误", "wait_for_any index auto change error 1")
-                            return None
-                    try:
-                        self.script_wait_for_any_new_text = self.text_area.get(last_index, current_index)
-                    except Exception as e:
-                        print(f"wait_for_any get 出错: {e}")
-                        self.script_wait_for_any_new_text = ""
+                            self.script_wait_for_any_new_text = self.text_area.get(last_index, current_index)
+                        except Exception as e:
+                            print(f"wait_for_any get 出错: {e}")
+                            self.script_wait_for_any_new_text = ""
                     for target in target_list:
                         if target in self.script_wait_for_any_new_text:
                             return target
@@ -1232,12 +1203,16 @@ class SerialGUI:
             if string_to_show == "":
                 messagebox.showerror("函数错误", "show_str函数的输入值不能为空.")
                 return
-            self.text_area.insert(tk.END, string_to_show)
-            self.text_area.see(tk.END)
+            self.text_area.after(0, lambda: (
+                self.text_area.insert(tk.END, string_to_show),
+                self.text_area.see(tk.END)
+                ))
 
         def show_date_time():
-            self.text_area.insert(tk.END, str(datetime.now()) + "\n")
-            self.text_area.see(tk.END)
+            self.text_area.after(0, lambda: (
+                self.text_area.insert(tk.END, str(datetime.now()) + "\n"),
+                self.text_area.see(tk.END)
+            ))
 
         def get_last_n_lines(line_amount):
             if line_amount<1:
@@ -1263,7 +1238,7 @@ class SerialGUI:
                 while time.time() - start_time < over_time:
                     if self.loop_stop:
                         raise StopLoopException("循环已停止")
-                    self.root.update_idletasks()
+                    #self.root.update_idletasks()
                     current_index = self.text_area.index("end-1c")
                     if self.text_area.compare(last_index, ">", current_index):
                         print(f"get_future_lines function failed due to last index bigger than current index.\n")
@@ -1307,7 +1282,7 @@ class SerialGUI:
                 while time.time() - start_time < over_time:
                     if self.loop_stop:
                         raise StopLoopException("循环已停止")
-                    self.root.update_idletasks()
+                    #self.root.update_idletasks()
                     current_index = self.text_area.index("end-1c")
                     if self.text_area.compare(last_index, ">", current_index):
                         print(f"get_future_lines function failed due to last index bigger than current index.\n")
@@ -1356,7 +1331,7 @@ class SerialGUI:
                 last_line_num = line_nums[-1]
                 self.multi_loop_text.tag_add("highlight", f"{first_line_num}.0", f"{last_line_num}.end")
                 self.multi_loop_text.see(f"{first_line_num}.0")
-            self.root.update_idletasks()
+            #self.root.update_idletasks()
             self.pause_event.wait()
             if self.loop_stop:
                 raise StopLoopException("循环已停止")
@@ -2421,9 +2396,9 @@ GUI 控件状态:
             def check_received():
                 current_index = self.text_area.index("end-1c")
                 if self.text_area.compare(self.wait_for_initial_index, ">", current_index):
-                    initial_index_line,initial_index_col = map(int, self.wait_for_initial_index.split('.'))
-                    initial_index_new_line = max(1, initial_index_line - self.last_auto_delete_lines)
-                    self.wait_for_initial_index = f"{initial_index_new_line}.{initial_index_col}"
+                    print("wait for x for t error, initial index bigger than current index, wait for skipped.")
+                    messagebox.showerror("commands running error","wait for x for t error, initial index bigger than current index, wait for skipped.")
+                    return
                         
                 self.button_send_wait_for_new_text = self.text_area.get(self.wait_for_initial_index, current_index)
 
@@ -2465,12 +2440,12 @@ GUI 控件状态:
             if timeout > 0:
                 start_time = time.time()
                 def check_terminal():
-                    # 如果发生了删除操作，导致 last_send_index 大于 current_index，则根据self.last_auto_delete_lines记录中删除了多少行，重置 last_index 的坐标
+                    # 如果发生了删除操作，导致 last_send_index 大于 current_index，停止运行该语句并弹窗，后续语句继续执行
                     current_index = self.text_area.index("end-1c")
                     if self.text_area.compare(self.last_send_index, ">", current_index):
-                        last_send_index_line,last_send_index_col = map(int,self.last_send_index.split('.'))
-                        last_send_index_new_line = max(1, last_send_index_line - self.last_auto_delete_lines)
-                        self.last_send_index = f"{last_send_index_new_line}.{last_send_index_col}"
+                        print("wait terminal symbol error, last index bigger than current index, wait for skipped.")
+                        messagebox.showerror("wait terminal symbol error","wait terminal symbol error, last index bigger than current index, wait for skipped.")
+                        return
                         
                     self.button_send_check_terminal_new_text = self.text_area.get(self.last_send_index, current_index)
 
@@ -2957,7 +2932,7 @@ GUI 控件状态:
         self.data_stats.set(f"发送: {format_bytes(self.sent_bytes)} | 接收: {format_bytes(self.received_bytes)}")
 
     def new_port(self):
-        self.root.update_idletasks()
+        #self.root.update_idletasks()
         # 获取当前窗口位置
         x = self.root.winfo_x()
         y = self.root.winfo_y()
@@ -3160,16 +3135,21 @@ GUI 控件状态:
     def auto_save_and_auto_delete_onetime(self):
         # 执行自动保存操作（如果标志位打开）
         if not self.auto_save_stop:
+            print("auto save func start")
             #获取当前文本框末尾的索引
             current_index = self.text_area.index("end-1c")
             # 获取从上次保存到当前的新内容
-            self.auto_save_new_text = self.text_area.get(self.last_saved_index, current_index)
+            if self.text_area.compare(self.last_saved_index, ">", current_index):
+                self.last_saved_index = current_index
+                self.auto_save_new_text = ""
+            else:
+                self.auto_save_new_text = self.text_area.get(self.last_saved_index, current_index)
+                print(f"save content start index is {self.last_saved_index} end index is {current_index}")
             if self.auto_save_new_text and self.auto_save_file:
+                self.last_saved_index = current_index  # 更新最后保存位置
                 try:
                     self.auto_save_file.write(self.auto_save_new_text)
                     self.auto_save_file.flush()
-                    self.last_saved_index = current_index  # 更新最后保存位置
-
                     # 检查当前 autosave 文件大小（单位：字节）
                     current_size = self.auto_save_file.tell()
                     try:
@@ -3180,9 +3160,6 @@ GUI 控件状态:
                         # 文件超过最大容量，关闭当前文件并重新创建新文件
                         self.auto_save_file.close()
                         self.auto_save_file = self.create_auto_save_file()
-                        #self.text_area.edit_reset()  # 清空 undo/redo 历史
-                        # 重置 last_saved_index 为当前末尾
-                        #self.last_saved_index = self.text_area.index("end-1c")
                 except Exception as e:
                     print("Autosave error:", e)
         """
@@ -3190,22 +3167,27 @@ GUI 控件状态:
         """
         if self.auto_clear_onoff.get():
             # 如果wait for /wait for any函数将该标志位关闭，则不进行自动删除，避免引起index变化导致的问题
-            if self.allow_auto_delete:                
+            if self.allow_auto_delete:
                 self.auto_clear_all_content = self.text_area.get("1.0", "end-1c")
-                if len(self.auto_clear_all_content) > 100000:
+                lenth_total_chars = len(self.auto_clear_all_content)
+                if lenth_total_chars > 1000000:
+                    print("auto delete triggered")
                     # 获取当前总行数和 text_area 的显示行数（高度）
-                    total_lines = int(self.text_area.index("end-1c").split('.')[0])
+                    current_total_lines = int(self.text_area.index("end-1c").split('.')[0])
                     # 如果总行数大于2，则仅保留后一半的行
-                    if total_lines > 2:
-                        start_line = int(total_lines/2) + 1
-                        # 清除要删除区间所有标签的标记范围
+                    if current_total_lines > 2:
+                        delete_end_line = (current_total_lines+1) // 2 # 相当于除以2向上取整
                         for tag in self.text_area.tag_names():
-                            self.text_area.after(0, lambda: (self.text_area.tag_remove(tag, "1.0", f"{start_line}.0")))
+                            self.text_area.tag_remove(tag, "1.0", f"{delete_end_line}.0")
                         # 删除从第一行到 start_line 行的起始部分
-                        self.text_area.after(0, lambda: (self.text_area.delete("1.0", f"{start_line}.0")))
-                        self.last_auto_delete_lines = start_line - 1				
+                        self.text_area.delete("1.0", f"{delete_end_line}.0")
+                        print(f"delete content start index is 1.0 end index is {delete_end_line}.0")
                         # 更新文本框的内容后，重新记录最后保存的位置
-                        self.last_saved_index = self.text_area.index("end-1c")
+                        last_saved_index_line = int(self.last_saved_index.split('.')[0])
+                        last_saved_index_colume = int(self.last_saved_index.split('.')[1])
+                        print(f"last save index is {self.last_saved_index}")
+                        self.last_saved_index = f"{last_saved_index_line-delete_end_line+1}.{last_saved_index_colume}"
+                        print(f"last save index change to {self.last_saved_index}")
 
     def auto_save_and_auto_delete(self):
         """
@@ -3215,7 +3197,12 @@ GUI 控件状态:
         
             # 10秒后再次检测
         self.text_area.after(10000, self.auto_save_and_auto_delete)
-    
+
+    def code_show_date_time(self):
+        self.text_area.after(0, lambda: (
+            self.text_area.insert(tk.END, str(datetime.now()) + "\n"),
+            self.text_area.see(tk.END)
+        ))
     def save_setup(self):
         """
         将当前窗口名、串口选项、波特率、自动保存路径、文件名、文件最大容量、脚本路径、
@@ -3279,17 +3266,23 @@ GUI 控件状态:
         if self.row_5_frame.winfo_ismapped():
             # 隐藏
             self.row_5_frame.grid_remove()
+            self.row_6_frame.grid_remove()
         else:
             # 恢复到原来位置
             self.row_5_frame.grid(**self.row_5_grid_info)
+            self.row_6_frame.grid(**self.row_6_grid_info)
 
     def toggle_script_area(self):
-        if self.row_6_frame.winfo_ismapped():
-            self.row_6_frame.grid_remove()
+        if self.row_7_frame.winfo_ismapped():
+            
             self.row_7_frame.grid_remove()
+            self.row_8_frame.grid_remove()
+            self.row_9_frame.grid_remove()
         else:
-            self.row_6_frame.grid(**self.row_6_grid_info)
+            
             self.row_7_frame.grid(**self.row_7_grid_info)
+            self.row_8_frame.grid(**self.row_8_grid_info)
+            self.row_9_frame.grid(**self.row_9_grid_info)
 
     def toggle_sidebar(self):
         #点击后收起或展开右侧面板：
@@ -3383,16 +3376,19 @@ GUI 控件状态:
         self.row_5_frame.configure(background=window_bg_color)
         self.row_6_frame.configure(background=window_bg_color)
         self.row_7_frame.configure(background=window_bg_color)
+        self.row_8_frame.configure(background=window_bg_color)
+        self.row_9_frame.configure(background=window_bg_color)
         self.right_frame.configure(background=window_bg_color)
         self.toggle_frame.configure(background=window_bg_color)
         self.auto_save_path_frame.configure(background=window_bg_color)
         self.auto_save_frame.configure(background=window_bg_color)
-        self.button_frame.configure(background=window_bg_color)
-        self.multi_button_frame.configure(background=window_bg_color)
-        self.path_frame.configure(background=window_bg_color)
-        self.script_buttons_frame.configure(background=window_bg_color)
-        self.multi_script_buttons_frame.configure(background=window_bg_color)
-        self.multi_path_frame.configure(background=window_bg_color)
+        self.ssh_frame.configure(background=window_bg_color)
+
+        #self.multi_button_frame.configure(background=window_bg_color)
+        #self.path_frame.configure(background=window_bg_color)
+        #self.script_buttons_frame.configure(background=window_bg_color)
+        #self.multi_script_buttons_frame.configure(background=window_bg_color)
+        #self.multi_path_frame.configure(background=window_bg_color)
         self.file_capacity_frame.configure(background=window_bg_color)
 
         # 设置窗口背景色
@@ -3423,7 +3419,7 @@ GUI 控件状态:
         for widget in [self.show_keys_btn, self.show_script_btn, self.toggle_sidebar_btn,self.theme_btn,
                         self.send_btn, self.single_loop_send_btn, self.clear_screen_btn,
                         self.start_button, self.pause_button, self.stop_button,
-                        self.refresh_btn, self.toggle_port_btn, self.square_button,self.script_path_button,self.multi_script_path_button,
+                        self.refresh_btn, self.toggle_port_btn,self.ssh_config_btn, self.square_button,self.script_path_button,self.multi_script_path_button,
                         self.load_script_button,self.save_script_button,self.save_as_script_button,self.open_multi_loop_btn,
                         self.save_multi_loop_btn,self.save_as_multi_loop_btn]:
             widget.configure(background=window_bg_color, foreground=text_fg_color)
