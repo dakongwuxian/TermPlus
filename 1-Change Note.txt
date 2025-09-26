@@ -1,3 +1,25 @@
+2025.9.26
+1. 增加了1个tk_safe函数，将所有子线程中获取和修改控件的代码都包进了函数，该函数会根据当前是否是主线程来判断是否要等待主进程空闲再运行，提高子线程和主线程的安全。
+2. 其他适配改动1的修改。
+
+
+2025.9.25
+1. 修改了脚本区域的函数send_line(text)为send_line(text,addNewline=True,insertDisplay=True)，通过2个可额外指定的参数，让send_line函数可以指定是否发送换行和是否在主窗口中显示。
+
+send_line("hello")
+send_line("hello",True,True)
+send_line("hello",False,False)
+
+上面3行，前两行的效果是想通的，第三行则不会发送换行符，也不会在主窗口中显示，只会直接在串口中发送hello。
+
+2. 将8月20日更新的5个自定义函数，加入了自动高亮的范围。
+
+	show_str(str_to_show)
+	show_date_time()
+	get_last_n_lines(line_amount)
+	get_future_n_lines_or_till_overtime(line_amount,overtime)
+	get_future_lines_till_str_or_overtime(str_to_end,overtime)
+
 2025.9.23
 1. 修改了GUI控件的布局，让脚本和按键的选择下拉框变长，更为易用。右侧栏中控件减少，即使在小分辨率情况下也能看到所有控件。
 2. 修改了窗口的最小尺寸。
