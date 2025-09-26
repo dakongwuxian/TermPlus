@@ -40,6 +40,7 @@ import platform
 import textwrap
 import inspect
 from version_info import VERSION
+import multiprocessing
 
 # 嵌入的二维码 base64 字符串（PNG 格式）
 img_base64 = (
@@ -686,7 +687,12 @@ class SerialGUI:
             "set_port",
             "set_baudrate",
             "gui.text_area.insert",
-            "gui.text_area.see"
+            "gui.text_area.see",
+            "show_str",
+            "show_date_time",
+            "get_last_n_lines",
+            "get_future_n_lines_or_till_overtime",
+            "get_future_lines_till_str_or_overtime"
         ]
         
         # 合并所有词，转义后拼成一个大正则
@@ -1017,15 +1023,10 @@ class SerialGUI:
     def _delete_selection(self):
         try:
             #sel = self.text_area.get(tk.SEL_FIRST, tk.SEL_LAST)
-            self.text_area.after(0, lambda: (self.text_area.delete(tk.SEL_FIRST, tk.SEL_LAST)))
+            self.text_area.delete(tk.SEL_FIRST, tk.SEL_LAST)
         except tk.TclError:
             pass  # 没有选中内容时不报错
         
-
-
-    # def start_multi_loop_send(self):
-    #    # 在新线程中运行自定义脚本，避免阻塞GUI
-    #    threading.Thread(target=self.run_custom_script, daemon=True).start()
     def start_multi_loop_send(self):
         if not self.loop_sending:
             self.loop_sending = True
@@ -1035,8 +1036,6 @@ class SerialGUI:
             self.start_button.config(state=tk.DISABLED)
             self.stop_button.config(state=tk.NORMAL)
             self.pause_button.config(state=tk.NORMAL)
-            # 重新开启撤销栈
-            #self.text_area.configure(undo=True)
             # 关闭撤销栈
             self.text_area.configure(undo=False)
             threading.Thread(target=self.run_custom_script, daemon=True).start()
@@ -1081,11 +1080,11 @@ class SerialGUI:
         original_script_content = self.multi_loop_text.get("1.0", tk.END)
         original_lines = original_script_content.splitlines()
 
-        def send_line(text):
+        def send_line(text, add_newline=True, insert_display=True):
             if not text or str(text).strip() == "":
                 print("send_line 跳过空字符串")
                 return
-            self.send_via_serial(text)
+            self.send_via_serial(text, add_newline=add_newline, insert_display=insert_display)
 
         def wait(seconds):
             interval = 0.1
@@ -1100,45 +1099,45 @@ class SerialGUI:
 
         def wait_for(target_string, over_time):
             if target_string == '':
-                messagebox.showwarning("Warning", "wait for must have a target string.")
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "wait for must have a target string."))
                 return False
             if over_time <= 0:
-                messagebox.showwarning("Warning", "Over time must be positive.")
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."))
                 return False
 
             self.allow_auto_delete = False
             self.script_wait_for_new_text = ""
             start_time = time.time()
-            last_index = self.text_area.index("end-1c")
+            last_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
             start_index = last_index
             try:
                 while time.time() - start_time < over_time:
                     if self.loop_stop:
                         raise StopLoopException("循环已停止")
                     #self.root.update_idletasks()
-                    current_index = self.text_area.index("end-1c")
-                    if self.text_area.compare(last_index, ">", current_index):
-                        print(f"wait_for get function find last index bigger than current index.\n")
-                        messagebox.showerror("脚本执行错误", "wait_for get function find last index bigger than current index. wait for function skipped")
+                    current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
+                    if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
+                        #print(f"wait_for get function find last index bigger than current index.\n")
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for get function find last index bigger than current index. wait for function skipped"))
                         return False
-                    if self.text_area.compare(last_index, "<", current_index):    
+                    if self.tk_safe(lambda:self.text_area.compare(last_index, "<", current_index)):    
                         try:
-                            self.script_wait_for_new_text = self.text_area.get(last_index, current_index)
+                            self.script_wait_for_new_text = self.tk_safe(lambda:self.text_area.get(last_index, current_index),wait = True)
                         except Exception as e:
-                            print(f"wait_for get text fault, index might be changed and not corrected right: {e}")
+                            #print(f"wait_for get text fault, index might be changed and not corrected right: {e}")
                             self.script_wait_for_new_text = ""
                     if target_string in self.script_wait_for_new_text:
                         return True
                     time.sleep(0.1)
                     try:
-                        if self.text_area.compare("end-1c", "==", "1.0") and target_string != "":
+                        if self.tk_safe(lambda:self.text_area.compare("end-1c", "==", "1.0")) and target_string != "":
                             last_index = "1.0"
                         else:
-                            last_index = self.text_area.index(f"{current_index} - {max(1, len(target_string))}c")
-                            if self.text_area.compare(last_index, "<", start_index):
+                            last_index = self.tk_safe(lambda:self.text_area.index(f"{current_index} - {max(1, len(target_string))}c"))
+                            if self.tk_safe(lambda:self.text_area.compare(last_index, "<", start_index)):
                                 last_index = start_index
                     except Exception:
-                        messagebox.showerror("脚本执行错误", "wait_for index auto change error 2")
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for index auto change error 2"))
                         return False
             finally:
                 self.allow_auto_delete = True
@@ -1146,17 +1145,17 @@ class SerialGUI:
 
         def wait_for_any(target_list, timeout):
             if not target_list:
-                messagebox.showwarning("Warning", "wait_for_any must have a non-empty target list.")
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "wait_for_any must have a non-empty target list."))
                 return None
             if timeout <= 0:
-                messagebox.showwarning("Warning", "Timeout must be positive.")
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "Timeout must be positive."))
                 return None
 
             self.allow_auto_delete = False
             self.script_wait_for_any_new_text = ""
             try:
                 start_time = time.time()
-                last_index = self.text_area.index("end-1c")
+                last_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
                 start_index = last_index
 
                 if not target_list:
@@ -1171,86 +1170,82 @@ class SerialGUI:
                     #self.root.update_idletasks()
                     if time.time() - start_time >= timeout:
                         return None
-                    current_index = self.text_area.index("end-1c")
-                    if self.text_area.compare(last_index, ">", current_index):
-                        print("wait for any index error, last index bigger than current index. wait for any skipped.")
-                        messagebox.showerror("脚本执行错误", "wait for any index error, last index bigger than current index. wait for any skipped.")
+                    current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
+                    if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
+                        #print("wait for any index error, last index bigger than current index. wait for any skipped.")
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait for any index error, last index bigger than current index. wait for any skipped."))
                         return None
-                    if self.text_area.compare(last_index, "<", current_index):
+                    if self.tk_safe(lambda:self.text_area.compare(last_index, "<", current_index)):
                         try:
-                            self.script_wait_for_any_new_text = self.text_area.get(last_index, current_index)
+                            self.script_wait_for_any_new_text = self.tk_safe(lambda:self.text_area.get(last_index, current_index))
                         except Exception as e:
-                            print(f"wait_for_any get 出错: {e}")
+                            #print(f"wait_for_any get 出错: {e}")
                             self.script_wait_for_any_new_text = ""
                     for target in target_list:
                         if target in self.script_wait_for_any_new_text:
                             return target
                     time.sleep(0.1)
                     try:
-                        if self.text_area.compare("end-1c", "==", "1.0") and length_of_longest_string > 0:
+                        if self.tk_safe(lambda:self.text_area.compare("end-1c", "==", "1.0")) and length_of_longest_string > 0:
                             last_index = "1.0"
                         else:
-                            last_index = self.text_area.index(f"{current_index} - {max(1, length_of_longest_string)}c")
-                            if self.text_area.compare(last_index, "<", start_index):
+                            last_index = self.tk_safe(lambda:self.text_area.index(f"{current_index} - {max(1, length_of_longest_string)}c"))
+                            if self.tk_safe(lambda:self.text_area.compare(last_index, "<", start_index)):
                                 last_index = start_index
                     except Exception:
-                        messagebox.showerror("脚本执行错误", "wait_for_any index auto change error 2")
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for_any index auto change error 2"))
                         return None
             finally:
                 self.allow_auto_delete = True
 
         def show_str(string_to_show):
             if string_to_show == "":
-                messagebox.showerror("函数错误", "show_str函数的输入值不能为空.")
+                self.tk_safe(lambda: messagebox.showerror("函数错误", "show_str函数的输入值不能为空."))
                 return
-            self.text_area.after(0, lambda: (
-                self.text_area.insert(tk.END, string_to_show),
-                self.text_area.see(tk.END)
-                ))
+            self.tk_safe(lambda:self.text_area.insert(tk.END, string_to_show))
+            self.tk_safe(lambda:self.text_area.see(tk.END))
 
         def show_date_time():
-            self.text_area.after(0, lambda: (
-                self.text_area.insert(tk.END, str(datetime.now()) + "\n"),
-                self.text_area.see(tk.END)
-            ))
+            self.tk_safe(lambda:self.text_area.insert(tk.END, str(datetime.now()) + "\n"))
+            self.tk_safe(lambda:self.text_area.see(tk.END))
 
         def get_last_n_lines(line_amount):
             if line_amount<1:
                 return None
-            end_index = self.text_area.index("end-1c")
-            start_index = self.text_area.index(f"{end_index} - {line_amount} lines")
-            text_to_return = self.text_area.get(start_index,end_index)
+            end_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
+            start_index = self.tk_safe(lambda:self.text_area.index(f"{end_index} - {line_amount} lines"))
+            text_to_return = self.tk_safe(lambda:self.text_area.get(start_index,end_index))
             return text_to_return
 
         def get_future_n_lines_or_till_overtime(line_amount,over_time):
             if line_amount<1:
                 return None
             if over_time <= 0:
-                messagebox.showwarning("Warning", "Over time must be positive.")
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."))
                 return None
 
             self.allow_auto_delete = False
             self.script_wait_for_new_text = ""
             collected_text = ""   # 新增
             start_time = time.time()
-            last_index = self.text_area.index("end-1c")
+            last_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
             try:
                 while time.time() - start_time < over_time:
                     if self.loop_stop:
                         raise StopLoopException("循环已停止")
                     #self.root.update_idletasks()
-                    current_index = self.text_area.index("end-1c")
-                    if self.text_area.compare(last_index, ">", current_index):
-                        print(f"get_future_lines function failed due to last index bigger than current index.\n")
-                        messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index.")
+                    current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
+                    if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
+                        #print(f"get_future_lines function failed due to last index bigger than current index.\n")
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index."))
                         return None
-                    if self.text_area.compare(last_index, "==", current_index):
+                    if self.tk_safe(lambda:self.text_area.compare(last_index, "==", current_index)):
                         self.script_wait_for_new_text = ""
                     else:
                         try:
-                            self.script_wait_for_new_text = self.text_area.get(last_index, current_index)
+                            self.script_wait_for_new_text = self.tk_safe(lambda:self.text_area.get(last_index, current_index))
                         except Exception as e:
-                            print(f"get text fault, index might be changed and not corrected right: {e}")
+                            #print(f"get text fault, index might be changed and not corrected right: {e}")
                             self.script_wait_for_new_text = ""
                     last_index = current_index
                     collected_text += self.script_wait_for_new_text
@@ -1267,34 +1262,34 @@ class SerialGUI:
 
         def get_future_lines_till_str_or_overtime(end_str,over_time):
             if end_str == '':
-                messagebox.showwarning("Warning", "end_str must not be empty.")
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "end_str must not be empty."))
                 return None
             if over_time <= 0:
-                messagebox.showwarning("Warning", "Over time must be positive.")
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."))
                 return None
 
             self.allow_auto_delete = False
             self.script_wait_for_new_text = ""
             collected_text = ""   # 新增
             start_time = time.time()
-            last_index = self.text_area.index("end-1c")
+            last_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
             try:
                 while time.time() - start_time < over_time:
                     if self.loop_stop:
                         raise StopLoopException("循环已停止")
                     #self.root.update_idletasks()
-                    current_index = self.text_area.index("end-1c")
-                    if self.text_area.compare(last_index, ">", current_index):
-                        print(f"get_future_lines function failed due to last index bigger than current index.\n")
-                        messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index.")
+                    current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
+                    if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
+                        #print(f"get_future_lines function failed due to last index bigger than current index.\n")
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index."))
                         return None
-                    if self.text_area.compare(last_index, "==", current_index):
+                    if self.tk_safe(lambda:self.text_area.compare(last_index, "==", current_index)):
                         self.script_wait_for_new_text = ""
                     else:
                         try:
-                            self.script_wait_for_new_text = self.text_area.get(last_index, current_index)
+                            self.script_wait_for_new_text = self.tk_safe(lambda:self.text_area.get(last_index, current_index))
                         except Exception as e:
-                            print(f"get text fault, index might be changed and not corrected right: {e}")
+                            #print(f"get text fault, index might be changed and not corrected right: {e}")
                             self.script_wait_for_new_text = ""
                     last_index = current_index
                     collected_text += self.script_wait_for_new_text
@@ -1311,31 +1306,34 @@ class SerialGUI:
         def set_port(port_name):
             port_str = str(port_name)
             try:
-                self.port_menu.set(port_str)
+                self.tk_safe(lambda: self.port_menu.set(port_str))
             except Exception as e:
-                messagebox.showerror("错误", f"设置端口失败: {e}")
+                self.tk_safe(lambda: messagebox.showerror("错误", f"设置端口失败: {e}"))
 
         def set_baudrate(baud):
             baud_str = str(baud)
             try:
-                self.baud_var.set(baud_str)
+                self.tk_safe(lambda: self.baud_var.set(baud_str))
             except Exception as e:
-                messagebox.showerror("错误", f"设置波特率失败: {e}")
+                self.tk_safe(lambda: messagebox.showerror("错误", f"设置波特率失败: {e}"))
 
         # This function will be injected into the user's script
         # It handles highlighting and pausing
         def _highlight_and_wait(line_nums):
-            self.multi_loop_text.tag_remove("highlight", "1.0", tk.END)
+            self.tk_safe(lambda: self.multi_loop_text.tag_remove("highlight", "1.0", tk.END))
             if line_nums:
                 first_line_num = line_nums[0]
                 last_line_num = line_nums[-1]
-                self.multi_loop_text.tag_add("highlight", f"{first_line_num}.0", f"{last_line_num}.end")
-                self.multi_loop_text.see(f"{first_line_num}.0")
+                self.tk_safe(lambda: self.multi_loop_text.tag_add("highlight", f"{first_line_num}.0", f"{last_line_num}.end"))
+                self.tk_safe(lambda: self.multi_loop_text.see(f"{first_line_num}.0"))
             #self.root.update_idletasks()
             self.pause_event.wait()
             if self.loop_stop:
                 raise StopLoopException("循环已停止")
             time.sleep(0.05) # Small pause for visual feedback
+
+        def clear_all_highlights():
+            self.tk_safe(lambda: self.multi_loop_text.tag_remove("highlight", "1.0", tk.END))
 
         local_namespace = {
             "open_powershell": self.open_powershell,
@@ -1361,6 +1359,7 @@ class SerialGUI:
             "get_future_lines_till_str_or_overtime": get_future_lines_till_str_or_overtime,
             "show_str": show_str,
             "show_date_time": show_date_time,
+            "clear_all_highlights":clear_all_highlights,
         }
 
         processed_script_lines = []
@@ -1491,7 +1490,8 @@ class SerialGUI:
         # Ensure initial indentation for the _highlight_and_wait call is correct.
         
         # Add a final cleanup highlight remove after the script finishes
-        processed_script_lines.append("\ngui.multi_loop_text.tag_remove('highlight', '1.0', tk.END)\n")
+        #processed_script_lines.append("\ngui.multi_loop_text.tag_remove('highlight', '1.0', tk.END)\n")
+        processed_script_lines.append("\nclear_all_highlights()\n")
 
 
         full_executable_script = "\n".join(processed_script_lines)
@@ -1569,7 +1569,7 @@ class SerialGUI:
 
                 # 获取 text_area 内容
                 try:
-                    text_area_content = self.text_area.get("1.0", tk.END)
+                    text_area_content = self.tk_safe(lambda:self.text_area.get("1.0", tk.END))
                 except Exception:
                     text_area_content = "<无法获取 text_area 内容>"
 
@@ -1640,13 +1640,13 @@ GUI 控件状态:
                 except Exception:
                     pass
 
-                messagebox.showerror(
+                self.tk_safe(lambda: messagebox.showerror(
                     "脚本执行错误",
                     f"错误原因:\n{e}\n\n"
                     f"出错位置：\n{last_tb_line}\n\n"
                     f"错误详情：\n{tb_str}\n\n"
                     f"详细信息参见 script_error_info.txt"
-                )
+                ))
 
                 break
             else:
@@ -1656,17 +1656,15 @@ GUI 控件状态:
                 sys.stdout, sys.stderr = old_stdout, old_stderr
 
         # Final cleanup regardless of how the loop ended
-        self.multi_loop_text.tag_remove("highlight", "1.0", tk.END)
+        self.tk_safe(lambda: self.multi_loop_text.tag_remove("highlight", "1.0", tk.END))
         print("Script execution finished.")
 
         self.loop_sending = False
-        self.root.after(0, lambda: self.start_button.config(state=tk.NORMAL))
-        self.root.after(0, lambda: self.stop_button.config(state=tk.DISABLED))
-        self.root.after(0, lambda: self.pause_button.config(state=tk.DISABLED))
+        self.tk_safe(lambda: self.start_button.config(state=tk.NORMAL))
+        self.tk_safe(lambda: self.stop_button.config(state=tk.DISABLED))
+        self.tk_safe(lambda: self.pause_button.config(state=tk.DISABLED))
         # 重新开启撤销栈
-        self.text_area.configure(undo=True)
-        # 关闭撤销栈
-        #self.text_area.configure(undo=False)
+        self.tk_safe(lambda:self.text_area.configure(undo=True),wait = True)
 
     def on_multi_loop_modified(self, event=None):
         """
@@ -1739,7 +1737,7 @@ GUI 控件状态:
             time.sleep(0.1)
 
         except Exception as e:
-            messagebox .showerror("错误", f"无法打开 PowerShell: {e}")
+            self.tk_safe(lambda: messagebox .showerror("错误", f"无法打开 PowerShell: {e}"))
 
     '''def _read_ps_output(self):
         print("[_read_ps_output] thread started")
@@ -1748,7 +1746,7 @@ GUI 控件状态:
             self.text_area.after(0, self._append_text, line)'''
 
     def _read_ps_output(self):
-        print("[_read_ps_output] thread started")
+        #print("[_read_ps_output] thread started")
         buffer = ""
         while True:
             char = self.ps_proc.stdout.read(1)
@@ -1756,11 +1754,11 @@ GUI 控件状态:
                 break
             buffer += char
             if char == '\n':
-                self.text_area.after(0, self._append_text, buffer)
+                self._append_text(buffer)
                 buffer = ""
             elif len(buffer) > 100 and '\r' in buffer:
                 # 处理类似进度条的覆盖行（以 \r 回车符结尾）
-                self.text_area.after(0, self._append_text, buffer.strip() + "\n")
+                self._append_text(buffer.strip() + "\n")
                 buffer = ""
 
     def _append_text(self, text):
@@ -1768,10 +1766,8 @@ GUI 控件状态:
             return
         """在 text_area 末尾插入文本，并自动滚动。"""
         # 使用after lambda的形式是为了让子进程不会冲突
-        self.text_area.after(0, lambda: (
-            self.text_area.insert(tk.END, text),
-            self.text_area.see(tk.END)
-        ))
+        self.tk_safe(lambda:self.text_area.insert(tk.END, text))
+        self.tk_safe(lambda:self.text_area.see(tk.END))
         # 可选：也更新发送/接收统计等
 
     def powershell_send(self, cmd_text):
@@ -1782,9 +1778,9 @@ GUI 控件状态:
                 self.ps_proc.stdin.write(cmd_text + "\n")
                 self.ps_proc.stdin.flush()
             except Exception as e:
-                messagebox.showerror("错误", f"PowerShell 发送失败: {e}")
+                self.tk_safe(lambda: messagebox.showerror("错误", f"PowerShell 发送失败: {e}"))
         else:
-            messagebox.showwarning("警告", "请先执行 open power shell")
+            self.tk_safe(lambda: messagebox.showwarning("警告", "请先执行 open power shell"))
     
 
     def on_closing(self):
@@ -2390,22 +2386,22 @@ GUI 控件状态:
             wait_str = match_wait_for.group(1)
             wait_time = int(match_wait_for.group(2))
 
-            self.wait_for_initial_index  = self.text_area.index("end-1c")
+            self.wait_for_initial_index  = self.tk_safe(lambda: self.text_area.index("end-1c"))
             start_time = time.time()
 
             def check_received():
-                current_index = self.text_area.index("end-1c")
-                if self.text_area.compare(self.wait_for_initial_index, ">", current_index):
+                current_index = self.tk_safe(lambda: self.text_area.index("end-1c"))
+                if self.tk_safe(lambda: self.text_area.compare(self.wait_for_initial_index, ">", current_index)):
                     print("wait for x for t error, initial index bigger than current index, wait for skipped.")
-                    messagebox.showerror("commands running error","wait for x for t error, initial index bigger than current index, wait for skipped.")
+                    self.tk_safe(lambda: messagebox.showerror("commands running error","wait for x for t error, initial index bigger than current index, wait for skipped."))
                     return
                         
-                self.button_send_wait_for_new_text = self.text_area.get(self.wait_for_initial_index, current_index)
+                self.button_send_wait_for_new_text = self.tk_safe(lambda: self.text_area.get(self.wait_for_initial_index, current_index))
 
                 if wait_str in self.button_send_wait_for_new_text or (time.time() - start_time >= wait_time):
                     self._send_next_command(all_lines, index + 1)  # 继续执行下一行
                 else:
-                    self.text_area.after(100, check_received)  # 100ms 后再次检查
+                    self.tk_safe(lambda: self.text_area.after(100, check_received))  # 100ms 后再次检查
 
             check_received()
             return
@@ -2443,8 +2439,8 @@ GUI 控件状态:
                     # 如果发生了删除操作，导致 last_send_index 大于 current_index，停止运行该语句并弹窗，后续语句继续执行
                     current_index = self.text_area.index("end-1c")
                     if self.text_area.compare(self.last_send_index, ">", current_index):
-                        print("wait terminal symbol error, last index bigger than current index, wait for skipped.")
-                        messagebox.showerror("wait terminal symbol error","wait terminal symbol error, last index bigger than current index, wait for skipped.")
+                        #print("wait terminal symbol error, last index bigger than current index, wait for skipped.")
+                        self.tk_safe(lambda: messagebox.showerror("wait terminal symbol error","wait terminal symbol error, last index bigger than current index, wait for skipped."))
                         return
                         
                     self.button_send_check_terminal_new_text = self.text_area.get(self.last_send_index, current_index)
@@ -2457,10 +2453,8 @@ GUI 控件状态:
                         self._send_next_command(all_lines, index + 1)
                     elif time.time() - start_time >= timeout:
                         # 超时未检测到终止符，在主窗口中显示超时，直接终止函数执行
-                        self.text_area.after(0, lambda: (
-                            self.text_area.insert(tk.END, "串口未收到设置的等待符号，发送终止，请设置或去掉等待符号。", "red"),
-                            self.text_area.yview(tk.END)
-                        ))
+                        self.text_area.insert(tk.END, "串口未收到设置的等待符号，发送终止，请设置或去掉等待符号。", "red")
+                        self.text_area.yview(tk.END)
                         return
                     else:
                         self.text_area.after(100, check_terminal)
@@ -2507,8 +2501,8 @@ GUI 控件状态:
             (hasattr(self, 'ssh_channel') and self.ssh_channel and not self.ssh_channel.closed)  # SSH 打开
         ):
             # 将SSH状态色块置为灰色
-            self.ssh_status_canvas.config(bg="gray")
-            messagebox.showwarning("警告", "串口或 SSH 未连接")
+            self.tk_safe(lambda: self.ssh_status_canvas.config(bg="gray"))
+            self.tk_safe(lambda: messagebox.showwarning("警告", "串口或 SSH 未连接"))
             return
         key = data.strip().lower()
         # 拦截打开 PowerShell
@@ -2534,68 +2528,68 @@ GUI 控件状态:
                         open_timeout=3000                    # ⑥ 等待 3 s
                     )
                     self.psu = VisaComm(visa_res)
-                    self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"√ VISA 初始化成功: {addr}\n")))
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA 初始化成功: {addr}\n"))
                 except Exception as e:
-                    self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"× VISA 初始化失败: {e}\n")))
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA 初始化失败: {e}\n"))
             else:
-                self.text_area.after(0, lambda: (self.text_area.insert(tk.END, "× visa_init 格式错误，应为 visa_init(ADDRESS)\n")))
-            self.text_area.after(0, lambda: (self.text_area.see(tk.END)))
+                self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_init 格式错误，应为 visa_init(ADDRESS)\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
             return
 
         # 2) QUERY
         if key.startswith("visa_query"):
             if not self.psu:
-                self.text_area.after(0, lambda: (self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n")))
+                self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
             else:
                 m = re.match(r'visa_query\(\s*(.+?)\s*\)', data.strip(), re.IGNORECASE)
                 if m:
                     cmd = m.group(1)
                     try:
                         resp = self.psu.query(cmd)
-                        self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f">>> VISA QUERY: {cmd}\n{resp}\n")))
+                        self.tk_safe(lambda: self.text_area.insert(tk.END, f">>> VISA QUERY: {cmd}\n{resp}\n"))
                     except Exception as e:
-                        self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"× VISA QUERY 错误: {e}\n")))
+                        self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA QUERY 错误: {e}\n"))
                 else:
-                    self.text_area.after(0, lambda: (self.text_area.insert(tk.END, "× visa_query 格式错误，应为 visa_query(COMMAND)\n")))
-            self.text_area.after(0, lambda: (self.text_area.see(tk.END)))
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_query 格式错误，应为 visa_query(COMMAND)\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
             return
 
         # 3) WRITE
         if key.startswith("visa_write"):
             if not self.psu:
-                self.text_area.after(0, lambda: (self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n")))
+                self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
             else:
                 m = re.match(r'visa_write\(\s*(.+?)\s*\)', data.strip(), re.IGNORECASE)
                 if m:
                     cmd = m.group(1)
                     try:
                         self.psu.write(cmd)
-                        self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"√ VISA WRITE: {cmd}\n")))
+                        self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA WRITE: {cmd}\n"))
                     except Exception as e:
-                        self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"× VISA WRITE 错误: {e}\n")))
+                        self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA WRITE 错误: {e}\n"))
                 else:
-                    self.text_area.after(0, lambda: (self.text_area.insert(tk.END, "× visa_write 格式错误，应为 visa_write(COMMAND)\n")))
-            self.text_area.after(0, lambda: (self.text_area.see(tk.END)))
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_write 格式错误，应为 visa_write(COMMAND)\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
             return
 
         # 4) READ
         if key.startswith("visa_read"):
             if not self.psu:
-                self.text_area.after(0, lambda: (self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n")))
+                self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
             else:
                 try:
                     resp = self.psu.read()
-                    self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f">>> VISA READ:\n{resp}\n")))
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, f">>> VISA READ:\n{resp}\n"))
                 except Exception as e:
-                    self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"× VISA READ 错误: {e}\n")))
-            self.text_area.after(0, lambda: (self.text_area.see(tk.END)))
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA READ 错误: {e}\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
             return
 
         # 默认走串口
         # （1）插入可选的时间戳
         if self.timestamp_onoff.get():
             ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-            self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"\nSend at    {ts}\n", "blue")))
+            self.tk_safe(lambda: self.text_area.insert(tk.END, f"\nSend at    {ts}\n", "blue"))
         # （2）真正写入串口并显示
         raw = data + ("\n" if add_newline else "")
 
@@ -2604,7 +2598,7 @@ GUI 控件状态:
             try:
                 self.ssh_channel.send(raw)
             except Exception as e:
-                messagebox.showerror("SSH 发送失败", str(e))
+                self.tk_safe(lambda: messagebox.showerror("SSH 发送失败", str(e)))
                 return
         else:
             self.serial_conn.send_data(raw)  
@@ -2612,12 +2606,10 @@ GUI 控件状态:
         # 判断是否向主窗口写入发送的字符串
         if insert_display:
             # 安全地在主线程插入并滚动
-            self.text_area.after(0, lambda: (
-                self.text_area.insert(tk.END, raw),
-                self.text_area.yview(tk.END)
-            ))
+            self.tk_safe(lambda: self.text_area.insert(tk.END, raw))
+            self.tk_safe(lambda: self.text_area.yview(tk.END))
         # 在此处更新发送后的窗口的最后的位置
-        self.last_send_index = self.text_area.index("end-1c")
+        self.last_send_index = self.tk_safe(lambda: self.text_area.index("end-1c"))
 
         # （3）更新统计
         self.sent_bytes += len(data.encode())
@@ -2677,24 +2669,18 @@ GUI 控件状态:
                 self.baud_menu.config(state="disabled")
                 self.refresh_btn.config(state="disabled")
                 self.status_canvas.config(bg="green")
-                self.text_area.after(0, lambda: (
-                    self.text_area.insert(tk.END, f"串口已打开: {port} @ {baudrate}bps\n"),
-                    self.text_area.yview(tk.END)
-                ))
+                self.tk_safe(lambda: self.text_area.insert(tk.END, f"串口已打开: {port} @ {baudrate}bps\n"))
+                self.tk_safe(lambda: self.text_area.yview(tk.END))
                 self.stop_reading = False
                 self.reading_thread = threading.Thread(target=self.read_from_serial, daemon=True)
                 self.reading_thread.start()
             else:
                 # 串口未打开成功，给出错误提示
-                self.text_area.after(0, lambda: (
-                    self.text_area.insert(tk.END, f"错误: 无法连接到 {port}\n"),
-                    self.text_area.yview(tk.END)
-                ))
+                self.tk_safe(lambda: self.text_area.insert(tk.END, f"错误: 无法连接到 {port}\n"))
+                self.tk_safe(lambda: self.text_area.yview(tk.END))
         except Exception as e:
-            self.text_area.after(0, lambda: (
-                self.text_area.insert(tk.END, f"错误: 无法连接到 {port}\n"),
-                self.text_area.yview(tk.END)   
-            ))
+            self.tk_safe(lambda: self.text_area.insert(tk.END, f"错误: 无法连接到 {port}\n"))
+            self.tk_safe(lambda: self.text_area.yview(tk.END))
 
     def close_serial(self):
         if self.serial_conn:
@@ -2710,10 +2696,10 @@ GUI 控件状态:
             self.baud_menu.config(state="readonly")
             self.refresh_btn.config(state="normal")
             self.status_canvas.config(bg="gray")
-            self.text_area.after(0, lambda: (
-                self.text_area.insert(tk.END, "串口已关闭\n"),
-                self.text_area.yview(tk.END)
-            ))
+            self.tk_safe(lambda: self.text_area.insert(tk.END, "串口已关闭\n"))
+            self.tk_safe(lambda: self.text_area.yview(tk.END))
+
+
             if self.loop_sending:
                 self.loop_sending = False
                 self.single_loop_send_btn.config(text="单行循环")
@@ -2805,7 +2791,7 @@ GUI 控件状态:
                 data = self.ssh_channel.recv(4096).decode('utf-8', errors='ignore')
                 if not data:
                     break
-                self.text_area.after(0, self._append_text, data)
+                self._append_text(data)
         except Exception:
             pass
 
@@ -2814,7 +2800,7 @@ GUI 控件状态:
         path = self.auto_save_path_entry.get().strip()
         fname = self.file_name_entry.get().strip()
         if not path or not fname:
-            messagebox.showwarning("警告", "未指定路径和文件名")
+            self.tk_safe(lambda: messagebox.showwarning("警告", "未指定路径和文件名"))
             return None
         # 构造文件名：保存文件名_YYYY-MM-DD_HH_MM_SS.txt
         filename = f"{fname}_{time.strftime('%Y-%m-%d')}_{time.strftime('%H-%M-%S')}.txt"
@@ -2823,7 +2809,7 @@ GUI 控件状态:
             new_file = open(full_path, "w", encoding="utf-8")
             return new_file
         except Exception as e:
-            messagebox.showerror("错误", f"无法创建自动保存文件：{e}")
+            self.tk_safe(lambda: messagebox.showerror("错误", f"无法创建自动保存文件：{e}"))
             return None
 
     def send_data_btn(self, event=None):
@@ -2875,13 +2861,13 @@ GUI 控件状态:
                 if self.timestamp_onoff.get():
                     timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                     # 使用 after(0, lambda: ( 将要执行的语句包住，可以让子进程不会跟其他进程冲突
-                    self.text_area.after(0, lambda: (self.text_area.insert(tk.END, f"\nSend at    {timestamp_str}\n", "blue")))
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"\nSend at    {timestamp_str}\n", "blue"))
                 self.serial_conn.send_data(data_to_send)
                 # 使用 after(0, lambda: ( 将要执行的语句包住，可以让子进程不会跟其他进程冲突
-                self.text_area.after(0, lambda: (
-                    self.text_area.insert(tk.END, f"{data_to_send}"),
-                    self.text_area.yview(tk.END)
-                ))
+
+                self.tk_safe(lambda: self.text_area.insert(tk.END, f"{data_to_send}"))
+                self.tk_safe(lambda: self.text_area.yview(tk.END))
+                
 
 
                 self.sent_bytes += len(data_to_send.encode())
@@ -2906,12 +2892,12 @@ GUI 控件状态:
                         # 如果选中时间戳，则先插入接收时间
                         if self.timestamp_onoff.get() and self.allow_new_timestamp:
                             timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                            self.text_area.after(0, lambda: self.text_area.insert(tk.END, f"\nReceive at {timestamp_str}\n", "green"))
+                            self.tk_safe(lambda: self.text_area.insert(tk.END, f"\nReceive at {timestamp_str}\n", "green"))
                             self.allow_new_timestamp = False  # 插入一次时间戳后禁止后续插入
                         received_str = data_bytes.decode(errors='replace')
                         #self.text_area.insert(tk.END, received_str)
-                        self.text_area.after(0, lambda: self.text_area.insert(tk.END, received_str))
-                        self.text_area.after(0, lambda: self.text_area.yview(tk.END))  # 自动滚动到末尾
+                        self.tk_safe(lambda: self.text_area.insert(tk.END, received_str))
+                        self.tk_safe(lambda: self.text_area.yview(tk.END))  # 自动滚动到末尾
                         self.received_bytes += len(data_bytes)
                         self.update_data_stats()
                     else:
@@ -2929,7 +2915,7 @@ GUI 控件状态:
             self.sent_bytes = 0
         if self.received_bytes >= 1_000_000_000:
             self.received_bytes = 0
-        self.data_stats.set(f"发送: {format_bytes(self.sent_bytes)} | 接收: {format_bytes(self.received_bytes)}")
+        self.tk_safe(lambda: self.data_stats.set(f"发送: {format_bytes(self.sent_bytes)} | 接收: {format_bytes(self.received_bytes)}"))
 
     def new_port(self):
         #self.root.update_idletasks()
@@ -3013,7 +2999,7 @@ GUI 控件状态:
                 # 缓冲区为空时，仅发送一个回车
                 self.send_via_serial("",
                                      add_newline=True,insert_display=False)
-            self.text_area.after(0, lambda: (self.text_area.yview(tk.END)))
+            self.text_area.yview(tk.END)
             self.update_data_stats()
             # 只要按下回车，就在文本框中进行换行
             #self.append_to_text_area(f"\n")
@@ -3021,10 +3007,10 @@ GUI 控件状态:
             self.input_buffer = ""
             self.input_buffer_cursor = 0
             # Move cursor to the end of the text area
-            self.text_area.after(0, lambda: (
-                self.text_area.mark_set("insert", "end"),
-                self.text_area.see("end")
-            ))
+
+            self.text_area.mark_set("insert", "end")
+            self.text_area.see("end")
+            
             #return "break"  # Prevent default newline insertion
         
             # 处理 BackSpace 键：删除光标前的一个字符
@@ -3083,15 +3069,15 @@ GUI 控件状态:
         if 0 <= self.sent_commands_number < len(self.sent_commands):
             command = self.sent_commands[self.sent_commands_number]
             # 删除当前输入缓冲区的内容
-            self.text_area.after(0, lambda: (self.text_area.delete("insert -%dc" % len(self.input_buffer), "insert")))
+            self.text_area.delete("insert -%dc" % len(self.input_buffer), "insert")
             # 插入历史命令
-            self.text_area.after(0, lambda: (self.text_area.insert("insert", command)))
+            self.text_area.insert("insert", command)
             self.input_buffer = command
             self.input_buffer_cursor = len(command)
 
     def _clear_input_buffer(self):
         """清空输入缓冲区。"""
-        self.text_area.after(0, lambda: (self.text_area.delete("insert -%dc" % len(self.input_buffer), "insert")))
+        self.text_area.delete("insert -%dc" % len(self.input_buffer), "insert")
         self.input_buffer = ""
         self.input_buffer_cursor = 0
 
@@ -3132,18 +3118,143 @@ GUI 控件状态:
                 self.auto_save_file = None
             self.auto_save_btn.config(text="OFF", bg="gray")
 
+    def tk_safe(self, expr, wait=None):
+        """
+        在主线程安全执行 Tkinter 表达式。
+        - 如果从主线程调用，则直接执行并返回结果。
+        - 如果从子线程调用，则调度到主线程，并阻塞等待结果返回。
+        """
+        # 1. 正确地判断当前是否在主GUI线程
+        if threading.current_thread() is threading.main_thread():
+            # --- 主线程路径 ---
+            # 已经在本垒，直接执行即可
+            try:
+                return expr()
+            except Exception as e:
+                print(f"在 tk_safe (主线程模式) 中直接执行时发生异常: {e}")
+                raise  # 将异常重新抛出，以便上层代码能感知到
+        else:
+            # --- 子线程路径 ---
+            # 保持原有的事件等待机制
+            result = []
+            event = threading.Event()
+
+            def wrapper():
+                try:
+                    r = expr()
+                    result.append(r)
+                except Exception as e:
+                    result.append(e)
+                finally:
+                    event.set()
+
+            # 将任务调度到主线程的事件队列
+            self.root.after(0, wrapper)
+
+            # 阻塞当前子线程，等待主线程完成任务并设置事件
+            event.wait(timeout=10.0)  # 设置10秒超时以防万一
+
+            if result:
+                res = result[0]
+                if isinstance(res, Exception):
+                    raise res  # 将在主线程中捕获的异常在子线程中重新抛出
+                return res
+            else:
+                # 如果超时，result列表会是空的
+                raise TimeoutError("tk_safe 在等待主线程返回时超时")
+           
+    '''def tk_safe(self, expr, wait=None):
+        """
+        在主线程安全执行 Tkinter 表达式。
+
+        参数:
+            expr : lambda 表达式 (Tkinter 调用)
+            wait : None  → 自动判断 (有返回值就阻塞，无返回值就异步)
+                   True  → 强制阻塞等待返回
+                   False → 强制异步，不等待
+
+        返回:
+            - 如果阻塞执行且有返回值 → 返回结果
+            - 其他情况 → None
+
+        示例
+            获取值（阻塞执行，自动返回结果）
+            content = self.tk_safe(lambda: self.text_area.get("1.0", "end-1c"))
+            pos = self.tk_safe(lambda: self.text_area.index("end-1c"))
+
+            修改值（默认异步执行，不阻塞）
+            self.tk_safe(lambda: self.text_area.insert(tk.END, "Hello\n"))
+            self.tk_safe(lambda: self.text_area.delete("1.0", "end"))
+
+            修改值但要阻塞（等执行完成后再继续）
+            self.tk_safe(lambda: self.text_area.insert(tk.END, "阻塞插入\n"), wait=True)
+        """
+        # 1. 判断当前是否是主进程
+        # 'MainProcess' 是默认的主进程名称
+        is_main_process = multiprocessing.current_process().name == 'MainProcess'
+
+        result = []
+        event = threading.Event()
+
+        def wrapper():
+            try:
+                r = expr()
+                if r is not None:
+                    result.append(r)
+            except Exception as e:
+                result.append(e)
+            finally:
+                event.set()
+
+        # 安排到 Tk 主线程
+        self.root.after(0, wrapper)
+
+        # 自动模式: wait=None 默认设置为 True (阻塞)
+        effective_wait = wait
+        if effective_wait is None:
+            effective_wait = True
+
+        # 如果是主进程，强制设置为不等待 (不阻塞)
+        if is_main_process:
+            # 目标：主进程中不阻塞
+            effective_wait = False
+
+        # 自动模式: 根据返回值推断 wait
+        if wait is None:
+            # 如果调用看起来要返回值，调用者会用 `=` 赋值 → 需要等
+            # 这里没法直接判断，只能靠习惯：取值时指定 wait=None 就能等
+            # 修改操作一般不需要返回 → 默认不等
+            wait = True  
+
+        # 4. 执行等待或立即返回
+        if effective_wait:
+            # 只有子进程中 wait=True (或默认) 才会进入此阻塞等待
+            # 使用一个较长的超时时间，以适应跨进程通信的额外开销
+            event.wait(timeout=10.0)
+            
+            if result:
+                if isinstance(result[0], Exception):
+                    raise result[0]
+                return result[0]
+            # 超时或 expr() 返回 None
+            return None
+        else:
+            # 主进程总是进入此分支（不阻塞），子进程 wait=False 也进入此分支
+            return None
+        '''
+
     def auto_save_and_auto_delete_onetime(self):
         # 执行自动保存操作（如果标志位打开）
         if not self.auto_save_stop:
             print("auto save func start")
             #获取当前文本框末尾的索引
-            current_index = self.text_area.index("end-1c")
+            current_index = self.tk_safe(lambda: self.text_area.index("end-1c"))
             # 获取从上次保存到当前的新内容
-            if self.text_area.compare(self.last_saved_index, ">", current_index):
+            if self.tk_safe(lambda: self.text_area.compare(self.last_saved_index, ">", current_index)):
                 self.last_saved_index = current_index
                 self.auto_save_new_text = ""
             else:
-                self.auto_save_new_text = self.text_area.get(self.last_saved_index, current_index)
+                self.auto_save_new_text = self.tk_safe(lambda: self.text_area.get(self.last_saved_index, current_index))
                 print(f"save content start index is {self.last_saved_index} end index is {current_index}")
             if self.auto_save_new_text and self.auto_save_file:
                 self.last_saved_index = current_index  # 更新最后保存位置
@@ -3168,26 +3279,34 @@ GUI 控件状态:
         if self.auto_clear_onoff.get():
             # 如果wait for /wait for any函数将该标志位关闭，则不进行自动删除，避免引起index变化导致的问题
             if self.allow_auto_delete:
-                self.auto_clear_all_content = self.text_area.get("1.0", "end-1c")
+                self.auto_clear_all_content = self.tk_safe(lambda: self.text_area.get("1.0", "end-1c"))
                 lenth_total_chars = len(self.auto_clear_all_content)
                 if lenth_total_chars > 1000000:
                     print("auto delete triggered")
-                    # 获取当前总行数和 text_area 的显示行数（高度）
-                    current_total_lines = int(self.text_area.index("end-1c").split('.')[0])
-                    # 如果总行数大于2，则仅保留后一半的行
+                    # 获取当前总行数
+                    current_index = self.tk_safe(lambda: self.text_area.index("end-1c"))
+                    current_total_lines = int(current_index.split('.')[0])
                     if current_total_lines > 2:
-                        delete_end_line = (current_total_lines+1) // 2 # 相当于除以2向上取整
+                        delete_end_line = (current_total_lines + 1) // 2  # 向上取整
+
+                        # 删除前记录
+                        print(f"[delete] before last_saved_index={self.last_saved_index}")
+
+                        # 清理 tag
                         for tag in self.text_area.tag_names():
-                            self.text_area.tag_remove(tag, "1.0", f"{delete_end_line}.0")
-                        # 删除从第一行到 start_line 行的起始部分
-                        self.text_area.delete("1.0", f"{delete_end_line}.0")
-                        print(f"delete content start index is 1.0 end index is {delete_end_line}.0")
-                        # 更新文本框的内容后，重新记录最后保存的位置
+                            self.tk_safe(lambda: self.text_area.tag_remove(tag, "1.0", f"{delete_end_line}.0"),wait=True)
+
+                        # 删除文本
+                        self.tk_safe(lambda: self.text_area.delete("1.0", f"{delete_end_line}.0"),wait=True)
+                        print(f"delete content start index=1.0 end index={delete_end_line}.0")
+
+                        # 更新 last_saved_index
                         last_saved_index_line = int(self.last_saved_index.split('.')[0])
                         last_saved_index_colume = int(self.last_saved_index.split('.')[1])
-                        print(f"last save index is {self.last_saved_index}")
-                        self.last_saved_index = f"{last_saved_index_line-delete_end_line+1}.{last_saved_index_colume}"
-                        print(f"last save index change to {self.last_saved_index}")
+                        self.last_saved_index = f"{last_saved_index_line - delete_end_line + 1}.{last_saved_index_colume}"
+
+                        print(f"[delete] after last_saved_index={self.last_saved_index}")
+
 
     def auto_save_and_auto_delete(self):
         """
@@ -3196,13 +3315,13 @@ GUI 控件状态:
         self.auto_save_and_auto_delete_onetime()
         
             # 10秒后再次检测
-        self.text_area.after(10000, self.auto_save_and_auto_delete)
+        self.tk_safe(lambda: self.text_area.after(10000, self.auto_save_and_auto_delete))
 
     def code_show_date_time(self):
-        self.text_area.after(0, lambda: (
-            self.text_area.insert(tk.END, str(datetime.now()) + "\n"),
-            self.text_area.see(tk.END)
-        ))
+        
+        self.tk_safe(lambda: self.text_area.insert(tk.END, str(datetime.now()) + "\n"))
+        self.tk_safe(lambda: self.text_area.see(tk.END))
+        
     def save_setup(self):
         """
         将当前窗口名、串口选项、波特率、自动保存路径、文件名、文件最大容量、脚本路径、
@@ -3595,6 +3714,6 @@ except Exception:
     with open("TermPlus_crash.log", "a", encoding="utf-8") as f:
         f.write("\n\n==== Crash on {} ====\n".format(datetime.now()))
         f.write(traceback.format_exc())
-    messagebox.showerror("程序异常", "发生未捕获异常，程序已记录日志，参见TermPlus_crash.log。")
+    self.tk_safe(lambda: messagebox.showerror("程序异常", "发生未捕获异常，程序已记录日志，参见TermPlus_crash.log。"))
 
 
