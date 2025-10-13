@@ -2877,7 +2877,9 @@ GUI 控件状态:
                 time.sleep(0.1)
                 sleep_time += 0.1
     
-    def read_from_serial(self):
+    '''def read_from_serial(self):
+        self.recv_buffer = ""
+        self.last_ui_update = time.time()
         while not self.stop_reading:
             if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
                 try:
@@ -2907,6 +2909,50 @@ GUI 控件状态:
                         # 如果没有接收到数据，短暂休眠，避免占用过多 CPU 资源
                         time.sleep(0.01)
                 except Exception:
+                    break'''
+
+    def read_from_serial(self):
+        self.recv_buffer = ""
+        self.last_serial_receive_update_time = time.time()
+        while not self.stop_reading:
+            if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
+                try:
+                    # 使用 read() 读取当前缓冲区中的所有数据，如果没有数据则至少读取1个字节
+                    data_bytes = self.serial_conn.ser.read_all()
+                    self.current_read_time = time.time() # 获取当前时间
+                    if data_bytes:
+                        # 如果接收到了数据，也要进行一次判断，current time是否超过last time 0.1秒
+                        if self.last_data_time is not None and (self.current_read_time - self.last_data_time) >= 0.1:
+                            self.allow_new_timestamp = True  # 超过 0.1 秒后，允许下一次插入时间戳
+                        self.last_data_time = self.current_read_time  # 更新最近接收时间
+                        # 如果选中时间戳，则先插入接收时间
+                        if self.timestamp_onoff.get() and self.allow_new_timestamp:
+                            timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                            self.tk_safe(lambda: self.text_area.insert(tk.END, f"\nReceive at {timestamp_str}\n", "green"))
+                            self.allow_new_timestamp = False  # 插入一次时间戳后禁止后续插入
+                        received_str = data_bytes.decode(errors='replace')
+                        self.recv_buffer += received_str
+
+                    else:
+                        # 如果没有接收到数据，计算当前时间和上次接收时间是否超过0.1秒，超过则允许下一次插入时间戳
+                        if self.last_data_time is not None and (self.current_read_time - self.last_data_time) >= 0.1:
+                            self.allow_new_timestamp = True  # 超过 0.1 秒后，允许下一次插入时间戳
+                        # 如果没有接收到数据，短暂休眠，避免占用过多 CPU 资源
+                        time.sleep(0.001)
+
+                    # 定期批量刷新UI（每200ms或缓存>2KB）
+                    if len(self.recv_buffer) > 2048 or ((self.current_read_time - self.last_serial_receive_update_time) > 0.1 and len(self.recv_buffer)>0):
+                        #chunk = self.recv_buffer
+                        chunk = self.recv_buffer.replace('\r\n', '\n').replace('\r', '\n')
+                        self.recv_buffer = ""
+                        self.tk_safe(lambda: self.text_area.insert(tk.END, chunk))
+                        self.tk_safe(lambda: self.text_area.yview(tk.END))
+                        self.last_serial_receive_update_time = self.current_read_time
+                        self.received_bytes += len(data_bytes)
+                        self.update_data_stats()
+
+                except Exception as e:
+                    print(f"read_from_serial error: {e}")
                     break
 
     def update_data_stats(self):
