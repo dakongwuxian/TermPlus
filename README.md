@@ -19,7 +19,7 @@ Serial port GUI tool on Windows, key features: button send, loop send, customize
 
 如果遇到使用问题可以发送邮件至dakongwuxian@gmail.com，会尽量及时修复bug。
 
-长时间运行不建议使用同一个exe直接开启2个或多个GUI窗口，容易崩溃。使用2个文件夹中的不同的exe，更加稳定。单独运行很稳定，已经经过了数周的测试。
+长时间运行不建议使用同一个exe直接开启2个或多个GUI窗口，容易崩溃。使用2个文件夹中的不同的exe，更加稳定。单独运行很稳定，已经经过了数月的测试。
 
 本人不对此软件的可靠性负责，用于商业项目时可能出现未知的数据风险，请自行负责。
 
