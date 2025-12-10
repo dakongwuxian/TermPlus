@@ -1,0 +1,19 @@
+# this example search for the respond of command "dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2"
+# respond is like "Value 0x0000000A(10) read from address 0x06C00330 with offset 0B."
+# below scripts get the "10" value and monitor it
+
+
+
+delay_value = 0
+send dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2
+wait for $ for 2
+text_to_search = get_last_n_lines(2)
+pattern = r"^Value\s+0x[0-9A-Fa-f]+\((\d+)\)\s+read from address"
+match = re.search(pattern, text, re.MULTILINE)
+if match:
+    delay_value = int(match.group(1))
+    show_str("delay_value get as %d\n"%delay_value)
+if delay_value > 17
+    show_str("delay value > 17 detected\n")
+    messagebox.showinfo("提示", "delay value > 17 detected")# pop out message
+    raise StopLoopException("stop")# stop running

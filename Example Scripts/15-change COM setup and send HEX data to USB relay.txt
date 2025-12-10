@@ -1,0 +1,31 @@
+
+
+close_serial()
+wait 1
+set_port("COM20")
+show_str("set COM20\n")
+wait 1
+set_baudrate("9600")
+show_str("set baudrate to 9600\n")
+wait 1
+
+connect_serial()
+wait 1
+# A0 01 01 A2 打开继电器
+send_line("\xA0\x01\x01\xA2")
+wait 3
+# A0 01 00 A1 关闭继电器
+send_line("\xA0\x01\x00\xA1")
+wait 3
+
+close_serial()
+wait 1
+set_port("COM3")
+show_str("set COM3\n")
+wait 1
+set_baudrate("115200")
+show_str("set baudrate to 115200\n")
+wait 1
+connect_serial()
+wait 1
+
