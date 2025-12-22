@@ -16,10 +16,7 @@ import configparser
 from datetime import datetime
 import io
 from io import BytesIO
-import inspect
 import keyword
-from logging import raiseExceptions
-import multiprocessing
 import os # 遍历目录
 import paramiko
 import pyvisa
@@ -28,7 +25,6 @@ from pyvisa.constants import AccessModes
 from PIL import Image, ImageTk
 import platform
 import re # 加载脚本文件
-import requests
 import subprocess
 import sys
 import serial
@@ -39,7 +35,6 @@ import tkinter.font as tkFont
 import threading
 import time
 import traceback
-import textwrap
 from urllib.parse import urljoin,quote
 from version_info import VERSION
 
@@ -162,11 +157,6 @@ class SerialGUI:
         self.wait_for_initial_index  = None
         self.allow_auto_delete = True
 
-        # self.gitea_download_link = "http://10.166.147.43:3000/dakongwuxian/termplus-scripts/raw/branch/main/"
-        # self.gitea_token = "7d749f5e12b8e18a5a7af854cc1e6e128d7537a4"
-        # self.gitea_upload_link = "http://10.166.147.43:3000/api/v1/repos/dakongwuxian/termplus-scripts/contents"
-        # self.base_api = "http://10.166.147.43:3000/api/v1/repos/dakongwuxian/termplus-scripts/contents"
-
         # 初始化 PyVISA ResourceManager，psu 初始为 None
         self.rm  = pyvisa.ResourceManager()
         self.psu = None
@@ -228,7 +218,6 @@ class SerialGUI:
             ]
         )
 
-
         # 创建菜单栏
         self.menu_bar = tk.Menu(self.root)
         self.root.config(menu=self.menu_bar)
@@ -251,7 +240,7 @@ class SerialGUI:
 
         self.about_menu.add_command(label=VERSION, state="disabled")
 
-        self.about_menu.add_command(label="Donation Here.",command=self.show_about_window,state="normal")
+        self.about_menu.add_command(label="Buy me a coffee ☕",command=self.show_about_window,state="normal")
         
         # 用于单元格右键菜单的剪贴板（复制功能），存储元组 (text, custom_data)
         self.cell_clipboard = ("", "")
@@ -278,7 +267,6 @@ class SerialGUI:
         self.main_frame.grid_rowconfigure(9, weight=0)
         self.main_frame.grid_columnconfigure(0, weight=1)           # 第一列扩展
         self.main_frame.grid_columnconfigure(1, weight=0)
-        
 
         # row 0 area show/hide buttons
         self.row_0_frame = tk.Frame(self.main_frame)
@@ -538,9 +526,6 @@ class SerialGUI:
         self.save_as_script_button = tk.Button(self.row_5_frame, width = 5,text="另存", command=self.save_as_new_script)
         self.save_as_script_button.place(relx=0, rely=0.5, anchor="w",x=685)
 
-
-
-
         # Row 6: Notebook区域（标签页区域），创建一个一行两列的区域，让notebook占据第一行一列，第一行第二列固定宽度。
         self.row_6_frame = tk.Frame(self.main_frame, height=186)#width=730, 
         self.row_6_frame.grid(row=6, column=0, sticky="nsew", padx=(0,20), pady=(0,10))
@@ -715,10 +700,7 @@ class SerialGUI:
         escaped = [re.escape(w) for w in sorted_words]
         pattern = r"\b(?:" + "|".join(escaped) + r")\b"
         self._func_highlight_re = re.compile(pattern)
-        
-
-
-
+ 
         # row 9
         # 脚本控制区域
         self.row_9_frame = tk.Frame(self.main_frame,width=730, height=30)
@@ -749,11 +731,6 @@ class SerialGUI:
         self.save_multi_loop_btn.place(relx=0, rely=0.5, anchor="w",x=635)
         self.save_as_multi_loop_btn = tk.Button(self.row_9_frame, text="另存", width=5, command=self.save_multi_loop_file_as)
         self.save_as_multi_loop_btn.place(relx=0, rely=0.5, anchor="w",x=685)
-
-
-
-
-
 
         # right_frame 右侧功能区，使用grid放置在右下角
         self.right_frame = tk.Frame(self.main_frame) # , borderwidth=1, relief="raised" 边框可选项 flat raised sunken groove ridge
@@ -841,10 +818,6 @@ class SerialGUI:
         self.MB_label = tk.Label(self.file_capacity_frame, text="MB")
         self.MB_label.pack(side="left", padx=2, anchor="se")
 
-        
-
-        
-
         # 保存原始的 grid 配置
         self.row_5_grid_info = self.row_5_frame.grid_info()
         self.row_6_grid_info = self.row_6_frame.grid_info()
@@ -852,7 +825,6 @@ class SerialGUI:
         self.row_8_grid_info = self.row_8_frame.grid_info()
         self.row_9_grid_info = self.row_9_frame.grid_info()
         self.right_frame_grid_info = self.right_frame.grid_info()
-
 
         self.sent_bytes = 0
         self.received_bytes = 0
@@ -901,667 +873,10 @@ class SerialGUI:
             pass
 
         # 不抛出异常，让 Tkinter 事件循环继续
-    
-    
-    # def request_with_loading(self, method, url, **kwargs):
-    #     """
-    #     同步执行 requests 请求，显示等待窗口。
-    #     这里不会用线程，函数会阻塞直到请求完成。
-    #     """
-    #     # ---------- 创建等待窗口 ----------
-    #     loading_win = tk.Toplevel(self.root)
-    #     loading_win.title("请稍候")
-    #     loading_win.geometry("220x80")
-    #     loading_win.transient(self.root)
-    #     loading_win.attributes("-topmost", True)
-    
-    #     # 居中
-    #     self.root.update_idletasks()
-    #     root_x = self.root.winfo_x()
-    #     root_y = self.root.winfo_y()
-    #     root_w = self.root.winfo_width()
-    #     root_h = self.root.winfo_height()
-    #     pos_x = root_x + (root_w - 220) // 2
-    #     pos_y = root_y + (root_h - 80) // 2
-    #     loading_win.geometry(f"220x80+{pos_x}+{pos_y}")
-
-    #     # Label + Progressbar
-    #     label = ttk.Label(loading_win, text="正在访问 Gitea，请稍候...")
-    #     label.pack(pady=15)
-    #     pb = ttk.Progressbar(loading_win, mode='indeterminate', length=150)
-    #     pb.pack(pady=5)
-    #     pb.start(10)
-    
-    #     # ---------- 刷新窗口，使其显示 ----------
-    #     loading_win.update_idletasks()
-    
-    #     # ---------- 执行同步请求 ----------
-    #     try:
-    #         func = getattr(requests, method.lower())
-    #         if "timeout" not in kwargs:
-    #             kwargs["timeout"] = 15
-    #         response = func(url,  **kwargs)
-    #     except Exception as e:
-    #         loading_win.destroy()
-    #         messagebox.showerror("请求错误", str(e))
-    #         return None
-    
-    #     # ---------- 请求完成，关闭等待窗口 ----------
-    #     loading_win.destroy()
-    
-    #     return response
-    # def show_scripts_git_setup_window(self):
-    #     top = tk.Toplevel(self.root)
-    #     top.title("Scripts Sync")
-    #     # 设置固定窗口大小
-    #     win_width = 300
-    #     win_height = 400
-    #     top.minsize=(300,400)
-
-    #     # 获取主窗口的位置和尺寸
-    #     self.root.update_idletasks()
-    #     root_x = root.winfo_x()
-    #     root_y = root.winfo_y()
-    #     root_width = root.winfo_width()
-    #     root_height = root.winfo_height()
-
-    #     # 计算居中位置
-    #     pos_x = root_x + (root_width - win_width) // 2
-    #     pos_y = root_y + (root_height - win_height) // 2
-
-    #     # 设置 Toplevel 窗口的大小和位置
-    #     top.geometry(f"{win_width}x{win_height}+{pos_x}+{pos_y}")
-    #     top.resizable(True, True)
-        
-    #     # === 置顶但不抢 messagebox ===
-    #     top.transient(self.root)
-    #     top.attributes('-topmost', True)
-    #     top.lift()
-
-    #     # 功能按钮
-    #     btn_download = tk.Button(top, text="下载按键/脚本文件", width=15, command=self.download_selected_file)
-    #     btn_upload_buttons = tk.Button(top, text="上传按键文件", width=15, command=self.upload_button_file)
-    #     btn_upload_scripts = tk.Button(top, text="上传脚本文件", width=15, command=self.upload_script_file)
-
-
-
-    #     btn_download.grid(row=0, column=0, padx=10, pady=5, sticky="ew")
-    #     btn_upload_buttons.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
-    #     btn_upload_scripts.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
-
-    #     # Treeview 显示文件结构
-    #     self.repo_tree = ttk.Treeview(top)
-    #     self.repo_tree.grid(row=3, column=0, sticky="nsew", padx=10, pady=10)
-    #     # 绑定右键菜单
-    #     self.repo_menu = tk.Menu(self.repo_tree, tearoff=0)
-    #     self.repo_menu.add_command(label="新建文件夹", command=self.create_new_folder)
-    #     self.repo_menu.add_command(label="删除", command=self.delete_tree_item)
-    #     self.repo_tree.bind("<Button-3>", self.show_repo_context_menu)
-
-    #     # 定义 Treeview 样式
-    #     self.repo_tree.heading("#0", text="脚本仓库", anchor="w")
-
-
-    #     # 统一按钮宽度
-    #     top.columnconfigure(0, weight=1)
-    #     # === 配置行列权重，支持自动扩展 ===
-    #     top.grid_rowconfigure(3, weight=1)
-
-    #     # 在窗口打开后自动连接仓库并加载结构
-    #     top.after(200, self.connect_repo)
-
-    # def show_repo_context_menu(self, event):
-    #     """显示右键菜单"""
-    #     try:
-    #         item = self.repo_tree.identify_row(event.y)
-    #         if item:
-    #             self.repo_tree.selection_set(item)
-    #             self.repo_menu.tk_popup(event.x_root, event.y_root)
-    #     finally:
-    #         self.repo_menu.grab_release()
-
-    # def create_new_folder(self):
-    #     """在选中的节点下新建一个待命名的文件夹"""
-    #     selected = self.repo_tree.focus()
-    #     if not selected:
-    #         messagebox.showinfo("提示", "请先选择一个位置。")
-    #         return
-
-    #     # 获取选中的节点文本
-    #     selected_text = self.repo_tree.item(selected, "text")
-
-    #     # 判断是文件还是文件夹（通过前缀图标判断）
-    #     if selected_text.startswith("📄"):
-    #         # 文件 → 在同一层级创建新文件夹
-    #         parent = self.repo_tree.parent(selected)
-    #     else:
-    #         # 文件夹 → 在其内部创建新文件夹
-    #         parent = selected
-
-    #     # 插入一个临时的新节点（待命名）
-    #     new_node = self.repo_tree.insert(parent, "end", text="📁 新建文件夹", open=False)
-
-    #     # 自动进入编辑状态（用户可以立即输入名称）
-    #     self.repo_tree.selection_set(new_node)
-    #     self.repo_tree.focus(new_node)
-
-    #     # 创建一个输入框放在该位置上方，便于命名
-    #     self.inline_rename_node(new_node)
-
-    # def delete_tree_item(self):
-    #     """删除选中的文件（文件夹不支持删除）"""
-    #     selected = self.repo_tree.focus()
-    #     if not selected:
-    #         messagebox.showinfo("提示", "请先选择一个要删除的文件或文件夹。")
-    #         return
-
-    #     # 获取选中的节点文本
-    #     selected_text = self.repo_tree.item(selected, "text").replace("📁 ", "").replace("📄 ", "")
-    #     parent_item = self.repo_tree.parent(selected)
-
-    #     # 判断是文件还是文件夹
-    #     is_file = "📄" in self.repo_tree.item(selected, "text")
-    #     is_folder = "📁" in self.repo_tree.item(selected, "text")
-
-    #     # === 构造完整路径 ===
-    #     node_path = []
-    #     node_parent = parent_item
-    #     while node_parent:
-    #         node_path.insert(0, self.repo_tree.item(node_parent, "text").replace("📁 ", "").replace("📄 ", ""))
-    #         node_parent = self.repo_tree.parent(node_parent)
-
-    #     repo_path = "/".join(node_path + [selected_text]).replace("\\", "/")
-
-    #     if is_folder:
-    #         # 文件夹无法直接删除
-    #         messagebox.showinfo("提示", "文件夹无法删除，如果文件夹为空会自动删除。")
-    #         return
-
-    #     # === 确认删除 ===
-    #     confirm = messagebox.askyesno("确认删除", f"确定要删除文件吗？\n{repo_path}")
-    #     if not confirm:
-    #         return
-
-    #     # === 调用 Gitea API 删除文件 ===
-    #     try:
-    #         delete_url = f"{self.gitea_upload_link}/{repo_path}?branch=main"
-    #         headers = {
-    #             "Authorization": f"token {self.gitea_token}",
-    #             "Content-Type": "application/json"
-    #         }
-
-    #         # 1️⃣ 先获取文件 SHA
-    #         response_get = self.request_with_loading("GET", delete_url, headers=headers)
-    #         if response_get.status_code != 200:
-    #             messagebox.showerror("错误", f"无法获取文件信息，状态码：{response_get.status_code}")
-    #             print("GET failed:", response_get.text)
-    #             return
-
-    #         sha_value = response_get.json().get("sha")
-    #         if not sha_value:
-    #             messagebox.showerror("错误", "未能获取文件的 SHA。")
-    #             return
-
-    #         # 2️⃣ 构造 DELETE 请求体
-    #         payload = {
-    #             "message": f"Delete file {selected_text} via API",
-    #             "branch": "main",
-    #             "sha": sha_value
-    #         }
-
-    #         response_delete = self.request_with_loading("DELETE",delete_url, headers=headers, json=payload)
-    #         if response_delete.status_code in [200, 204]:
-    #             messagebox.showinfo("成功", f"文件已删除：\n{repo_path}")
-    #             self.repo_tree.delete(selected)
-    #         else:
-    #             messagebox.showerror("错误", f"删除失败，状态码：{response_delete.status_code}\n{response_delete.text}")
-
-    #     except Exception as e:
-    #         messagebox.showerror("错误", f"删除文件时出错：{e}")
-
-
-    # def inline_rename_node(self, node):
-    #     """在 TreeView 上创建输入框，允许用户重命名节点"""
-    #     x, y, width, height = self.repo_tree.bbox(node)
-    #     entry = ttk.Entry(self.repo_tree)
-    #     entry.place(x=x + 20, y=y, width=150, height=height)
-    #     entry.insert(0, "新建文件夹")
-    #     entry.focus_set()
-
-    #     def save_name(event=None):
-    #         new_name = entry.get().strip()
-    #         if not new_name:
-    #             new_name = "未命名文件夹"
-    #         self.repo_tree.item(node, text=f"📁 {new_name}")
-    #         entry.destroy()
-
-    #     entry.bind("<Return>", save_name)
-    #     entry.bind("<FocusOut>", lambda e: save_name())
-
-    # def connect_repo(self):
-    #     """测试 Gitea 仓库可访问性，并更新下拉框文件列表"""
-    #     # 递归加载文件结构的函数
-    #     def load_repo_tree(base_url, parent_node="", path=""):
-    #         try:
-    #             # 构造请求 URL，path 需要对每个 segment 做 quote
-    #             if path:
-    #                 qpath = "/".join(quote(p) for p in path.split("/"))
-    #                 url = f"{base_url}/{qpath}?ref=main"
-    #             else:
-    #                 url = f"{base_url}?ref=main"
-
-    #             resp = self.request_with_loading("GET", 
-    #                 url,
-    #                 timeout=8,
-    #                 headers={"Accept": "application/json", "User-Agent": "TermPlus/1.0"}
-    #             )
-    #             resp.raise_for_status()
-    #             items = resp.json()
-
-    #             for item in items:
-    #                 name = item.get("name")
-    #                 item_type = item.get("type")
-    #                 item_path = item.get("path")  # 完整相对路径
-
-    #                 if item_type == "dir":
-    #                     # 插入目录节点，并递归加载其子项
-    #                     node_id = self.repo_tree.insert(parent_node, "end", text=f"📁 {name}", open=False, values=(item_path,))
-    #                     # 递归：注意这里调用的是局部函数 load_repo_tree
-    #                     load_repo_tree(base_url, node_id, f"{path}/{name}" if path else name)
-    #                 elif item_type == "file":
-    #                     # 插入文件节点（将相对 path 放在 values 里，便于后续下载）
-    #                     self.repo_tree.insert(parent_node, "end", text=f"📄 {name}", values=(item_path,))
-    #                 else:
-    #                     # 忽略其它类型（submodule 等）
-    #                     continue
-
-    #         except Exception as e:
-    #             # 只在首次载入时弹窗，递归深层可能抛出，但这里统一显示
-    #             messagebox.showerror("错误", f"加载仓库结构失败: {e}")
-
-    #     try:
-    #         os.environ["NO_PROXY"] = "10.166.147.43,127.0.0.1,localhost"  # 防止请求被公司代理拦截
-    #         resp = self.request_with_loading("GET", 
-    #             self.base_api,
-    #             timeout=5,
-    #             headers={
-    #                 "Accept": "application/json",
-    #                 "User-Agent": "TermPlus/1.0"
-    #             }
-    #         )
-    #         if resp.status_code == 200:
-    #                 # 清空树并重新加载
-    #                 for iid in self.repo_tree.get_children():
-    #                     self.repo_tree.delete(iid)
-
-    #                 # 调用递归加载（传入 base_api，不带 ?ref）
-    #                 load_repo_tree(self.base_api, parent_node="")
-    #         else:
-    #             messagebox.showerror("连接失败", f"访问仓库失败，HTTP 状态码：{resp.status_code}")
-
-    #     except requests.exceptions.ConnectionError:
-    #         messagebox.showerror("连接错误", "无法连接到 Gitea 仓库，请检查服务器是否运行。")
-    #     except requests.exceptions.Timeout:
-    #         messagebox.showerror("超时", "连接超时，请稍后重试。")
-    #     except Exception as e:
-    #         messagebox.showerror("错误", f"发生未知错误：{e}")
-
-
-    # def upload_button_file(self):
-    #     """上传选中的脚本文件到当前仓库树选中位置"""
-
-    #     # === 1️⃣ 获取本地文件路径 ===
-    #     file_name = self.script_file_combo.get().strip()
-    #     folder_path = self.script_path_entry.get().strip()
-    #     if not file_name or not folder_path:
-    #         messagebox.showwarning("警告", "请先在脚本路径中选择要上传的文件和文件夹。")
-    #         return
-
-    #     local_file_path = os.path.join(folder_path, file_name)
-    #     if not os.path.isfile(local_file_path):
-    #         messagebox.showerror("错误", f"文件不存在：\n{local_file_path}")
-    #         return
-
-    #     # === 2️⃣ 获取当前仓库选中节点 ===
-    #     focus_item = self.repo_tree.focus()
-    #     if not focus_item:
-    #         messagebox.showwarning("警告", "请在仓库目录树中选择上传位置（文件夹或同级路径）。")
-    #         return
-
-    #     node_text = self.repo_tree.item(focus_item, "text").replace("📁 ", "").replace("📄 ", "")
-    #     node_parent = self.repo_tree.parent(focus_item)
-    #     node_path = []
-
-    #     # 构建完整路径
-    #     while node_parent:
-    #         node_path.insert(0, self.repo_tree.item(node_parent, "text").replace("📁 ", "").replace("📄 ", ""))
-    #         node_parent = self.repo_tree.parent(node_parent)
-
-    #     # 计算上传路径（如果选中的是文件，则取其所在目录）
-    #     if "📄" in self.repo_tree.item(focus_item, "text"):
-    #         repo_upload_path = "/".join(node_path)
-    #     else:
-    #         repo_upload_path = "/".join(node_path + [node_text]) if node_text else ""
-
-
-    #     # === 4️⃣ 组织上传 API 地址 ===
-    #     relative_file_path = os.path.join(repo_upload_path, file_name).replace("\\", "/") # 兼容Windows路径分隔符
-    #     encoded_path = quote(relative_file_path,safe="/")
-    #     upload_url = f"{self.gitea_upload_link}/{encoded_path}"  # PUT
-    #     get_url = f"{upload_url}?ref=main" # GET
-    #     # 构造请求头
-    #     headers = {
-    #         "Authorization": f"token {self.gitea_token}", # 🔑 关键：使用 "token " 前缀
-    #         "Content-Type": "application/json", # Gitea API 要求请求体为 JSON 格式
-    #     }
-    #     print(f"DEBUG: repo_upload_path = '{repo_upload_path}'")
-    #     print(f"DEBUG: file_name = '{file_name}'")
-    #     print(f"DEBUG: relative_file_path (before quote) = '{relative_file_path}'")
-    #     print(f"DEBUG: Final Upload URL (GET/PUT target) = '{get_url}'")
-    #     # 1. 尝试获取文件信息，以检查文件是否存在并获取 SHA
-    #     sha_value = None
-    #     try:
-    #         # 注意：使用与上传相同的 headers (包含 token)
-    #         response_get = self.request_with_loading("GET", get_url, headers=headers)
-    #         # ⚠️ 强制打印 GET 响应状态码和内容
-    #         print(f"DEBUG: GET Status Code = {response_get.status_code}")
-    #         print(f"DEBUG: GET Response Text = {response_get.text[:200]}") # 只打印前200字符
-    #         if response_get.status_code == 200:
-    #             # 文件存在，解析 JSON 获取 SHA
-    #             file_info = response_get.json()
-    #             sha_value = file_info.get('sha')
-    #             print(f"File exists. Found SHA: {sha_value}")
-    #         elif response_get.status_code == 404:
-    #             # file not exist
-    #             sha_value = None
-    #         else:
-    #             messagebox.showerror("错误", f"检查文件存在失败: {response_get.status_code}")
-    #             return
-        
-    #     except Exception as e:
-    #         print(f"GET request failed: {e}")
-    #         return
-        
-    #     # 2 读取本地文件内容 
-    #     try:
-    #         with open(local_file_path, "rb") as f:
-    #             file_data = f.read()
-    #         encoded_content = base64.b64encode(file_data).decode("utf-8")
-    #     except Exception as e:
-    #         messagebox.showerror("错误", f"无法读取文件：{e}")
-    #         return
-
-
-
-    #     # 4. 如果文件存在，添加 SHA
-    #     if sha_value:
-    #         # 构造请求体 (payload)
-    #         payload_data = {
-    #             "content": encoded_content,
-    #             "message": f"Upload {file_name} via API - Automated Commit",
-    #             "branch": "main",  # 确保分支正确
-    #             "sha": sha_value
-    #         }
-
-    #         # === 7发送 PUT 请求 ===
-    #         try:
-    #             response_put = self.request_with_loading("PUT",upload_url, headers=headers, json=payload_data)
-    #             if response_put.status_code in [200, 201]:
-    #                 print("Upload successful!")
-    #                 messagebox.showinfo("提示", f"文件上传成功：{file_name}")
-    #                 self.connect_repo()
-    #             elif response_put.status_code == 409:
-    #                 messagebox.showwarning("冲突", "上传失败：文件在您获取 SHA 后被修改")
-    #             else:
-    #                 messagebox.showerror("错误", f"上传失败，状态码：{response_put.status_code}\n{response_put.text}")
-    #         except Exception as e:
-    #             messagebox.showerror("错误", f"PUT 请求失败: {e}")
-    #     # if file not exist
-    #     if sha_value == None:
-    #         # 构造 POST URL
-    #         post_url = upload_url
-
-    #         payload = {
-    #             "branch": "main",
-    #             "content": encoded_content,
-    #             "message": f"Create new file {os.path.basename(relative_file_path)} via API"
-    #         }
-
-    #         # 发送 POST 请求
-    #         response = self.request_with_loading("POST",post_url, headers=headers, json=payload)
-
-    #         if response.status_code in [200, 201]:
-    #             print(f"文件创建成功: {relative_file_path}")
-    #             self.connect_repo()
-    #             return True
-    #         else:
-    #             print(f"文件创建失败: {response.status_code}")
-    #             print(f"Response: {response.text}")
-    #             return False
-
-
-    # def upload_script_file(self):
-    #     """上传选中的脚本文件到当前仓库树选中位置"""
-
-    #     # === 获取本地文件路径 ===
-    #     file_name = self.multi_script_file_combo.get().strip()
-    #     folder_path = self.multi_script_path_entry.get().strip()
-    #     if not file_name or not folder_path:
-    #         messagebox.showwarning("警告", "请先在脚本路径中选择要上传的文件和文件夹。")
-    #         return
-
-    #     local_file_path = os.path.join(folder_path, file_name)
-    #     if not os.path.isfile(local_file_path):
-    #         messagebox.showerror("错误", f"文件不存在：\n{local_file_path}")
-    #         return
-
-    #     # === 2获取当前仓库选中节点 ===
-    #     focus_item = self.repo_tree.focus()
-    #     if not focus_item:
-    #         messagebox.showwarning("警告", "请在仓库目录树中选择上传位置（文件夹或同级路径）。")
-    #         return
-
-    #     node_text = self.repo_tree.item(focus_item, "text").replace("📁 ", "").replace("📄 ", "")
-    #     node_parent = self.repo_tree.parent(focus_item)
-    #     node_path = []
-
-    #     # 构建完整路径
-    #     while node_parent:
-    #         node_path.insert(0, self.repo_tree.item(node_parent, "text").replace("📁 ", "").replace("📄 ", ""))
-    #         node_parent = self.repo_tree.parent(node_parent)
-
-    #     # 计算上传路径（如果选中的是文件，则取其所在目录）
-    #     if "📄" in self.repo_tree.item(focus_item, "text"):
-    #         repo_upload_path = "/".join(node_path)
-    #     else:
-    #         repo_upload_path = "/".join(node_path + [node_text]) if node_text else ""
-
-
-    #     # === 组织上传 API 地址 ===
-    #     relative_file_path = os.path.join(repo_upload_path, file_name).replace("\\", "/") # 兼容Windows路径分隔符
-    #     encoded_path = quote(relative_file_path,safe="/")
-    #     upload_url = f"{self.gitea_upload_link}/{encoded_path}"  # PUT
-    #     get_url = f"{upload_url}?ref=main" # GET
-    #     # 构造请求头
-    #     headers = {
-    #         "Authorization": f"token {self.gitea_token}", # 🔑 关键：使用 "token " 前缀
-    #         "Content-Type": "application/json", # Gitea API 要求请求体为 JSON 格式
-    #     }
-    #     print(f"DEBUG: repo_upload_path = '{repo_upload_path}'")
-    #     print(f"DEBUG: file_name = '{file_name}'")
-    #     print(f"DEBUG: relative_file_path (before quote) = '{relative_file_path}'")
-    #     print(f"DEBUG: Final Upload URL (GET/PUT target) = '{get_url}'")
-    #     # 1. 尝试获取文件信息，以检查文件是否存在并获取 SHA
-    #     sha_value = None
-    #     try:
-    #         # 注意：使用与上传相同的 headers (包含 token)
-    #         response_get = self.request_with_loading("GET", get_url, headers=headers)
-    #         # ⚠️ 强制打印 GET 响应状态码和内容
-    #         print(f"DEBUG: GET Status Code = {response_get.status_code}")
-    #         print(f"DEBUG: GET Response Text = {response_get.text[:200]}") # 只打印前200字符
-    #         if response_get.status_code == 200:
-    #             # 文件存在，解析 JSON 获取 SHA
-    #             file_info = response_get.json()
-    #             sha_value = file_info.get('sha')
-    #             print(f"File exists. Found SHA: {sha_value}")
-    #         elif response_get.status_code == 404:
-    #             # file not exist
-    #             sha_value = None
-    #         else:
-    #             messagebox.showerror("错误", f"检查文件存在失败: {response_get.status_code}")
-    #             return
-        
-    #     except Exception as e:
-    #         print(f"GET request failed: {e}")
-    #         return
-        
-    #     # 2 读取本地文件内容 
-    #     try:
-    #         with open(local_file_path, "rb") as f:
-    #             file_data = f.read()
-    #         encoded_content = base64.b64encode(file_data).decode("utf-8")
-    #     except Exception as e:
-    #         messagebox.showerror("错误", f"无法读取文件：{e}")
-    #         return
-
-
-
-    #     # 4. 如果文件存在，添加 SHA
-    #     if sha_value:
-    #         # 构造请求体 (payload)
-    #         payload_data = {
-    #             "content": encoded_content,
-    #             "message": f"Upload {file_name} via API - Automated Commit",
-    #             "branch": "main",  # 确保分支正确
-    #             "sha": sha_value
-    #         }
-
-    #         # === 7发送 PUT 请求 ===
-    #         try:
-    #             response_put = self.request_with_loading("PUT",upload_url, headers=headers, json=payload_data)
-    #             if response_put.status_code in [200, 201]:
-    #                 print("Upload successful!")
-    #                 messagebox.showinfo("提示", f"文件上传成功：{file_name}")
-    #                 self.connect_repo()
-    #             elif response_put.status_code == 409:
-    #                 messagebox.showwarning("冲突", "上传失败：文件在您获取 SHA 后被修改")
-    #             else:
-    #                 messagebox.showerror("错误", f"上传失败，状态码：{response_put.status_code}\n{response_put.text}")
-    #         except Exception as e:
-    #             messagebox.showerror("错误", f"PUT 请求失败: {e}")
-    #     # if file not exist
-    #     if sha_value == None:
-    #         # 构造 POST URL
-    #         post_url = upload_url
-
-    #         payload = {
-    #             "branch": "main",
-    #             "content": encoded_content,
-    #             "message": f"Create new file {os.path.basename(relative_file_path)} via API"
-    #         }
-
-    #         # 发送 POST 请求
-    #         response = self.request_with_loading("POST",post_url, headers=headers, json=payload)
-
-    #         if response.status_code in [200, 201]:
-    #             print(f"文件创建成功: {relative_file_path}")
-    #             self.connect_repo()
-    #             return True
-    #         else:
-    #             print(f"文件创建失败: {response.status_code}")
-    #             print(f"Response: {response.text}")
-    #             return False
-
-    # def download_selected_file(self):
-    #     """下载选中的 .ts 或 .txt 文件到本地指定路径"""
-    #     selected = self.repo_tree.focus()
-    #     if not selected:
-    #         messagebox.showwarning("提示", "请选择一个 .txt 或 .ts 文件。")
-    #         return
-
-    #     file_name = self.repo_tree.item(selected, "text").replace("📄 ", "").strip()
-    #     if not (file_name.endswith(".ts") or file_name.endswith(".txt")):
-    #         messagebox.showwarning("提示", "请选择一个 .txt 或 .ts 文件。")
-    #         return
-
-    #     # 仓库基本信息
-    #     base_download_url = self.gitea_download_link
-    #     os.environ["NO_PROXY"] = "127.0.0.1,localhost"
-
-    #     # 确定下载目标路径
-    #     if file_name.endswith(".txt"):
-    #         dest_dir = self.multi_script_path_entry.get().strip()
-    #     else:  # .ts
-    #         dest_dir = self.script_path_entry.get().strip()
-
-    #     if not dest_dir:
-    #         messagebox.showerror("错误", "未设置目标路径，请先在界面中指定路径。")
-    #         return
-    #     if not os.path.exists(dest_dir):
-    #         os.makedirs(dest_dir, exist_ok=True)
-
-    #     # 构造完整下载地址
-    #     # 提取文件相对路径（例如子文件夹内）
-    #     def get_full_path(node):
-    #         path = []
-    #         while node:
-    #             name = self.repo_tree.item(node, "text").replace("📁 ", "").replace("📄 ", "").strip()
-    #             path.insert(0, name)
-    #             node = self.repo_tree.parent(node)
-    #         return "/".join(path)
-
-    #     repo_path = get_full_path(selected)
-    #     download_url = base_download_url + repo_path
-
-    #     local_path = os.path.join(dest_dir, file_name)
-
-    #     # ⚠️ 检测是否存在同名文件
-    #     if os.path.exists(local_path):
-    #         overwrite = messagebox.askyesno(
-    #             "文件已存在",
-    #             f"本地已存在文件：\n{local_path}\n是否要覆盖？",
-    #             icon="warning"
-    #         )
-    #         if not overwrite:
-    #             messagebox.showinfo("已取消", "下载操作已取消。")
-    #             return
-
-    #     try:
-    #         resp = self.request_with_loading("GET", download_url, timeout=10)
-    #         resp.raise_for_status()
-    #         local_path = os.path.join(dest_dir, file_name)
-    #         with open(local_path, "wb") as f:
-    #             f.write(resp.content)
-
-    #         messagebox.showinfo("下载完成", f"文件已保存至：\n{local_path}")
-
-    #         # 此处待补充，ts和txt，分别将下拉框更新一次，并选中刚下载的文件
-    #         # 扫描路径下所有后缀为 .ts 的文件
-    #         # 确定下载目标路径
-    #         if file_name.endswith(".ts"):
-    #             current_values = list(self.script_file_combo["values"])  # 取出现有值
-    #             if file_name not in current_values:                      # 防止重复添加
-    #                 current_values.append(file_name)
-    #                 self.script_file_combo["values"] = current_values
-    #             self.script_file_combo.set(file_name)                    # 设置当前显示值
-    #         if file_name.endswith(".txt"):
-    #             current_values = list(self.multi_script_file_combo["values"])  # 取出现有值
-    #             if file_name not in current_values:                      # 防止重复添加
-    #                 current_values.append(file_name)
-    #                 self.multi_script_file_combo["values"] = current_values
-    #             self.multi_script_file_combo.set(file_name)                    # 设置当前显示值
-
-    #     except requests.exceptions.ConnectionError:
-    #         messagebox.showerror("网络错误", "无法连接到 Gitea 仓库，请检查服务器是否运行。")
-    #     except requests.exceptions.Timeout:
-    #         messagebox.showerror("超时", "下载超时，请稍后重试。")
-    #     except Exception as e:
-    #         messagebox.showerror("错误", f"下载失败：{e}")
-
 
     def show_about_window(self):
         top = tk.Toplevel(root)
-        top.title("Donation")
+        top.title("Coffee!")
         # 设置固定窗口大小
         win_width = 300
         win_height = 300
@@ -1595,8 +910,9 @@ class SerialGUI:
         except Exception as e:
             tk.Label(top, text=f"图片显示失败: {e}").pack()
 
-        tk.Label(top, text="Open source is not easy.").pack()
-        tk.Label(top, text="Donations are welcome via Alipay.").pack()
+        tk.Label(top, text="If this tool saved your time,").pack()
+        tk.Label(top, text="feel free to buy me a coffee.").pack()
+        tk.Label(top, text="Your support means a lot to me!").pack()
 
 
     # 打开 按键
@@ -2409,12 +1725,6 @@ GUI 控件状态:
         except Exception as e:
             self.tk_safe(lambda: messagebox .showerror("错误", f"无法打开 PowerShell: {e}"))
 
-    '''def _read_ps_output(self):
-        print("[_read_ps_output] thread started")
-        for line in self.ps_proc.stdout:
-            print(f"[ps stdout] {line.strip()}")
-            self.text_area.after(0, self._append_text, line)'''
-
     def _read_ps_output(self):
         #print("[_read_ps_output] thread started")
         buffer = ""
@@ -2850,7 +2160,6 @@ GUI 控件状态:
         multi_text.edit_reset()
 
         # ——— 新增：灰色注释高亮 ———
-
         # 拿到当前文本框默认字体
         current_font = tkFont.nametofont(multi_text.cget("font"))
         # 拷贝一份并设置为斜体
@@ -2902,9 +2211,6 @@ GUI 控件状态:
         multi_text.bind("<Control-z>", _multi_edit_undo)
         multi_text.bind("<Control-y>", _multi_edit_redo)
 
-        #multi_text = tk.Text(edit_win)
-        #multi_text.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
-        #multi_text.insert(tk.END, self.current_cell.custom_data)
         # 创建一个控制区域，将新功能按钮和原有保存按钮放在同一行
         ctrl_frame = tk.Frame(edit_win)
         ctrl_frame.configure(background=window_bg_color)
@@ -3394,7 +2700,6 @@ GUI 控件状态:
             self.tk_safe(lambda: self.text_area.insert(tk.END, "串口已关闭\n"))
             self.tk_safe(lambda: self.text_area.yview(tk.END))
 
-
             if self.loop_sending:
                 self.loop_sending = False
                 self.single_loop_send_btn.config(text="单行循环")
@@ -3571,40 +2876,6 @@ GUI 控件状态:
             while sleep_time < interval and self.loop_sending:
                 time.sleep(0.1)
                 sleep_time += 0.1
-    
-    '''def read_from_serial(self):
-        self.recv_buffer = ""
-        self.last_ui_update = time.time()
-        while not self.stop_reading:
-            if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
-                try:
-                    # 使用 read() 读取当前缓冲区中的所有数据，如果没有数据则至少读取1个字节
-                    data_bytes = self.serial_conn.ser.read(self.serial_conn.ser.in_waiting or 1)
-                    self.current_read_time = time.time() # 获取当前时间
-                    if data_bytes:
-                        # 如果接收到了数据，也要进行一次判断，current time是否超过last time 0.1秒
-                        if self.last_data_time is not None and (self.current_read_time - self.last_data_time) >= 0.1:
-                            self.allow_new_timestamp = True  # 超过 0.1 秒后，允许下一次插入时间戳
-                        self.last_data_time = self.current_read_time  # 更新最近接收时间
-                        # 如果选中时间戳，则先插入接收时间
-                        if self.timestamp_onoff.get() and self.allow_new_timestamp:
-                            timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                            self.tk_safe(lambda: self.text_area.insert(tk.END, f"\nReceive at {timestamp_str}\n", "green"))
-                            self.allow_new_timestamp = False  # 插入一次时间戳后禁止后续插入
-                        received_str = data_bytes.decode(errors='replace')
-                        #self.text_area.insert(tk.END, received_str)
-                        self.tk_safe(lambda: self.text_area.insert(tk.END, received_str))
-                        self.tk_safe(lambda: self.text_area.yview(tk.END))  # 自动滚动到末尾
-                        self.received_bytes += len(data_bytes)
-                        self.update_data_stats()
-                    else:
-                        # 如果没有接收到数据，计算当前时间和上次接收时间是否超过0.1秒，超过则允许下一次插入时间戳
-                        if self.last_data_time is not None and (self.current_read_time - self.last_data_time) >= 0.1:
-                            self.allow_new_timestamp = True  # 超过 0.1 秒后，允许下一次插入时间戳
-                        # 如果没有接收到数据，短暂休眠，避免占用过多 CPU 资源
-                        time.sleep(0.01)
-                except Exception:
-                    break'''
 
     def read_from_serial(self):
         self.recv_buffer = ""
@@ -3903,86 +3174,6 @@ GUI 控件状态:
             else:
                 # 如果超时，result列表会是空的
                 raise TimeoutError("tk_safe 在等待主线程返回时超时")
-           
-    '''def tk_safe(self, expr, wait=None):
-        """
-        在主线程安全执行 Tkinter 表达式。
-
-        参数:
-            expr : lambda 表达式 (Tkinter 调用)
-            wait : None  → 自动判断 (有返回值就阻塞，无返回值就异步)
-                   True  → 强制阻塞等待返回
-                   False → 强制异步，不等待
-
-        返回:
-            - 如果阻塞执行且有返回值 → 返回结果
-            - 其他情况 → None
-
-        示例
-            获取值（阻塞执行，自动返回结果）
-            content = self.tk_safe(lambda: self.text_area.get("1.0", "end-1c"))
-            pos = self.tk_safe(lambda: self.text_area.index("end-1c"))
-
-            修改值（默认异步执行，不阻塞）
-            self.tk_safe(lambda: self.text_area.insert(tk.END, "Hello\n"))
-            self.tk_safe(lambda: self.text_area.delete("1.0", "end"))
-
-            修改值但要阻塞（等执行完成后再继续）
-            self.tk_safe(lambda: self.text_area.insert(tk.END, "阻塞插入\n"), wait=True)
-        """
-        # 1. 判断当前是否是主进程
-        # 'MainProcess' 是默认的主进程名称
-        is_main_process = multiprocessing.current_process().name == 'MainProcess'
-
-        result = []
-        event = threading.Event()
-
-        def wrapper():
-            try:
-                r = expr()
-                if r is not None:
-                    result.append(r)
-            except Exception as e:
-                result.append(e)
-            finally:
-                event.set()
-
-        # 安排到 Tk 主线程
-        self.root.after(0, wrapper)
-
-        # 自动模式: wait=None 默认设置为 True (阻塞)
-        effective_wait = wait
-        if effective_wait is None:
-            effective_wait = True
-
-        # 如果是主进程，强制设置为不等待 (不阻塞)
-        if is_main_process:
-            # 目标：主进程中不阻塞
-            effective_wait = False
-
-        # 自动模式: 根据返回值推断 wait
-        if wait is None:
-            # 如果调用看起来要返回值，调用者会用 `=` 赋值 → 需要等
-            # 这里没法直接判断，只能靠习惯：取值时指定 wait=None 就能等
-            # 修改操作一般不需要返回 → 默认不等
-            wait = True  
-
-        # 4. 执行等待或立即返回
-        if effective_wait:
-            # 只有子进程中 wait=True (或默认) 才会进入此阻塞等待
-            # 使用一个较长的超时时间，以适应跨进程通信的额外开销
-            event.wait(timeout=10.0)
-            
-            if result:
-                if isinstance(result[0], Exception):
-                    raise result[0]
-                return result[0]
-            # 超时或 expr() 返回 None
-            return None
-        else:
-            # 主进程总是进入此分支（不阻塞），子进程 wait=False 也进入此分支
-            return None
-        '''
 
     def auto_save_and_auto_delete_onetime(self):
         # 执行自动保存操作（如果标志位打开）
@@ -4090,38 +3281,7 @@ GUI 控件状态:
         # 在程序所在目录创建/覆盖 TermPlusSetup.ini
         with open("TermPlusSetup.ini", "w", encoding="utf-8") as configfile:
             config.write(configfile)
-    '''
-    # 切换主窗口最大化
-    def toggle_maximize(self):
-        if not self.maximized:
-            # 进入最大化模式：
-            # 隐藏除 text_area 和 maximize_button 外的所有控件
-            for widget in self.main_frame.winfo_children():
-                if widget not in (self.text_area, self.maximize_button):
-                    # 使用 place_forget 隐藏（text_area 由于使用 grid 故不处理）
-                    widget.place_forget()
-            # 隐藏 text_area 的 grid 布局，并通过 place 让其占满整个 main_frame
-            self.text_area.grid_remove()
-            self.text_area.place(relx=0, rely=0, relwidth=1, relheight=1)
-            # 将窗口放到主窗口右上角
-            self.maximize_button.place(relx=1, rely=0, anchor="ne", x=-15, y=0)
-            # 修改按钮文字为“恢复”
-            self.maximize_button.config(text="－")
-            self.maximized = True
-        else:
-            # 恢复原布局：
-            # 隐藏 text_area 使用的 place 布局，并恢复 grid 布局
-            self.text_area.place_forget()
-            self.text_area.grid(**self.original_text_area_grid)
-            # 恢复之前隐藏的控件
-            for widget, geom in self.original_layout.items():
-                widget.place(**geom)
-            # 将按钮放回主窗口右上角
-            self.maximize_button.place(relx=1, rely=0, anchor="ne", x=-146, y=5)
-                # 将按钮文字改回“最大化”
-            self.maximize_button.config(text="□")
-            self.maximized = False
-    '''
+
     def toggle_key_area(self):
         if self.row_5_frame.winfo_ismapped():
             # 隐藏
@@ -4243,12 +3403,6 @@ GUI 控件状态:
         self.auto_save_path_frame.configure(background=window_bg_color)
         self.auto_save_frame.configure(background=window_bg_color)
         self.ssh_frame.configure(background=window_bg_color)
-
-        #self.multi_button_frame.configure(background=window_bg_color)
-        #self.path_frame.configure(background=window_bg_color)
-        #self.script_buttons_frame.configure(background=window_bg_color)
-        #self.multi_script_buttons_frame.configure(background=window_bg_color)
-        #self.multi_path_frame.configure(background=window_bg_color)
         self.file_capacity_frame.configure(background=window_bg_color)
 
         # 设置窗口背景色
