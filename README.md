@@ -28,3 +28,48 @@ https://github.com/dakongwuxian/TermPlus/releases
 本软件可用于个人和学习用途，如果用于商业用途需要作者授权。
 
 ![GUI screen shot 20250923](https://github.com/user-attachments/assets/44fe7714-cc6e-44a9-997b-a45dd8ecab73)
+
+
+
+TermPlus
+
+Serial port GUI tool for Windows. Key features: Button-based sending, loop sending, customized multi-line loop sending, and smart-wait functionality.
+
+This project is licensed under the Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0) license.
+About the Project
+
+TermPlus is a serial communication software developed by Wu Xian specifically for the Windows operating system.
+Key Features
+
+    Flexible Communication: Supports direct input within the main window for communication as well as a dedicated single-line send box.
+
+    Command Management: Allows users to save pre-configured commands to physical buttons, eliminating the need to memorize or re-type complex strings during debugging. Command sets can be saved and edited as .ts files.
+
+    Advanced Sending Modes: Supports scheduled sending, cyclic (loop) sending, and variable-based sending.
+
+    Smart Recognition: Includes the ability to identify specific content or formatted data within the received serial stream.
+
+    Integrated Python Environment: Provides a runtime space for Python code that functions without requiring a local Python installation. (Note: Additional libraries must be added to the source code and re-packaged to be used).
+
+How to Use
+
+You can download the compiled .exe file for immediate use or build the executable from the source code yourself.
+
+    Download Link: [TermPlus Releases](https://github.com/dakongwuxian/TermPlus/releases)
+
+    Documentation: Please refer to User Manual.txt for instructions and Change Note.txt for version history.
+
+    Examples: Multi-line loop script samples can be found in the Example Scripts folder.
+
+Support and Stability
+
+    Feedback: If you encounter any issues, please email dakongwuxian@gmail.com. I will do my best to fix bugs promptly.
+
+    Usage Tip: For long-term operation, it is not recommended to open two or more GUI windows from the same .exe file, as this may lead to crashes. For maximum stability, use different .exe files located in separate folders. The software has undergone months of testing and is very stable when running as a single instance.
+
+Disclaimer & Licensing
+
+    Liability: I am not responsible for the reliability of this software. There may be unknown data risks when used in commercial projects; please use it at your own risk.
+
+    Usage Rights: This software is free for personal and educational use. For commercial use, explicit authorization from the author is required.
+    
