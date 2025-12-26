@@ -20,3 +20,15 @@ send example end
 # 内含双引号 ("Hello")	'He said "Hello"'
 # 同时含单/双引号	'''He said, "It's fine."'''
 # 风格统一但要转义	"She said, \"Hello\" and I replied \"Hi\""
+
+# 2025.9.25
+# 1. 修改了脚本区域的函数send_line(text)为send_line(text,addNewline=True,insertDisplay=True)，通过2个可额外指定的参数，让send_line函数可以指定是否发送换行和是否在主窗口中显示。
+
+# 发送字符串，即使不写后续的2个参数，也会默认在结尾发送换行符，默认在窗口中显示发送内容
+send_line("hello")
+
+# 发送字符串，在结尾发送换行符，在窗口中显示发送内容
+send_line("hello",True,True)
+
+# 发送字符串，不在结尾发送换行符，不显示在主窗口中
+send_line("hello",False,False)

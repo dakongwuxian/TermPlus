@@ -1,3 +1,4 @@
+# 本示例展示了如何使用get_last_n_lines(2)去获取主窗口中的内容，并判断匹配内容的数值是否大于17,如果大于17则停止脚本运行并弹窗提醒
 # this example search for the respond of command "dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2"
 # respond is like "Value 0x0000000A(10) read from address 0x06C00330 with offset 0B."
 # below scripts get the "10" value and monitor it

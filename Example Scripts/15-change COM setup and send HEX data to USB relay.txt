@@ -1,4 +1,7 @@
-
+# 本示例展示了如何通过脚本更改COM口的设置和开关COM口，也展示了如何发送二进制数而不是字符串
+# this is an example of changing COM port and sending data in binary instead of string
+# and also this is an example of controlling a power rely connected to a USB-to-COM port, and it need to set status by sending HEX numbers.
+# if the content of sent string is in format like send_line("\xA0\x01\x01\xA2"), COM port will not send string "\xA0\x01\x01\xA2", instead it will send 0xA0 01 01 A2, which are HEX number.
 
 close_serial()
 wait 1

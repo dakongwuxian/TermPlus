@@ -5,8 +5,7 @@
 # toggle_serial()    
 # set_port("COMx")
 # set_baudrate("xxxx")
-# gui.text_area.insert()
-# gui.text_area.see()
+# show_str("xxxx")
 
 toggle_serial()
 wait 1
