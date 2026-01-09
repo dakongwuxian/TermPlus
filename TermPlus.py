@@ -10,12 +10,10 @@
 如需商业授权或有任何疑问，请联系：[dakongwuxian@gmail.com]
 """
 import ast
-import base64
 import builtins
 import configparser
 from datetime import datetime
 import io
-from io import BytesIO
 import keyword
 import os # 遍历目录
 import paramiko
@@ -39,35 +37,20 @@ from urllib.parse import urljoin,quote
 from version_info import VERSION
 
 
-
-# 嵌入的二维码 base64 字符串（PNG 格式）
-img_base64 = (
-"iVBORw0KGgoAAAANSUhEUgAAANgAAADZAQAAAABqB8PlAAAAGmVYSWZNTQAqAAAACAABARIAAwAA"
-"AAEAAQAAAAAAABPAdecAAATCSURBVHjazVjbjuNEED3ltmgLJDp8wKS9/+EdZzV8CJ+wvGWkRenR"
-"rJR5Wz6FD1iYzmSl5SMQsmd546WNBOqA7cNDkrlkLwybGOG3uNLlrqpT51S3EO99Evy3NgQARVnT"
-"hKjPPaQyJsxiAcAOs5cZW3V5jDDS7hnK7rhpjGQo2Q8U+0ocrphLkPgjFsmbipg5dJIjAeC3f3wJ"
-"AKMD5bqsK4yeXnQTYWdFMuV31l3c/kwPWdt+HcPk1nOXdEmwxq1A+6YHgG44nGl6MLeoV07RS49m"
-"dOagWA3yPQkjoMC1BETXTjCGAS5S/+oGu7ur2/16hSS56EFgquilN8bMSZIcJp8e+AlI3HdIZzgr"
-"u2/TP7QDPCrQAcqPrQnQDqoSBkxRetvv0bfuPpbWPDXZ8MSMHpYBdMpjDMOg2ar6sLFnN7bpSk48"
-"AGS6haoZREe89keSD8KDdFAeAIOmU156Q8wcynqo2k716mRBjoAzfv/EX6+J4/lRsrsuyQ+rARk8"
-"+p3Yp+WmtlF5jAFCz71if2ANaDe8pLE46RUMRa9SVQPCi9VE1bkdprZ0Jb3QBLJVHpaEdkVhh6kt"
-"YpyikB4E2UJIGzBVy2Xd2zRe3HfDsLcGIGieL1kZBmB2vqxsMJyzBSyTTQOP7rTyobAUAMD73XlC"
-"t0XZA8AUUKwZwoz0Uj20tjIn2/fYPtnliRSz7LU/EY7COsRRY4Nkv0+sVHfWjf4xvuzBuZ57lBXC"
-"Wg0YDQOmherHA2E3ovSqZjB2/T3hC9KXvd1g924r84bBD7CXu2LgN3uZAlJXwaxj74EwBTA+4Kwo"
-"93Idyxa2Ctw8IRiHsh2obxPjLrqJXGHUrCmXdtREdJN6GM1JACh/9PjYmPWLvwLxIipvt7Nwfi8d"
-"+2NpHoFjABss9RaYTgH7rt4MB4jPbfHptvgEUiAHkmaVqeVzocFXAIA/fzPM1HLphzrnaFeUi8pu"
-"+7Y3IUCzfTgv/ctc6znbkhXClidM0BGKNXfmrA/7jA/VHB0BVVkas+0VzF7HouxtEm944o43n6La"
-"9flqkTw49uztl65FAiDFU5SeuTRYneovcZT0QnQni+vrj69ttqtet4KWaJl/8/hJvQCgU5RXRwLJ"
-"tAPzQbCUNhEn885eh4DVZ233qDJmNP1aVEsMNJvOWkhvA01EyWq8ns/K+h524wE1Z6q4qCsTNM9Z"
-"2R7ALELxrV6pDsODMb2j0nkuuFW2gFlbLnrQ6KiWJGkwhfIy0OzGOZckKwPSFaoXGsMIVQ1zH5IC"
-"6B6ryxxmlal2kY+b2q5cgbIqB8KSpsf4c8N5LJSXygQz53J5p7ZfAG632fbRgD6Da/ESeNnjDPgU"
-"z371P/hNbQupqwA9d1A9DAMASM19eOKD5/dWKpBxds4lKxjoeJB54p063YjI5Hg8bkRneNXJI4IO"
-"3eS6HuYMG2Zsi7KXEABFLwwh4v68xHdIy8djdyXPwBy21vFMpBODBlik46S/d7e242a/2H9+25Bv"
-"bb+8qZpRc9qq1aMKAdqV9ONDcXKy27eA9HUwWeyeP7k6aiRc0L8qFvkwPKHZTY6v7ahuXLoErgFj"
-"vhZIN9Bd3pmk6tLmAVitTk+Px8ZIRFFeJu9fl+9xl/c/uhP/kO1vBYeg5BFXBCUAAAAASUVORK5C"
-"YII="
-)
-
+def resource_path(relative_path):
+    """获取资源文件路径，优先使用exe同目录下的文件"""
+    # 首先尝试exe同目录下的文件
+    exe_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    external_path = os.path.join(exe_dir, relative_path)
+    
+    if os.path.exists(external_path):
+        return external_path
+    
+    # 如果外部文件不存在，使用打包内的文件（仅用于图片等必需资源）
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    else:
+        return os.path.join(os.path.dirname(__file__), relative_path)
 
 class SerialComm:
     def __init__(self, port, baudrate=115200):
@@ -842,6 +825,12 @@ class SerialGUI:
         self.auto_save_new_text = None
         # ─── 新增：PowerShell 进程句柄 ───
         self.ps_proc = None
+        # ─── 新增：脚本修改状态标记 ───
+        self.script_modified = False
+        # ─── 新增：当前编辑的脚本文件信息 ───
+        self.current_script_path = ""
+        self.current_script_file = ""
+        self.file_encodings = {}  # 记录每个文件的编码格式 {file_path: encoding}
         #self.last_auto_delete_lines = 0
         self.refresh_ports()
         # 初始化完成后，尝试加载之前保存的配置
@@ -897,9 +886,8 @@ class SerialGUI:
     
         # 加载大图
         try:
-            # 解码 base64 数据
-            img_data = base64.b64decode(img_base64)
-            img_pil = Image.open(BytesIO(img_data))
+            image_path = resource_path("my_image.jpg")
+            img_pil = Image.open(image_path)
             img_resized = img_pil.resize((200, 200), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(img_resized)
 
@@ -1767,6 +1755,10 @@ GUI 控件状态:
         """
         在窗口关闭时调用，先保存当前UI设置，然后正常销毁窗口
         """
+        # 检查是否有未保存的更改
+        if not self.check_unsaved_changes():
+            return
+            
         # 如果自动保存正在开启，则先关闭文件
         if self.auto_save_file:
             self.auto_save_file.close()
@@ -1845,21 +1837,151 @@ GUI 控件状态:
             if ts_files:
                 self.multi_script_file_combo.current(0)
 
+    def check_unsaved_changes(self):
+        """检查是否有未保存的脚本修改"""
+        if self.script_modified:
+            # 创建自定义对话框
+            dialog = tk.Toplevel(self.root)
+            dialog.title("未保存的更改")
+            dialog.geometry("300x120")
+            dialog.resizable(False, False)
+            dialog.grab_set()  # 模态对话框
+            
+            # 居中显示
+            dialog.update_idletasks()
+            x = (dialog.winfo_screenwidth() - dialog.winfo_width()) // 2
+            y = (dialog.winfo_screenheight() - dialog.winfo_height()) // 2
+            dialog.geometry(f"+{x}+{y}")
+            
+            # 消息文本
+            tk.Label(dialog, text="当前脚本有未保存的更改，是否保存后继续下一步？", 
+                    wraplength=280, justify="center").pack(pady=20)
+            
+            # 按钮框架
+            btn_frame = tk.Frame(dialog)
+            btn_frame.pack(pady=10)
+            
+            result = [None]  # 用列表存储结果，便于在内部函数中修改
+            
+            def save_and_continue():
+                result[0] = "save"
+                dialog.destroy()
+                
+            def dont_save():
+                result[0] = "dont_save"
+                dialog.destroy()
+                
+            def cancel():
+                result[0] = "cancel"
+                dialog.destroy()
+            
+            # 三个按钮
+            tk.Button(btn_frame, text="保存", command=save_and_continue, width=10).pack(side="left", padx=5)
+            tk.Button(btn_frame, text="不保存", command=dont_save, width=12).pack(side="left", padx=5)
+            tk.Button(btn_frame, text="取消", command=cancel, width=10).pack(side="left", padx=5)
+            
+            # 等待用户选择
+            dialog.wait_window()
+            
+            if result[0] == "save":
+                self.save_current_script()
+                return True
+            elif result[0] == "dont_save":
+                return True
+            else:  # cancel
+                return False
+        return True
+
+    def save_current_script(self):
+        """保存当前正在编辑的脚本文件"""
+        if not self.current_script_path or not self.current_script_file:
+            messagebox.showwarning("警告", "无法确定当前编辑的脚本文件")
+            return
+            
+        full_path = os.path.join(self.current_script_path, self.current_script_file)
+        
+        # 构造脚本文本内容
+        script_content = ""
+        # 遍历 Notebook 中所有标签页
+        for tab_id in self.notebook.tabs():
+            tab_widget = self.notebook.nametowidget(tab_id)
+            tab_name = self.notebook.tab(tab_id, "text")
+            script_content += f"<tab {{{tab_name}}}>\n"
+            # 收集当前标签页中所有按钮，按 grid 的行列排序
+            buttons = []
+            for child in tab_widget.winfo_children():
+                if isinstance(child, tk.Button):
+                    info = child.grid_info()
+                    row = int(info.get("row", 0))
+                    column = int(info.get("column", 0))
+                    idx = row * 6 + column  # 假设按钮排列为 5 行 6 列
+                    buttons.append((idx, child))
+            # 按钮按索引排序
+            buttons.sort(key=lambda x: x[0])
+            # 仅输出按钮名称不为空的按钮
+            for idx, btn in buttons:
+                btn_name = btn.cget("text")
+                btn_text = btn.custom_data
+                if btn_name.strip():
+                    script_content += f"<button {{{idx}}} {{{btn_name}}}>\n"
+                    script_content += "<data>\n"
+                    script_content += f"{btn_text}\n"
+                    script_content += "</data>\n"
+                    script_content += "<icon>\n\n</icon>\n"
+                    script_content += "<desc>\n\n</desc>\n"
+                    script_content += "</button>\n"
+            script_content += "</tab>\n\n"
+        
+        try:
+            # 获取文件编码
+            current_file_path = os.path.join(self.current_script_path, self.current_script_file)
+            file_encoding = self.file_encodings.get(current_file_path, "gbk")
+            with open(full_path, "w", encoding=file_encoding) as f:
+                f.write(script_content)
+            # 保存成功后重置修改标记
+            self.script_modified = False
+            messagebox.showinfo("提示", "脚本保存成功")
+        except Exception as e:
+            messagebox.showerror("错误", f"保存脚本失败：{e}")
+
     def load_script(self):
+        # 检查是否有未保存的更改
+        if not self.check_unsaved_changes():
+            return
+            
         dir_path = self.script_path_entry.get().strip()
         file_name = self.script_file_combo.get().strip()
         if not dir_path or not file_name:
             messagebox.showwarning("警告", "请选择脚本路径和脚本文件")
             return
         full_path = os.path.join(dir_path, file_name)
-        try:
-            # term的ts文件本来是ANSI格式的，
-            #with open(full_path, "r", encoding="utf-8-sig") as f:
-            with open(full_path, "r", encoding="gbk") as f:
-                content = f.read()
-        except Exception as e:
-            messagebox.showerror("错误", f"加载脚本失败：{e}")
-            return
+        
+        # 尝试多种编码格式
+        encodings = ['gbk', 'utf-8', 'utf-8-sig', 'latin-1']
+        content = None
+        used_encoding = "gbk"  # 默认编码
+        
+        for encoding in encodings:
+            try:
+                with open(full_path, "r", encoding=encoding) as f:
+                    content = f.read()
+                used_encoding = encoding  # 记录成功的编码
+                break
+            except UnicodeDecodeError:
+                continue
+            except Exception as e:
+                messagebox.showerror("错误", f"加载脚本失败：{e}")
+                return
+        
+        # 如果所有编码都失败，使用gbk并处理错误字符
+        if content is None:
+            try:
+                with open(full_path, "r", encoding="gbk", errors="replace") as f:
+                    content = f.read()
+                used_encoding = "gbk"
+            except Exception as e:
+                messagebox.showerror("错误", f"加载脚本失败：{e}")
+                return
         # 使用正则表达式解析标签页和按钮信息
         tab_pattern = re.compile(r'<tab\s*\{([^}]+)\}>(.*?)</tab>', re.DOTALL)
         button_pattern = re.compile(r'<button\s*\{(\d+)\}\s*\{([^}]+)\}>(.*?)</button>', re.DOTALL)
@@ -1880,6 +2002,12 @@ GUI 控件状态:
                 btn_text = data_match.group(1).strip() if data_match else ""
                 button_info[int(btn_index)] = (btn_name, btn_text)
             self.create_tab_from_script(tab_name, button_info)
+        
+        # 加载成功后更新当前编辑文件信息并重置修改标记
+        self.current_script_path = dir_path
+        self.current_script_file = file_name
+        self.file_encodings[full_path] = used_encoding  # 记录文件编码
+        self.script_modified = False
 
     def save_script(self):
         # 获取脚本文件名，如果为空则提示警告
@@ -1927,8 +2055,12 @@ GUI 控件状态:
             script_content += "</tab>\n\n"
     
         try:
-            with open(full_path, "w", encoding="gbk") as f:
+            # 获取文件编码
+            file_encoding = self.file_encodings.get(full_path, "gbk")
+            with open(full_path, "w", encoding=file_encoding) as f:
                 f.write(script_content)
+            # 保存成功后重置修改标记
+            self.script_modified = False
             messagebox.showinfo("提示", "脚本保存成功")
         except Exception as e:
             messagebox.showerror("错误", f"保存脚本失败：{e}")
@@ -2296,9 +2428,17 @@ GUI 控件状态:
 
         # 原有保存按钮，靠右
         def save_action(close_after=False):
+            old_text = cell.cget("text")
+            old_data = cell.custom_data
             new_text = single_entry.get()
+            new_data = multi_text.get("1.0", tk.END).strip()
+            
+            # 只有内容真正改变时才标记
+            if old_text != new_text or old_data != new_data:
+                self.script_modified = True
+                
             cell.config(text=new_text)
-            cell.custom_data = multi_text.get("1.0", tk.END).strip()
+            cell.custom_data = new_data
             edit_win.title(new_text)
             if close_after:
                 edit_win.destroy()
@@ -2446,13 +2586,25 @@ GUI 控件状态:
 
     def cell_clear(self):
         if self.current_cell:
+            # 检查是否有内容需要清除
+            if self.current_cell.cget("text") or self.current_cell.custom_data:
+                self.script_modified = True
             self.current_cell.config(text="")
             self.current_cell.custom_data = ""
 
     def cell_paste(self):
         if self.current_cell and self.cell_clipboard:
-            self.current_cell.config(text=self.cell_clipboard[0])
-            self.current_cell.custom_data = self.cell_clipboard[1]
+            # 检查是否有内容变化
+            old_text = self.current_cell.cget("text")
+            old_data = self.current_cell.custom_data
+            new_text = self.cell_clipboard[0]
+            new_data = self.cell_clipboard[1]
+            
+            if old_text != new_text or old_data != new_data:
+                self.script_modified = True
+                
+            self.current_cell.config(text=new_text)
+            self.current_cell.custom_data = new_data
 
     def cell_send(self, cell):
         if self.serial_conn and cell.custom_data:
