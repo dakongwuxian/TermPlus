@@ -2409,13 +2409,27 @@ GUI 控件状态:
                 else:
                     self.send_via_serial(current_line)
 
-            # 计算下一行行号（循环回到第一行）
+            # 查找下一个非空且不以#开头的行
             total_lines = int(multi_text.index("end-1c").split('.')[0])
             next_line = line_num + 1 if line_num < total_lines else 1
+            start_search_line = next_line
+            
+            # 循环查找满足条件的行
+            while True:
+                test_line = multi_text.get(f"{next_line}.0", f"{next_line}.end").strip()
+                # 如果找到非空且不以#开头的行，跳出循环
+                if test_line and not test_line.startswith("#"):
+                    break
+                # 移动到下一行
+                next_line = next_line + 1 if next_line < total_lines else 1
+                # 如果回到起始搜索行，说明没有找到满足条件的行
+                if next_line == start_search_line:
+                    break
+            
             next_start = f"{next_line}.0"
             next_end   = f"{next_line}.end"
 
-            # 移动光标到下一行行首
+            # 移动光标到找到的行行首
             multi_text.mark_set("insert", next_start)
             multi_text.see(next_start)
 
