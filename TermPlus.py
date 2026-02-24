@@ -3694,11 +3694,11 @@ GUI 控件状态:
             # 脚本路径
             if 'multi_script_path' in setup:
                 self.multi_script_path_entry.delete(0, 'end')
-                self.multi_script_path_entry.insert(0, setup['script_path'])
+                self.multi_script_path_entry.insert(0, setup['multi_script_path'])
                 self.multi_script_path_entry.icursor(tk.END)      # 将光标移到文本末尾
                 self.multi_script_path_entry.update_idletasks()     # 强制更新界面
                 self.multi_script_path_entry.xview_moveto(1.0)        # 滚动显示到文本末尾
-                # 扫描路径下所有后缀为 .ts 的文件
+                # 扫描路径下所有后缀为 .txt 的文件
                 try:
                     ts_files = [f for f in os.listdir(setup['multi_script_path'])
                                 if os.path.isfile(os.path.join(setup['multi_script_path'], f)) and f.lower().endswith('.txt')]
