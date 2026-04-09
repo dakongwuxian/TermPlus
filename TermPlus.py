@@ -10,10 +10,12 @@
 如需商业授权或有任何疑问，请联系：[dakongwuxian@gmail.com]
 """
 import ast
+import base64
 import builtins
 import configparser
 from datetime import datetime
 import io
+from io import BytesIO
 import keyword
 import os # 遍历目录
 import paramiko
@@ -34,23 +36,35 @@ import threading
 import time
 import traceback
 from urllib.parse import urljoin,quote
-from version_info import VERSION
 
+# 嵌入的二维码 base64 字符串（PNG 格式）
+img_base64 = (
+"iVBORw0KGgoAAAANSUhEUgAAANgAAADZAQAAAABqB8PlAAAAGmVYSWZNTQAqAAAACAABARIAAwAA"
+"AAEAAQAAAAAAABPAdecAAATCSURBVHjazVjbjuNEED3ltmgLJDp8wKS9/+EdZzV8CJ+wvGWkRenR"
+"rJR5Wz6FD1iYzmSl5SMQsmd546WNBOqA7cNDkrlkLwybGOG3uNLlrqpT51S3EO99Evy3NgQARVnT"
+"hKjPPaQyJsxiAcAOs5cZW3V5jDDS7hnK7rhpjGQo2Q8U+0ocrphLkPgjFsmbipg5dJIjAeC3f3wJ"
+"AKMD5bqsK4yeXnQTYWdFMuV31l3c/kwPWdt+HcPk1nOXdEmwxq1A+6YHgG44nGl6MLeoV07RS49m"
+"dOagWA3yPQkjoMC1BETXTjCGAS5S/+oGu7ur2/16hSS56EFgquilN8bMSZIcJp8e+AlI3HdIZzgr"
+"u2/TP7QDPCrQAcqPrQnQDqoSBkxRetvv0bfuPpbWPDXZ8MSMHpYBdMpjDMOg2ar6sLFnN7bpSk48"
+"AGS6haoZREe89keSD8KDdFAeAIOmU156Q8wcynqo2k716mRBjoAzfv/EX6+J4/lRsrsuyQ+rARk8"
+"+p3Yp+WmtlF5jAFCz71if2ANaDe8pLE46RUMRa9SVQPCi9VE1bkdprZ0Jb3QBLJVHpaEdkVhh6kt"
+"YpyikB4E2UJIGzBVy2Xd2zRe3HfDsLcGIGieL1kZBmB2vqxsMJyzBSyTTQOP7rTyobAUAMD73XlC"
+"t0XZA8AUUKwZwoz0Uj20tjIn2/fYPtnliRSz7LU/EY7COsRRY4Nkv0+sVHfWjf4xvuzBuZ57lBXC"
+"Wg0YDQOmherHA2E3ovSqZjB2/T3hC9KXvd1g924r84bBD7CXu2LgN3uZAlJXwaxj74EwBTA+4Kwo"
+"93Idyxa2Ctw8IRiHsh2obxPjLrqJXGHUrCmXdtREdJN6GM1JACh/9PjYmPWLvwLxIipvt7Nwfi8d"
+"+2NpHoFjABss9RaYTgH7rt4MB4jPbfHptvgEUiAHkmaVqeVzocFXAIA/fzPM1HLphzrnaFeUi8pu"
+"+7Y3IUCzfTgv/ctc6znbkhXClidM0BGKNXfmrA/7jA/VHB0BVVkas+0VzF7HouxtEm944o43n6La"
+"9flqkTw49uztl65FAiDFU5SeuTRYneovcZT0QnQni+vrj69ttqtet4KWaJl/8/hJvQCgU5RXRwLJ"
+"tAPzQbCUNhEn885eh4DVZ233qDJmNP1aVEsMNJvOWkhvA01EyWq8ns/K+h524wE1Z6q4qCsTNM9Z"
+"2R7ALELxrV6pDsODMb2j0nkuuFW2gFlbLnrQ6KiWJGkwhfIy0OzGOZckKwPSFaoXGsMIVQ1zH5IC"
+"6B6ryxxmlal2kY+b2q5cgbIqB8KSpsf4c8N5LJSXygQz53J5p7ZfAG632fbRgD6Da/ESeNnjDPgU"
+"z371P/hNbQupqwA9d1A9DAMASM19eOKD5/dWKpBxds4lKxjoeJB54p063YjI5Hg8bkRneNXJI4IO"
+"3eS6HuYMG2Zsi7KXEABFLwwh4v68xHdIy8djdyXPwBy21vFMpBODBlik46S/d7e242a/2H9+25Bv"
+"bb+8qZpRc9qq1aMKAdqV9ONDcXKy27eA9HUwWeyeP7k6aiRc0L8qFvkwPKHZTY6v7ahuXLoErgFj"
+"vhZIN9Bd3pmk6tLmAVitTk+Px8ZIRFFeJu9fl+9xl/c/uhP/kO1vBYeg5BFXBCUAAAAASUVORK5C"
+"YII="
+)
 
-def resource_path(relative_path):
-    """获取资源文件路径，优先使用exe同目录下的文件"""
-    # 首先尝试exe同目录下的文件
-    exe_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-    external_path = os.path.join(exe_dir, relative_path)
-    
-    if os.path.exists(external_path):
-        return external_path
-    
-    # 如果外部文件不存在，使用打包内的文件（仅用于图片等必需资源）
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_path)
-    else:
-        return os.path.join(os.path.dirname(__file__), relative_path)
 
 class SerialComm:
     def __init__(self, port, baudrate=115200):
@@ -221,7 +235,7 @@ class SerialGUI:
         self.about_menu.add_command(label="Developed by Xian.Wu", state="disabled")
         self.about_menu.add_command(label="dakongwuxian@gmail.com", state="disabled")
 
-        self.about_menu.add_command(label=VERSION, state="disabled")
+        self.about_menu.add_command(label="Version.20260409", state="disabled")
 
         self.about_menu.add_command(label="Buy me a coffee ☕",command=self.show_about_window,state="normal")
         
@@ -886,8 +900,9 @@ class SerialGUI:
     
         # 加载大图
         try:
-            image_path = resource_path("my_image.jpg")
-            img_pil = Image.open(image_path)
+            # 解码 base64 数据
+            img_data = base64.b64decode(img_base64)
+            img_pil = Image.open(BytesIO(img_data))
             img_resized = img_pil.resize((200, 200), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(img_resized)
 
@@ -3074,9 +3089,14 @@ GUI 控件状态:
 
                     # 定期批量刷新UI（每200ms或缓存>2KB）
                     if len(self.recv_buffer) > 2048 or ((self.current_read_time - self.last_serial_receive_update_time) > 0.1 and len(self.recv_buffer)>0):
-                        #chunk = self.recv_buffer
-                        chunk = self.recv_buffer.replace('\r\n', '\n').replace('\r', '\n')
-                        self.recv_buffer = ""
+                        # 如果缓冲区末尾是孤立的 \r，保留到下次刷新，避免 \r\n 被拆分导致多出换行
+                        if self.recv_buffer.endswith('\r'):
+                            chunk = self.recv_buffer[:-1]
+                            self.recv_buffer = '\r'
+                        else:
+                            chunk = self.recv_buffer
+                            self.recv_buffer = ""
+                        chunk = chunk.replace('\r\n', '\n').replace('\r', '\n')
                         self.tk_safe(lambda: self.text_area.insert(tk.END, chunk))
                         self.tk_safe(lambda: self.text_area.yview(tk.END))
                         self.last_serial_receive_update_time = self.current_read_time
