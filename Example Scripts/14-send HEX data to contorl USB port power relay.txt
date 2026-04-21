@@ -1,0 +1,15 @@
+# 本示例展示了如何发送二进制数而不是字符串
+# 发送的二进制数可以控制某USB串口控制的继电器
+# 如果send_line("string")函数的格式为send_line("\xA0\x01\x01\xA2")，串口并不会发送"\xA0\x01\x01\xA2"的字符串,而是会发送十六进制数0xA0 01 01 A2,
+# this is an example of sending data in binary instead of string
+# and also this is an example of controlling a power rely connected to a USB-to-COM port, and it need to set status by sending HEX numbers.
+# if the content of sent string is in format like send_line("\xA0\x01\x01\xA2"), COM port will not send string "\xA0\x01\x01\xA2", instead it will send 0xA0 01 01 A2, which are HEX number.
+
+# A0 01 01 A2 打开继电器
+send_line("\xA0\x01\x01\xA2")
+wait 3
+# A0 01 00 A1 关闭继电器
+send_line("\xA0\x01\x00\xA1")
+wait 3
+
+

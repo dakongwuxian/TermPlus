@@ -5,14 +5,16 @@
 # wait for xxxx for t，等价于wait_for(xxx,t)
 # wait for xxx for t 函数会在运行后识别主窗口中出现的内容，如果发现了指定的字符串xxx，则会停止运行，开始执行后面的函数，如果一直没找到指定字符串，则会在t秒之后结束等待。
 # wait for函数是有返回值的，如果发现了指定字符串，返回值为1，没发现返回值为0。可以利用返回值配合if进行指定操作。
+# show_str("xxxx") 函数会将xxxx字符串插入住窗口的末尾，需要自行控制换行符号，字符串不会被发送至串口，会被自动log保存记录
 
+show_str("\nexample start\n")
 send first line
 wait 3
 send second line
 wait for # for 3
 send third line
 wait for krypton for 3
-send example end
+show_str("\nexample end\n")
 
 # 如果send后面发送的内容包含单引号或双引号，需要如下处理
 
@@ -21,7 +23,7 @@ send example end
 # 同时含单/双引号	'''He said, "It's fine."'''
 # 风格统一但要转义	"She said, \"Hello\" and I replied \"Hi\""
 
-# 2025.9.25
+# 2025.9.25 新增功能
 # 1. 修改了脚本区域的函数send_line(text)为send_line(text,addNewline=True,insertDisplay=True)，通过2个可额外指定的参数，让send_line函数可以指定是否发送换行和是否在主窗口中显示。
 
 # 发送字符串，即使不写后续的2个参数，也会默认在结尾发送换行符，默认在窗口中显示发送内容

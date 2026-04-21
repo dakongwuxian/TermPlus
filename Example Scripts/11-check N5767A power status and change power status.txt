@@ -1,0 +1,60 @@
+# 本示例展示了如何初始化SCPI设备并访问其接口
+# 示例使用的函数：
+# visa_init()
+# visa_query()
+# visa_write()
+# visa_read() read函数未进行展示，该电源的开关不需要进行单独的read操作
+
+# to control N5767A, your computer must install 'Keysight Connection Expert' first, the install file is "IOLibSuite_18_1_25310.exe"
+# also install "NI4882_1700f0.exe" to enable GPIB card's hardware driver
+# you could see the address for visa_init in 'Keysight Connection Expert' when N5767A is connected to your computer via USB
+# this init fucntion is working under sharing mode, it would not stop "Keysight Connection Expert' to work at the same time
+
+# 函数初始化的地址为示例，需要在使用前通过'Keysight Connection Expert'进行确认你要操作的设备的地址
+
+# init the equipment, only need to init once
+send visa_init(USB0::0x0957::0xA407::US19E8463P::0::INSTR)
+wait 1
+
+# example of equipment address connected via GPIB card
+#send visa_init(GPIB0::5::INSTR)
+
+# get the identification of the equipment, you could get the name and type of the equipment
+visa_query(*IDN?)
+wait 1
+
+# get the status of power output
+send visa_query(OUTP?)
+wait 1
+
+# power off
+send visa_write(OUTP OFF)
+wait 1
+
+send visa_query(OUTP?)
+wait 1
+
+# power on
+send visa_write(OUTP ON)
+wait 1
+
+send visa_query(OUTP?)
+wait 1
+
+# check and set the current limit
+send visa_query(CURR?)
+wait 1
+
+send visa_write(CURR 2.1)
+wait 1
+
+# check and set the voltage output
+send visa_query(VOLT?)
+wait 1 
+
+send visa_write(VOLT 48.0)
+wait 1
+
+
+
+

@@ -19,4 +19,23 @@ for i in range(10):
 # 风格统一但要转义	"She said, \"Hello\" and I replied \"Hi\""
 
 
+# 下面的2个例子展示了如何从 rvc r PaDriverBias0:0 发送到 rvc r PaDriverBias0:63
+
+for i in range(64):
+    send_line("rvc r PaDriverBias0:%d"%i)
+    wait 1
+
+for i in range(64):
+    send_line(f"rvc r PaDriverBias0:{i}")
+    wait(1)
+
+# 下面的2个例子展示了如何发送变化的数字在中间的情况
+
+for i in range(64):
+    send_line("ch w GDpa:%d.0 2180"%i)
+    wait 1
+
+for i in range(64):
+    send_line(f"ch w GDpa:{i}.0 2180")
+    wait 1
 

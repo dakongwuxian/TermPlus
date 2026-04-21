@@ -1,0 +1,22 @@
+# 本示例使用get_future_n_lines_or_till_overtime(）获取了主窗口中的内容，使用re.search(）实现了对指定字符串的搜索，使用if对搜索结果进行了判定，当主窗口出现指定内容时，执行指定的操作。
+# 脚本需要遵守python的缩进规则，python通过缩进来识别哪些属于一个大括号（if/for/while等）中的内容。
+# 缩进建议全部使用4n个空格或者全部使用tab。
+
+# 发送命令
+send lmclist
+
+# 获取文本区域从现在开始新出现的5行,获取到5行内容后停止，或者20秒之后还没出现5行也停止
+response = get_future_n_lines_or_till_overtime(5,20) 
+
+# 设置想要查找的文本
+match_target = "CXP2021113/1_R24B49"
+
+# 根据查找的结果，进行后续操作
+if match_target in response: 
+    messagebox.showinfo("提示", "Target string found.")# pop out message
+    raise StopLoopException("stop")# stop running
+else:
+    messagebox.showinfo("提示", "Target string not found.")# pop out message
+
+
+

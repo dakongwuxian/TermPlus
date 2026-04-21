@@ -1,0 +1,11 @@
+# 本示例展示了如何在主窗口中显示指定的字符串，以及如何在主窗口中展示系统的日期和时间
+# this is an example of changing COM port and sending data in binary instead of string
+# and also this is an example of controlling a power rely connected to a USB-to-COM port, and it need to set status by sending HEX numbers.
+# if the content of sent string is in format like send_line("\xA0\x01\x01\xA2"), COM port will not send string "\xA0\x01\x01\xA2", instead it will send 0xA0 01 01 A2, which are HEX number.
+
+show_str("this is example strings showed by scripts, which will not be sent to COM port.\n")
+wait 1
+
+# below command could get current system's date and time and show it in the main window without send it to COM port
+show_date_time()
+wait 1
