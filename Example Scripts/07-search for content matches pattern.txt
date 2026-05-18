@@ -1,0 +1,155 @@
+# 本示例展示了如何发送命令，然后获取主窗口中的内容，并判断匹配内容的数值是否大于17,如果大于17则停止脚本运行并弹窗提醒
+# this example search for the respond of command "dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2"
+# respond is like "Value 0x0000000A(10) read from address 0x06C00330 with offset 0B."
+# below scripts get the "10" value and monitor it
+
+# example 1
+
+delay_value = 0
+send dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2
+wait for $ for 2
+text_to_search = get_last_n_lines(2)
+pattern = r"^Value\s+0x[0-9A-Fa-f]+\((\d+)\)\s+read from address"
+match = re.search(pattern, text_to_search, re.MULTILINE)
+if match:
+    delay_value = int(match.group(1))
+    show_str("delay_value get as %d\n"%delay_value)
+if delay_value > 17:
+    show_str("delay value > 17 detected\n")
+    messagebox.showinfo("提示", "delay value > 17 detected")# pop out message
+    raise StopLoopException("stop")# stop running
+    
+# example 2
+
+# send_and_get函数，发送命令：dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2，尝试捕获“Value 0x0000000A(10)”中的数字“10”，超时时间2秒，等待字符$，最多接收行数3
+
+match = send_and_get("dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2", r"Value\s+0x[0-9A-Fa-f]+\((\d+)\)\s+read from address", 2, "$",3)
+if match:
+    delay_value = int(match)
+    show_str("Reg value get as %d\n"%delay_value)
+    if delay_value > 17:
+        show_str("delay value > 17 detected\n")
+        messagebox.showinfo("提示", "delay value > 17 detected")# pop out message
+        raise StopLoopException("stop")# stop running
+
+
+
+
+
+# ============================================================
+# send_and_get() 函数使用说明
+# ============================================================
+#
+# 功能：发送命令到串口，等待回复，用正则表达式从回复中提取数据
+#
+# 参数：
+#   send_and_get(str_2_send, regex_pattern, over_time, wait_str="", line_count=0)
+#
+#   str_2_send      - 要发送的命令字符串
+#   regex_pattern   - 正则表达式，用于从回复中匹配和捕获数据
+#   over_time       - 超时时间（秒），超时后停止等待
+#   wait_str        - 可选，等待的终止字符串（如 "#" "$"），检测到就停止等待
+#   line_count      - 可选，等待的行数，收到指定行数后停止等待
+#
+# 停止条件（满足任一即停止）：
+#   1. 检测到 wait_str（如果设置了）
+#   2. 收到 line_count 行（如果设置了）
+#   3. 超时
+#
+# 返回值：
+#   - 1个匹配，1个捕获组：返回字符串        如 "2"
+#   - 1个匹配，多个捕获组：返回列表          如 ["2", "100"]
+#   - 多个匹配，1个捕获组：返回列表          如 ["2", "5", "8"]
+#   - 多个匹配，多个捕获组：返回列表         如 [("2","100"), ("5","200")]
+#   - 未匹配到：返回 None
+#
+# ============================================================
+
+
+# ============================================================
+# 示例1：基本用法 - 等待终止符
+# 发送命令，等待 # 出现后停止，提取 Value 后面的数字
+# ============================================================
+
+result = send_and_get("dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2", r"Value\s+0x[0-9A-Fa-f]+\((\d+)\)", 5, "#")
+if result:
+    show_str("捕获到的值: " + result + "\n")
+
+
+# ============================================================
+# 示例2：等待指定行数
+# 发送命令，等待收到3行后停止匹配
+# ============================================================
+
+result = send_and_get("cat /proc/version", r"Linux version (\S+)", 5, "", 3)
+if result:
+    show_str("Linux版本: " + result + "\n")
+
+
+# ============================================================
+# 示例3：同时设置终止符和行数（谁先满足谁停止）
+# ============================================================
+
+result = send_and_get("ifconfig eth0", r"inet (\d+\.\d+\.\d+\.\d+)", 5, "$", 10)
+if result:
+    show_str("IP地址: " + result + "\n")
+
+
+# ============================================================
+# 示例4：只靠超时停止
+# 不设置 wait_str 和 line_count，纯靠超时
+# ============================================================
+
+result = send_and_get("ping 192.168.1.1 -c 3", r"time=(\d+\.?\d*) ms", 10)
+if result:
+    # 多个匹配时返回列表
+    show_str("所有ping延时: " + str(result) + "\n")
+
+
+# ============================================================
+# 示例5：多个捕获组
+# 一次提取多个字段
+# ============================================================
+
+result = send_and_get("show interface status", r"(\S+)\s+(up|down)\s+(\d+)", 5, "#")
+if result:
+    # 1个匹配，多个捕获组时返回列表 ["eth0", "up", "1000"]
+    show_str("接口: " + result[0] + " 状态: " + result[1] + " 速率: " + result[2] + "\n")
+
+
+# ============================================================
+# 示例6：多个匹配 + 多个捕获组
+# ============================================================
+
+result = send_and_get("show vlan brief", r"(\d+)\s+(\S+)\s+(active)", 5, "#")
+if result:
+    # 返回 [("10","VLAN10","active"), ("20","VLAN20","active")]
+    for item in result:
+        show_str("VLAN " + item[0] + ": " + item[1] + " - " + item[2] + "\n")
+
+
+# ============================================================
+# 示例7：结合条件判断使用
+# ============================================================
+
+result = send_and_get("dra r krypton:0 TEMP_SENSOR", r"Value\s+0x[0-9A-Fa-f]+\((\d+)\)", 3, "#")
+if result:
+    temp = int(result)
+    if temp > 80:
+        show_str("警告：温度过高！当前温度: " + str(temp) + "\n")
+    else:
+        show_str("温度正常: " + str(temp) + "\n")
+else:
+    show_str("未能获取温度值\n")
+
+
+# ============================================================
+# 示例8：在循环中使用
+# ============================================================
+
+for i in range(5):
+    result = send_and_get("read_reg " + str(i), r"=\s*(\d+)", 2, "#")
+    if result:
+        show_str("寄存器" + str(i) + " = " + result + "\n")
+    wait(1)
+

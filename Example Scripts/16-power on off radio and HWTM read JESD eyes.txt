@@ -1,0 +1,264 @@
+show_date_time()
+close_serial()
+wait 1
+set_port("COM14")
+wait 1
+set_baudrate("9600")
+wait 1
+connect_serial()
+wait 1
+# power off,A0 01 01 A2 打开继电器
+send_line(r"\xA0\x01\x01\xA2")
+wait 3
+# power on,A0 01 00 A1 关闭继电器
+send_line(r"\xA0\x01\x00\xA1")
+wait 1
+close_serial()
+wait 1
+set_port("COM17")
+wait 1
+set_baudrate("115200")
+wait 1
+connect_serial()
+wait 1
+wait for krypton login: for 180
+send root
+wait for # for 10
+wait 1
+send mr -s 1 -m safe
+wait for krypton login: for 180
+send root
+wait for # for 10
+wait 1
+send init 4
+wait for # for 10
+wait 1
+send lmclist
+wait for # for 10
+wait 1
+send par get
+wait for # for 10
+wait 1
+send runlevel
+wait 3
+send testmgr.bash
+wait 3
+send testmgr.bash status
+wait 3
+send testbox switch Sysref on
+wait 3
+send testbox hw_init all
+wait for # for 30
+wait 1
+send testbox version
+wait for # for 10
+wait 1
+send testbox sensor_read krypton0
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 jesd_init rx 1
+wait for # for 120
+wait 1
+send testbox trx_ic palau0 jesd_init tx 1
+wait for # for 120
+wait 1
+send testbox trx_write_param krypton0:ADC_DAC_2 RX_TERM 1
+wait for # for 10
+wait 1
+send testbox trx_write_param krypton0:ADC_DAC_6 RX_TERM 1
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 prbs_check_set PRBS_31 lane_data
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 prbs_gen_set all PRBS_31 serializer
+wait for # for 10
+wait 1
+send testbox trx_adapt krypton0:ADC_DAC_2 DFE_ICAL
+wait for # for 20
+wait 1
+send testbox trx_eyeq krypton0:ADC_DAC_2 -f
+wait for # for 10
+wait 1
+text_to_search = get_last_n_lines(4)
+pattern = r"Eye height\[mV\]:(\d+(?:\.\d+))\sEye width"
+match = re.search(pattern, text_to_search, re.MULTILINE)
+if match:
+    eye_height_value = float(match.group(1))
+    show_str(f"\neye_height_value {eye_height_value}\n")
+    if eye_height_value <= 300:
+        show_str("eye_height_value <=300 detected\n")
+        messagebox.showinfo("提示", "eye_height_value <=300 detected")# pop out message
+        raise StopLoopException("stop")# stop running
+send testbox trx_adapt krypton0:ADC_DAC_6 DFE_ICAL
+wait for # for 20
+wait 1
+send testbox trx_eyeq krypton0:ADC_DAC_6 -f
+wait for # for 10
+wait 1
+text_to_search = get_last_n_lines(4)
+pattern = r"Eye height\[mV\]:(\d+(?:\.\d+))\sEye width"
+match = re.search(pattern, text_to_search, re.MULTILINE)
+if match:
+    eye_height_value = float(match.group(1))
+    show_str(f"\neye_height_value {eye_height_value}\n")
+    if eye_height_value <= 300:
+        show_str("eye_height_value <=300 detected\n")
+        messagebox.showinfo("提示", "eye_height_value <=300 detected")# pop out message
+        raise StopLoopException("stop")# stop running
+send testbox trx_write_param krypton0:ADC_DAC_0 RX_TERM 1
+wait for # for 10
+wait 1
+send testbox trx_write_param krypton0:ADC_DAC_1 RX_TERM 1
+wait for # for 10
+wait 1
+send testbox trx_write_param krypton0:ADC_DAC_4 RX_TERM 1
+wait for # for 10
+wait 1
+send testbox trx_write_param krypton0:ADC_DAC_5 RX_TERM 1
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 prbs_check_set PRBS_31 lane_data
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 prbs_gen_set all PRBS_31 serializer
+wait for # for 10
+wait 1
+send testbox trx_adapt krypton0:ADC_DAC_0 DFE_ICAL
+wait for # for 20
+wait 1
+send testbox trx_eyeq krypton0:ADC_DAC_0 -f
+wait for # for 10
+wait 1
+text_to_search = get_last_n_lines(4)
+pattern = r"Eye height\[mV\]:(\d+(?:\.\d+))\sEye width"
+match = re.search(pattern, text_to_search, re.MULTILINE)
+if match:
+    eye_height_value = float(match.group(1))
+    show_str(f"\neye_height_value {eye_height_value}\n")
+    if eye_height_value <= 300:
+        show_str("eye_height_value <=300 detected\n")
+        messagebox.showinfo("提示", "eye_height_value <=300 detected")# pop out message
+        raise StopLoopException("stop")# stop running
+send testbox trx_adapt krypton0:ADC_DAC_1 DFE_ICAL
+wait for # for 20
+wait 1
+send testbox trx_eyeq krypton0:ADC_DAC_1 -f
+wait for # for 10
+wait 1
+text_to_search = get_last_n_lines(4)
+pattern = r"Eye height\[mV\]:(\d+(?:\.\d+))\sEye width"
+match = re.search(pattern, text_to_search, re.MULTILINE)
+if match:
+    eye_height_value = float(match.group(1))
+    show_str(f"\neye_height_value {eye_height_value}\n")
+    if eye_height_value <= 300:
+        show_str("eye_height_value <=300 detected\n")
+        messagebox.showinfo("提示", "eye_height_value <=300 detected")# pop out message
+        raise StopLoopException("stop")# stop running
+send testbox trx_adapt krypton0:ADC_DAC_4 DFE_ICAL
+wait for # for 20
+wait 1
+send testbox trx_eyeq krypton0:ADC_DAC_4 -f
+wait for # for 10
+wait 1
+text_to_search = get_last_n_lines(4)
+pattern = r"Eye height\[mV\]:(\d+(?:\.\d+))\sEye width"
+match = re.search(pattern, text_to_search, re.MULTILINE)
+if match:
+    eye_height_value = float(match.group(1))
+    show_str(f"\neye_height_value {eye_height_value}\n")
+    if eye_height_value <= 300:
+        show_str("eye_height_value <=300 detected\n")
+        messagebox.showinfo("提示", "eye_height_value <=300 detected")# pop out message
+        raise StopLoopException("stop")# stop running
+send testbox trx_adapt krypton0:ADC_DAC_5 DFE_ICAL
+wait for # for 20
+wait 1
+send testbox trx_eyeq krypton0:ADC_DAC_5 -f
+wait for # for 10
+wait 1
+text_to_search = get_last_n_lines(4)
+pattern = r"Eye height\[mV\]:(\d+(?:\.\d+))\sEye width"
+match = re.search(pattern, text_to_search, re.MULTILINE)
+if match:
+    eye_height_value = float(match.group(1))
+    show_str(f"\neye_height_value {eye_height_value}\n")
+    if eye_height_value <= 300:
+        show_str("eye_height_value <=300 detected\n")
+        messagebox.showinfo("提示", "eye_height_value <=300 detected")# pop out message
+        raise StopLoopException("stop")# stop running
+send testbox prbs_set krypton0:ADC_DAC_0 tx PRBS_31
+wait for # for 10
+wait 1
+send testbox prbs_set krypton0:ADC_DAC_1 tx PRBS_31
+wait for # for 10
+wait 1
+send testbox prbs_set krypton0:ADC_DAC_2 tx PRBS_31
+wait for # for 10
+wait 1
+send testbox prbs_set krypton0:ADC_DAC_3 tx PRBS_31
+wait for # for 10
+wait 1
+send testbox prbs_set krypton0:ADC_DAC_4 tx PRBS_31
+wait for # for 10
+wait 1
+send testbox prbs_set krypton0:ADC_DAC_5 tx PRBS_31
+wait for # for 10
+wait 1
+send testbox prbs_set krypton0:ADC_DAC_6 tx PRBS_31
+wait for # for 10
+wait 1
+send testbox prbs_set krypton0:ADC_DAC_7 tx PRBS_31
+wait for # for 10
+wait 1
+send testbox prbs_invert krypton0:ADC_DAC_3 tx invert
+wait for # for 10
+wait 1
+send testbox prbs_invert krypton0:ADC_DAC_4 tx invert
+wait for # for 10
+wait 1
+send testbox prbs_invert krypton0:ADC_DAC_5 tx invert
+wait for # for 10
+wait 1
+send testbox prbs_invert krypton0:ADC_DAC_6 tx invert
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 prbs_check_set PRBS_31 lane_data
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 prbs_gen_set all PRBS_31 serializer
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 eyescan LANE_0 -e
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 eyescan LANE_1 -e
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 eyescan LANE_2 -e
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 eyescan LANE_3 -e
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 eyescan LANE_4 -e
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 eyescan LANE_5 -e
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 eyescan LANE_6 -e
+wait for # for 10
+wait 1
+send testbox trx_ic palau0 eyescan LANE_7 -e
+wait for # for 10
+wait 1
+
+
+
+
+
+
+
+
