@@ -1,3 +1,31 @@
+2026.5.15
+
+1、增加了一个脚本区域的自定义函数send_and_get()，详情参见“07-search for content matches pattern.txt”。
+2、修改了Example Scripts的07-xxxx.txt。
+3、按键的wait for函数现在会屏蔽自动清屏，避免了偶尔会出现的index变化后的错误。
+4、现在在脚本区域运行的wait、wait for、wait for any函数，会在运行时在该行的尾部显示一个“（10）”的括号包含起来的数值，并且每秒减一。
+5、增加了可以在按键区域使用的自定义函数
+	show_date_time()
+	show_str()
+	visa_xxxx()
+	open power shell
+	power shell send xxxx
+	set_port("COM3")
+	set_baudrate(115200)
+	connect_serial()
+	close_serial()
+	toggle_serial()
+9、send all按下后变成stop，按下stop可以打断发送，发送完成后或按下stop后会变回send all
+10、visa_init visa_query等函数在脚本区域里使用时不再需要写成send visa_init，需要去掉send，单独写成visa_init。修改了对应的Example Scripts。
+
+
+2026.5.12
+1、脚本区域的三个按键的状态，不再会因为打开和关闭串口而变化，避免自动化脚本切换串口的过程中无法停止脚本的运行。调整了相关的逻辑代码。
+2、Example Scripts，更新了14-send HEX data to contorl USB port power relay.txt的内容，修改了错误。
+3、Example Scripts，增加了16-power on off radio and HWTM read JESD eyes.txt。
+4、button的edit窗口，增加了2个功能，1个是pin/unpin按键，按下后会将该窗口始终保持在最前端，不被其他窗口遮挡，
+5、2是edit窗口如果反复通过右键-edit打开，再次打开时只会将已经打开的放到最前，而不会重复打开。
+
 2026.4.9
 1、优化了串口接收的逻辑，对于\r\n的连续接收，如果恰好\r作为了一次接收的结尾，会检测下一次接收的开头是否是\n，如果是的话，则会将\r\n一起转化为单个\n，防止出现换行增多的情况。
 2、修改了“关于-buy me a coffee”中图片的加载方式，从外部图片加载改回了字符串转图片的方式，从而省去了文件夹中多一个图片文件的问题。

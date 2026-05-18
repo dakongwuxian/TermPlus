@@ -141,6 +141,177 @@ def format_bytes(size):
 class StopLoopException(Exception):
     pass
 
+class RegexMonitor:
+    def __init__(self, gui):
+        self.gui = gui
+        self.window = None
+        self.rules = []
+        self.match_buffer = ""
+        self.global_offset = 0
+        self.idle_timer_id = None
+        self.IDLE_MS = 300
+        self.BUFFER_LIMIT = 2048
+
+    def on_new_text(self, chars):
+        if not self.rules or not self.window:
+            return
+        self.match_buffer += chars
+        if self.idle_timer_id is not None:
+            self.gui.root.after_cancel(self.idle_timer_id)
+        if len(self.match_buffer) > self.BUFFER_LIMIT:
+            self._do_match()
+        else:
+            self.idle_timer_id = self.gui.root.after(self.IDLE_MS, self._do_match)
+
+    def _do_match(self):
+        self.idle_timer_id = None
+        if not self.match_buffer:
+            return
+        max_lines = max((r["lines"] for r in self.rules), default=1)
+        lines = self.match_buffer.split('\n')
+        if self.match_buffer.endswith('\n'):
+            complete_lines = lines[:-1]
+            leftover = ""
+        else:
+            complete_lines = lines[:-1]
+            leftover = lines[-1]
+        if not complete_lines:
+            return
+
+        for rule in self.rules:
+            n = rule["lines"]
+            compiled = rule["compiled"]
+            if compiled is None:
+                continue
+            for i in range(len(complete_lines)):
+                window_lines = complete_lines[i:i + n]
+                if len(window_lines) < n:
+                    break
+                text_block = '\n'.join(window_lines)
+                block_start_in_buffer = sum(len(complete_lines[j]) + 1 for j in range(i))
+                for m in compiled.finditer(text_block):
+                    g_start = self.global_offset + block_start_in_buffer + m.start()
+                    g_end = self.global_offset + block_start_in_buffer + m.end()
+                    self._add_result(rule, g_start, g_end, m.group())
+
+        overlap_count = max(max_lines - 1, 0)
+        if overlap_count > 0 and len(complete_lines) > overlap_count:
+            consumed_lines = complete_lines[:-overlap_count]
+            kept_lines = complete_lines[-overlap_count:]
+        elif overlap_count == 0:
+            consumed_lines = complete_lines
+            kept_lines = []
+        else:
+            consumed_lines = []
+            kept_lines = complete_lines
+
+        consumed_chars = sum(len(l) + 1 for l in consumed_lines)
+        self.global_offset += consumed_chars
+        remaining = '\n'.join(kept_lines)
+        if kept_lines:
+            remaining += '\n'
+        self.match_buffer = remaining + leftover
+
+    def _add_result(self, rule, g_start, g_end, text):
+        results = rule["results"]
+        to_remove = []
+        for i, (rs, re_, rt) in enumerate(results):
+            if rs <= g_start and g_end <= re_:
+                return
+            if g_start <= rs and re_ <= g_end:
+                to_remove.append(i)
+        for i in reversed(to_remove):
+            results.pop(i)
+        results.append((g_start, g_end, text))
+        self._refresh_rule_display(rule)
+
+    def _refresh_rule_display(self, rule):
+        tw = rule.get("text_widget")
+        if tw and tw.winfo_exists():
+            tw.config(state="normal")
+            tw.delete("1.0", tk.END)
+            for _, _, text in rule["results"]:
+                tw.insert(tk.END, text + "\n")
+            tw.see(tk.END)
+            tw.config(state="disabled")
+
+    def toggle_window(self):
+        if self.window and self.window.winfo_exists():
+            self.window.destroy()
+            self.window = None
+            return
+        self.window = tk.Toplevel(self.gui.root)
+        self.window.title("正则匹配监控")
+        self.window.geometry("500x400")
+        self.window.protocol("WM_DELETE_WINDOW", lambda: (self.window.destroy(), setattr(self, 'window', None)))
+
+        ctrl = tk.Frame(self.window)
+        ctrl.pack(fill="x", padx=5, pady=5)
+        tk.Label(ctrl, text="正则:").pack(side="left")
+        self._regex_entry = tk.Entry(ctrl, width=25)
+        self._regex_entry.pack(side="left", padx=2)
+        tk.Label(ctrl, text="行数:").pack(side="left")
+        self._lines_entry = tk.Entry(ctrl, width=3)
+        self._lines_entry.insert(0, "1")
+        self._lines_entry.pack(side="left", padx=2)
+        tk.Button(ctrl, text="添加", command=self._add_rule).pack(side="left", padx=2)
+        tk.Button(ctrl, text="清空全部结果", command=self._clear_all_results).pack(side="right", padx=2)
+
+        self._rules_container = tk.Frame(self.window)
+        self._rules_container.pack(fill="both", expand=True, padx=5, pady=5)
+
+        for rule in self.rules:
+            self._build_rule_ui(rule)
+
+    def _add_rule(self):
+        pattern_str = self._regex_entry.get().strip()
+        if not pattern_str:
+            return
+        try:
+            compiled = re.compile(pattern_str, re.DOTALL)
+        except re.error as e:
+            messagebox.showerror("正则错误", f"无效的正则表达式:\n{e}", parent=self.window)
+            return
+        try:
+            lines = max(1, int(self._lines_entry.get().strip()))
+        except ValueError:
+            lines = 1
+        rule = {"pattern_str": pattern_str, "lines": lines, "compiled": compiled, "results": [], "frame": None, "text_widget": None}
+        self.rules.append(rule)
+        self._build_rule_ui(rule)
+        self._regex_entry.delete(0, tk.END)
+
+    def _build_rule_ui(self, rule):
+        if not self.window or not self.window.winfo_exists():
+            return
+        frame = tk.LabelFrame(self._rules_container, text=f"  {rule['pattern_str']}  (行数:{rule['lines']})  ")
+        frame.pack(fill="both", expand=True, pady=2)
+        rule["frame"] = frame
+        btn_frame = tk.Frame(frame)
+        btn_frame.pack(fill="x")
+        tk.Button(btn_frame, text="删除规则", command=lambda r=rule: self._remove_rule(r)).pack(side="right", padx=2)
+        tk.Button(btn_frame, text="清空结果", command=lambda r=rule: self._clear_rule_results(r)).pack(side="right", padx=2)
+        tw = scrolledtext.ScrolledText(frame, height=4, state="disabled", wrap=tk.WORD)
+        tw.pack(fill="both", expand=True, padx=2, pady=2)
+        rule["text_widget"] = tw
+        self._refresh_rule_display(rule)
+
+    def _remove_rule(self, rule):
+        if rule["frame"] and rule["frame"].winfo_exists():
+            rule["frame"].destroy()
+        if rule in self.rules:
+            self.rules.remove(rule)
+
+    def _clear_rule_results(self, rule):
+        rule["results"] = []
+        self._refresh_rule_display(rule)
+
+    def _clear_all_results(self):
+        for rule in self.rules:
+            rule["results"] = []
+            self._refresh_rule_display(rule)
+
+
 class SerialGUI:
     def __init__(self, root, center=True):
         self.root = root
@@ -152,7 +323,7 @@ class SerialGUI:
         self.root = root
         self.last_send_index = None
         self.wait_for_initial_index  = None
-        self.allow_auto_delete = True
+        self.auto_delete_lock_count = 0
 
         # 初始化 PyVISA ResourceManager，psu 初始为 None
         self.rm  = pyvisa.ResourceManager()
@@ -242,6 +413,9 @@ class SerialGUI:
         # 用于单元格右键菜单的剪贴板（复制功能），存储元组 (text, custom_data)
         self.cell_clipboard = ("", "")
         self.current_cell = None
+        # 用于跟踪每个按钮对应的编辑窗口 {cell_id: edit_window}
+        self.cell_edit_windows = {}
+        self.cell_send_all_stop = False
 
         # 在 __init__ 方法中，对根窗口进行 grid 配置
         self.root.rowconfigure(0, weight=1)
@@ -278,6 +452,10 @@ class SerialGUI:
         # 黑白主题切换
         self.theme_btn = tk.Button(self.row_0_frame, text="主题", command=self.toggle_theme)
         self.theme_btn.pack(side="left", padx=4)
+
+        # 正则匹配按钮
+        self.regex_monitor_btn = tk.Button(self.row_0_frame, text="匹配", command=self.toggle_regex_monitor)
+        self.regex_monitor_btn.pack(side="left", padx=4)
 
         # row 1 text_area
         #self.text_area = scrolledtext.ScrolledText(self.main_frame, wrap=tk.WORD)
@@ -674,6 +852,7 @@ class SerialGUI:
             "open_powershell",      # 以及其它任意名字
             "powershell_send",
             "send_line",
+            "send_and_get",
             "open power shell",
             "power shell send",
             "toggle_serial",
@@ -850,8 +1029,23 @@ class SerialGUI:
         # 初始化完成后，尝试加载之前保存的配置
         self.load_setup()
 
+        # 初始化正则匹配监控
+        self.regex_monitor = RegexMonitor(self)
+        self._hook_text_area_insert()
+
         # 启动定时检查任务，每10秒检测一次 text_area 内容是否过大需要删除
         self.auto_save_and_auto_delete()
+
+    def _hook_text_area_insert(self):
+        original_insert = self.text_area.insert
+        def hooked_insert(index, chars, *args):
+            original_insert(index, chars, *args)
+            if chars:
+                self.regex_monitor.on_new_text(chars)
+        self.text_area.insert = hooked_insert
+
+    def toggle_regex_monitor(self):
+        self.regex_monitor.toggle_window()
 
     def report_callback_exception(self, exc, val, tb):
         """
@@ -1017,29 +1211,29 @@ class SerialGUI:
             pass  # 没有选中内容时不报错
         
     def start_multi_loop_send(self):
-        if not self.loop_sending:
-            self.loop_sending = True
-            self.loop_stop = False
-            self.pause_event.set()    # 确保初始状态为非暂停
-            # 启动后禁用开始按钮，启用停止和暂停按钮
-            self.start_button.config(state=tk.DISABLED)
-            self.stop_button.config(state=tk.NORMAL)
-            self.pause_button.config(state=tk.NORMAL)
-            # 关闭撤销栈
-            self.text_area.configure(undo=False)
-            threading.Thread(target=self.run_custom_script, daemon=True).start()
+        #if not self.loop_sending:
+        self.loop_sending = True
+        self.loop_stop = False
+        self.pause_event.set()    # 确保初始状态为非暂停
+        # 启动后禁用开始按钮，启用停止和暂停按钮
+        self.start_button.config(state=tk.DISABLED)
+        self.stop_button.config(state=tk.NORMAL)
+        self.pause_button.config(state=tk.NORMAL)
+        # 关闭撤销栈
+        self.text_area.configure(undo=False)
+        threading.Thread(target=self.run_custom_script, daemon=True).start()
 
     def stop_multi_loop_send(self):
-        if self.loop_sending:
-            self.loop_stop = True
-            self.loop_sending = False
-            # 为了避免在暂停状态下不能退出，恢复 Event
-            self.pause_event.set()
-            self.paused = False
-            # 恢复按钮初始状态
-            self.start_button.config(state=tk.NORMAL)
-            self.stop_button.config(state=tk.DISABLED)
-            self.pause_button.config(state=tk.DISABLED, text="暂停")
+        #if self.loop_sending:
+        self.loop_stop = True
+        self.loop_sending = False
+        # 为了避免在暂停状态下不能退出，恢复 Event
+        self.pause_event.set()
+        self.paused = False
+        # 恢复按钮初始状态
+        self.start_button.config(state=tk.NORMAL)
+        self.stop_button.config(state=tk.DISABLED)
+        self.pause_button.config(state=tk.DISABLED, text="暂停")
 
     def pause_resume_multi_loop_send(self):
         # 如果没有运行，则不处理
@@ -1078,13 +1272,31 @@ class SerialGUI:
         def wait(seconds):
             interval = 0.1
             elapsed = 0
-            while elapsed < seconds:
-                self.pause_event.wait()
-                if self.loop_stop:
-                    raise StopLoopException("循环已停止")
-                time.sleep(interval)
-                elapsed += interval
-                #self.root.update_idletasks()
+            line_num = getattr(self, '_current_script_line', None)
+            show_countdown = seconds >= 2 and line_num is not None
+            countdown_suffix = ""
+            last_shown = int(seconds)
+            if show_countdown:
+                countdown_suffix = f" ({last_shown})"
+                self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+            try:
+                while elapsed < seconds:
+                    self.pause_event.wait()
+                    if self.loop_stop:
+                        raise StopLoopException("循环已停止")
+                    time.sleep(interval)
+                    elapsed += interval
+                    if show_countdown:
+                        remaining = max(0, int(seconds - elapsed))
+                        if remaining != last_shown:
+                            old_suffix = countdown_suffix
+                            countdown_suffix = f" ({remaining})"
+                            self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(old_suffix)}c", f"{line_num}.end"))
+                            self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+                            last_shown = remaining
+            finally:
+                if show_countdown and countdown_suffix:
+                    self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(countdown_suffix)}c", f"{line_num}.end"))
 
         def wait_for(target_string, over_time):
             if target_string == '':
@@ -1094,30 +1306,47 @@ class SerialGUI:
                 self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."))
                 return False
 
-            self.allow_auto_delete = False
-            self.script_wait_for_new_text = ""
+            self.auto_delete_lock_count += 1
+            script_wait_for_new_text = ""
             start_time = time.time()
             last_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
             start_index = last_index
+
+            line_num = getattr(self, '_current_script_line', None)
+            show_countdown = over_time >= 2 and line_num is not None
+            countdown_suffix = ""
+            last_shown = int(over_time)
+            if show_countdown:
+                countdown_suffix = f" ({last_shown})"
+                self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+
             try:
                 while time.time() - start_time < over_time:
                     if self.loop_stop:
                         raise StopLoopException("循环已停止")
-                    #self.root.update_idletasks()
                     current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
                     if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
-                        #print(f"wait_for get function find last index bigger than current index.\n")
                         self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for get function find last index bigger than current index. wait for function skipped"))
                         return False
                     if self.tk_safe(lambda:self.text_area.compare(last_index, "<", current_index)):    
                         try:
-                            self.script_wait_for_new_text = self.tk_safe(lambda:self.text_area.get(last_index, current_index),wait = True)
+                            script_wait_for_new_text = self.tk_safe(lambda:self.text_area.get(last_index, current_index),wait = True)
                         except Exception as e:
-                            #print(f"wait_for get text fault, index might be changed and not corrected right: {e}")
-                            self.script_wait_for_new_text = ""
-                    if target_string in self.script_wait_for_new_text:
+                            script_wait_for_new_text = ""
+                    if target_string in script_wait_for_new_text:
                         return True
                     time.sleep(0.1)
+
+                    if show_countdown:
+                        elapsed = time.time() - start_time
+                        remaining = max(0, int(over_time - elapsed))
+                        if remaining != last_shown:
+                            old_suffix = countdown_suffix
+                            countdown_suffix = f" ({remaining})"
+                            self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(old_suffix)}c", f"{line_num}.end"))
+                            self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+                            last_shown = remaining
+
                     try:
                         if self.tk_safe(lambda:self.text_area.compare("end-1c", "==", "1.0")) and target_string != "":
                             last_index = "1.0"
@@ -1129,7 +1358,9 @@ class SerialGUI:
                         self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for index auto change error 2"))
                         return False
             finally:
-                self.allow_auto_delete = True
+                self.auto_delete_lock_count -= 1
+                if show_countdown and countdown_suffix:
+                    self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(countdown_suffix)}c", f"{line_num}.end"))
             return False
 
         def wait_for_any(target_list, timeout):
@@ -1140,8 +1371,17 @@ class SerialGUI:
                 self.tk_safe(lambda: messagebox.showwarning("Warning", "Timeout must be positive."))
                 return None
 
-            self.allow_auto_delete = False
+            self.auto_delete_lock_count += 1
             self.script_wait_for_any_new_text = ""
+
+            line_num = getattr(self, '_current_script_line', None)
+            show_countdown = timeout >= 2 and line_num is not None
+            countdown_suffix = ""
+            last_shown = int(timeout)
+            if show_countdown:
+                countdown_suffix = f" ({last_shown})"
+                self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+
             try:
                 start_time = time.time()
                 last_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
@@ -1156,24 +1396,32 @@ class SerialGUI:
                 while True:
                     if self.loop_stop:
                         return None
-                    #self.root.update_idletasks()
                     if time.time() - start_time >= timeout:
                         return None
                     current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
                     if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
-                        #print("wait for any index error, last index bigger than current index. wait for any skipped.")
                         self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait for any index error, last index bigger than current index. wait for any skipped."))
                         return None
                     if self.tk_safe(lambda:self.text_area.compare(last_index, "<", current_index)):
                         try:
                             self.script_wait_for_any_new_text = self.tk_safe(lambda:self.text_area.get(last_index, current_index))
                         except Exception as e:
-                            #print(f"wait_for_any get 出错: {e}")
                             self.script_wait_for_any_new_text = ""
                     for target in target_list:
                         if target in self.script_wait_for_any_new_text:
                             return target
                     time.sleep(0.1)
+
+                    if show_countdown:
+                        elapsed = time.time() - start_time
+                        remaining = max(0, int(timeout - elapsed))
+                        if remaining != last_shown:
+                            old_suffix = countdown_suffix
+                            countdown_suffix = f" ({remaining})"
+                            self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(old_suffix)}c", f"{line_num}.end"))
+                            self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+                            last_shown = remaining
+
                     try:
                         if self.tk_safe(lambda:self.text_area.compare("end-1c", "==", "1.0")) and length_of_longest_string > 0:
                             last_index = "1.0"
@@ -1185,7 +1433,9 @@ class SerialGUI:
                         self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for_any index auto change error 2"))
                         return None
             finally:
-                self.allow_auto_delete = True
+                self.auto_delete_lock_count -= 1
+                if show_countdown and countdown_suffix:
+                    self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(countdown_suffix)}c", f"{line_num}.end"))
 
         def show_str(string_to_show):
             if string_to_show == "":
@@ -1193,6 +1443,85 @@ class SerialGUI:
                 return
             self.tk_safe(lambda:self.text_area.insert(tk.END, string_to_show))
             self.tk_safe(lambda:self.text_area.see(tk.END))
+
+        def send_and_get(str_2_send, regex_pattern, over_time, wait_str="", line_count=0):
+            """
+            发送命令并从回复中用正则匹配捕获数据。
+            返回 re.Match 对象或 None。
+            """
+            if not str_2_send:
+                return None
+            # 发送
+            send_line(str_2_send)
+            # 记录发送后的位置
+            self.auto_delete_lock_count += 1
+            start_index = self.tk_safe(lambda: self.text_area.index("end-1c"))
+            last_index = start_index
+            collected_text = ""
+            start_time = time.time()
+            last_match = None
+
+            line_num = getattr(self, '_current_script_line', None)
+            show_countdown = over_time >= 2 and line_num is not None
+            countdown_suffix = ""
+            last_shown = int(over_time)
+            if show_countdown:
+                countdown_suffix = f" ({last_shown})"
+                self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+
+            try:
+                while True:
+                    if self.loop_stop:
+                        raise StopLoopException("循环已停止")
+                    # 超时检查
+                    if time.time() - start_time >= over_time:
+                        break
+                    # 获取新内容
+                    current_index = self.tk_safe(lambda: self.text_area.index("end-1c"))
+                    if self.tk_safe(lambda: self.text_area.compare(last_index, "<", current_index)):
+                        try:
+                            new_text = self.tk_safe(lambda: self.text_area.get(last_index, current_index))
+                            collected_text += new_text
+                        except Exception:
+                            pass
+                        last_index = current_index
+                    # 检查停止条件：wait_str
+                    if wait_str and wait_str in collected_text:
+                        break
+                    # 检查停止条件：line_count
+                    if line_count > 0 and len(collected_text.splitlines()) >= line_count:
+                        break
+                    # 倒计时显示
+                    if show_countdown:
+                        elapsed = time.time() - start_time
+                        remaining = max(0, int(over_time - elapsed))
+                        if remaining != last_shown:
+                            old_suffix = countdown_suffix
+                            countdown_suffix = f" ({remaining})"
+                            self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(old_suffix)}c", f"{line_num}.end"))
+                            self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+                            last_shown = remaining
+                    time.sleep(0.1)
+                # 执行正则匹配
+                if collected_text and regex_pattern:
+                    results = re.findall(regex_pattern, collected_text)
+                    if results:
+                        if len(results) == 1:
+                            # 只有一个匹配结果
+                            if isinstance(results[0], tuple):
+                                # 多个捕获组，但只有一个匹配，返回元组
+                                last_match = list(results[0]) if len(results[0]) > 1 else results[0][0]
+                            else:
+                                # 单个捕获组，单个匹配，直接返回字符串
+                                last_match = results[0]
+                        else:
+                            # 多个匹配结果，返回列表
+                            last_match = results
+            finally:
+                self.auto_delete_lock_count -= 1
+                if show_countdown and countdown_suffix:
+                    self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(countdown_suffix)}c", f"{line_num}.end"))
+            return last_match
 
         def show_date_time():
             self.tk_safe(lambda:self.text_area.insert(tk.END, str(datetime.now()) + "\n"))
@@ -1213,7 +1542,7 @@ class SerialGUI:
                 self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."))
                 return None
 
-            self.allow_auto_delete = False
+            self.auto_delete_lock_count += 1
             self.script_wait_for_new_text = ""
             collected_text = ""   # 新增
             start_time = time.time()
@@ -1245,7 +1574,7 @@ class SerialGUI:
                         return collected_text
                     time.sleep(0.1)
             finally:
-                self.allow_auto_delete = True
+                self.auto_delete_lock_count -= 1
             return collected_text
 
 
@@ -1257,7 +1586,7 @@ class SerialGUI:
                 self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."))
                 return None
 
-            self.allow_auto_delete = False
+            self.auto_delete_lock_count += 1
             self.script_wait_for_new_text = ""
             collected_text = ""   # 新增
             start_time = time.time()
@@ -1287,7 +1616,7 @@ class SerialGUI:
                         return collected_text
                     time.sleep(0.1)
             finally:
-                self.allow_auto_delete = True
+                self.auto_delete_lock_count -= 1
             return collected_text
 
 
@@ -1311,10 +1640,13 @@ class SerialGUI:
         def _highlight_and_wait(line_nums):
             self.tk_safe(lambda: self.multi_loop_text.tag_remove("highlight", "1.0", tk.END))
             if line_nums:
+                self._current_script_line = line_nums[0]
                 first_line_num = line_nums[0]
                 last_line_num = line_nums[-1]
                 self.tk_safe(lambda: self.multi_loop_text.tag_add("highlight", f"{first_line_num}.0", f"{last_line_num}.end"))
                 self.tk_safe(lambda: self.multi_loop_text.see(f"{first_line_num}.0"))
+            else:
+                self._current_script_line = None
             #self.root.update_idletasks()
             self.pause_event.wait()
             if self.loop_stop:
@@ -1348,7 +1680,12 @@ class SerialGUI:
             "get_future_lines_till_str_or_overtime": get_future_lines_till_str_or_overtime,
             "show_str": show_str,
             "show_date_time": show_date_time,
+            "send_and_get": send_and_get,
             "clear_all_highlights":clear_all_highlights,
+            "visa_init": self._script_visa_init,
+            "visa_query": self._script_visa_query,
+            "visa_write": self._script_visa_write,
+            "visa_read": self._script_visa_read,
         }
 
         processed_script_lines = []
@@ -1429,6 +1766,46 @@ class SerialGUI:
                          # We need to make sure this wait is at the same indentation level as the send
                         processed_script_lines.append(f"{leading_whitespace}_highlight_and_wait([])") # No line num, just a pause point
                         processed_script_lines.append(f"{leading_whitespace}wait({T/1000})")
+
+            elif low.startswith("visa_init"):
+                m = re.match(r'^visa_init\(\s*(.+?)\s*\)$', stripped_line, re.IGNORECASE)
+                if m:
+                    addr = m.group(1)
+                    if not (addr.startswith('"') or addr.startswith("'")):
+                        addr = f'"{addr}"'
+                    processed_line = f"{leading_whitespace}visa_init({addr})"
+                else:
+                    # visa_init GPIB0::5::INSTR 简写形式
+                    arg = stripped_line[len("visa_init"):].strip()
+                    if arg:
+                        processed_line = f'{leading_whitespace}visa_init("{arg}")'
+
+            elif low.startswith("visa_query"):
+                m = re.match(r'^visa_query\(\s*(.+?)\s*\)$', stripped_line, re.IGNORECASE)
+                if m:
+                    cmd = m.group(1)
+                    if not (cmd.startswith('"') or cmd.startswith("'")):
+                        cmd = f'"{cmd}"'
+                    processed_line = f"{leading_whitespace}visa_query({cmd})"
+                else:
+                    arg = stripped_line[len("visa_query"):].strip()
+                    if arg:
+                        processed_line = f'{leading_whitespace}visa_query("{arg}")'
+
+            elif low.startswith("visa_write"):
+                m = re.match(r'^visa_write\(\s*(.+?)\s*\)$', stripped_line, re.IGNORECASE)
+                if m:
+                    cmd = m.group(1)
+                    if not (cmd.startswith('"') or cmd.startswith("'")):
+                        cmd = f'"{cmd}"'
+                    processed_line = f"{leading_whitespace}visa_write({cmd})"
+                else:
+                    arg = stripped_line[len("visa_write"):].strip()
+                    if arg:
+                        processed_line = f'{leading_whitespace}visa_write("{arg}")'
+
+            elif low.startswith("visa_read"):
+                processed_line = f"{leading_whitespace}visa_read()"
 
             elif low.startswith("wait for any "):
                  m = re.match(r'^wait\s+for\s+any\s+\[(.*?)\]\s+for\s+(.+)$', low)
@@ -2235,6 +2612,17 @@ GUI 控件状态:
     def cell_edit(self):
         if not self.current_cell:
             return
+        
+        # 检查该按钮是否已有打开的编辑窗口
+        cell_id = id(self.current_cell)
+        if cell_id in self.cell_edit_windows:
+            edit_win = self.cell_edit_windows[cell_id]
+            # 如果窗口存在且未关闭,则将其置顶
+            if edit_win.winfo_exists():
+                edit_win.lift()
+                edit_win.focus_force()
+                return
+        
         # ——— 根据主题选配色 ———
         if self.current_color_theme_light:
             # 浅色主题
@@ -2255,6 +2643,9 @@ GUI 控件状态:
 
         cell = self.current_cell
         edit_win = tk.Toplevel(self.root)
+
+
+        
         edit_win.configure(bg=window_bg_color)
         # 将编辑窗口放在屏幕正中心
         edit_win.update_idletasks()
@@ -2271,17 +2662,30 @@ GUI 控件状态:
         # row 1 为多行文本框，设置扩展权重，使其填满剩余垂直空间
         edit_win.rowconfigure(1, weight=1)
 
+        # row 0: 单行文本框 + pin按钮 放在同一行
+        row0_frame = tk.Frame(edit_win, bg=window_bg_color)
+        row0_frame.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
+        row0_frame.columnconfigure(0, weight=1)
+
         # 单行文本框用于编辑显示内容
         single_entry = tk.Entry(
-            edit_win, 
+            row0_frame, 
             width=50,
             bg=text_bg_color,
             fg=text_fg_color,
             insertbackground=cursor_color,  # 光标颜色
             insertborderwidth=1
         )
-        single_entry.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
+        single_entry.grid(row=0, column=0, sticky="ew")
         single_entry.insert(tk.END, self.current_cell.cget("text"))
+
+        # pin 按钮放在 single_entry 右侧
+        pin_button = tk.Button(row0_frame, text="📍", width=2,
+                               command=lambda: self.toggle_pin(cell_id, edit_win, pin_button),
+                               bg=btn_bg_color, fg=btn_fg_color,
+                               activebackground=btn_bg_color, activeforeground=btn_fg_color)
+        pin_button.grid(row=0, column=1, padx=(5, 0))
+
         # 获取单行文本框中的内容，设置为窗口标题
         current_single_line_text = single_entry.get()
         if current_single_line_text == '':
@@ -2475,13 +2879,23 @@ GUI 控件状态:
         btn_send_row.pack(side=tk.LEFT, padx=5)
         btn_send_row_move = tk.Button(left_frame, text="Send & Next(F5)", command=send_current_row_and_move,bg=btn_bg_color, fg=btn_fg_color,activebackground=btn_bg_color, activeforeground=btn_fg_color)
         btn_send_row_move.pack(side=tk.LEFT, padx=5)
-        btn_send_all = tk.Button(left_frame, text="Send All(F9)", command=lambda: self.send_all(multi_text.get("1.0", tk.END)),bg=btn_bg_color, fg=btn_fg_color,activebackground=btn_bg_color, activeforeground=btn_fg_color)
+        def toggle_send_all():
+            if btn_send_all.cget("text") == "Send All(F9)":
+                self.cell_send_all_stop = False
+                btn_send_all.config(text="Stop(F9)")
+                lines = multi_text.get("1.0", tk.END)
+                self.send_all_with_callback(lines, lambda: btn_send_all.config(text="Send All(F9)"))
+            else:
+                self.cell_send_all_stop = True
+                btn_send_all.config(text="Send All(F9)")
+
+        btn_send_all = tk.Button(left_frame, text="Send All(F9)", command=toggle_send_all,bg=btn_bg_color, fg=btn_fg_color,activebackground=btn_bg_color, activeforeground=btn_fg_color)
         btn_send_all.pack(side=tk.LEFT, padx=5)
 
         # 给编辑窗口绑定功能键事件
         edit_win.bind("<F1>", lambda event: send_current_row())
         edit_win.bind("<F5>", lambda event: send_current_row_and_move())
-        edit_win.bind("<F9>", lambda event: self.send_all(multi_text.get("1.0", tk.END)))
+        edit_win.bind("<F9>", lambda event: toggle_send_all())
 
         btn_save = tk.Button(right_frame, text="Save", command=lambda: save_action(False),bg=btn_bg_color, fg=btn_fg_color,activebackground=btn_bg_color, activeforeground=btn_fg_color)
         btn_save.pack(side=tk.LEFT, padx=5)
@@ -2503,6 +2917,322 @@ GUI 控件状态:
             context_menu.tk_popup(event.x_root, event.y_root)
 
         multi_text.bind("<Button-3>", show_context_menu)
+
+        # 在创建编辑窗口后,将其添加到字典中
+        self.cell_edit_windows[cell_id] = edit_win
+        
+        # 在窗口关闭时从字典中移除
+        edit_win.protocol("WM_DELETE_WINDOW", lambda: self.on_edit_window_close(cell_id))
+
+    def toggle_pin(self, cell_id, window, pin_button):
+        """切换窗口置顶状态"""
+        current_state = window.attributes('-topmost')
+        new_state = not current_state
+        window.attributes('-topmost', new_state)
+        
+        # 更新按钮图标
+        if new_state:
+            pin_button.config(text="📌")  # 已置顶
+        else:
+            pin_button.config(text="📍")  # 未置顶
+    
+    def on_edit_window_close(self, cell_id):
+        """当编辑窗口关闭时,从字典中移除"""
+        if cell_id in self.cell_edit_windows:
+            edit_win = self.cell_edit_windows[cell_id]
+            edit_win.attributes('-topmost', False)  # 先取消置顶
+            if edit_win.winfo_exists():
+                edit_win.destroy()
+            del self.cell_edit_windows[cell_id]
+            
+    def _script_visa_init(self, address):
+        try:
+            visa_res = self.rm.open_resource(address, access_mode=AccessModes.shared_lock, open_timeout=3000)
+            self.psu = VisaComm(visa_res)
+            self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA 初始化成功: {address}\n"))
+        except Exception as e:
+            self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA 初始化失败: {e}\n"))
+        self.tk_safe(lambda: self.text_area.see(tk.END))
+
+    def _script_visa_query(self, cmd):
+        if not self.psu:
+            self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
+            return None
+        try:
+            resp = self.psu.query(cmd)
+            self.tk_safe(lambda: self.text_area.insert(tk.END, f">>> VISA QUERY: {cmd}\n{resp}\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
+            return resp
+        except Exception as e:
+            self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA QUERY 错误: {e}\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
+            return None
+
+    def _script_visa_write(self, cmd):
+        if not self.psu:
+            self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
+            return
+        try:
+            self.psu.write(cmd)
+            self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA WRITE: {cmd}\n"))
+        except Exception as e:
+            self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA WRITE 错误: {e}\n"))
+        self.tk_safe(lambda: self.text_area.see(tk.END))
+
+    def _script_visa_read(self):
+        if not self.psu:
+            self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
+            return None
+        try:
+            resp = self.psu.read()
+            self.tk_safe(lambda: self.text_area.insert(tk.END, f">>> VISA READ:\n{resp}\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
+            return resp
+        except Exception as e:
+            self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA READ 错误: {e}\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
+            return None
+
+    def _try_execute_cell_command(self, command):
+        """尝试执行按钮区域的自定义函数命令，成功返回 True，否则返回 False"""
+        low = command.strip().lower()
+        
+        # show_str("xxx")
+        m = re.match(r'^show_str\((.+)\)$', command.strip())
+        if m:
+            arg = m.group(1).strip().strip('"').strip("'")
+            self.tk_safe(lambda: self.text_area.insert(tk.END, arg))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
+            return True
+        
+        # show_date_time()
+        if low == "show_date_time()":
+            self.tk_safe(lambda: self.text_area.insert(tk.END, str(datetime.now()) + "\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
+            return True
+        
+        # set_port("COMx")
+        m = re.match(r'^set_port\((.+)\)$', command.strip())
+        if m:
+            port_str = m.group(1).strip().strip('"').strip("'")
+            self.tk_safe(lambda: self.port_menu.set(port_str))
+            return True
+        
+        # set_baudrate(115200)
+        m = re.match(r'^set_baudrate\((.+)\)$', command.strip())
+        if m:
+            baud_str = m.group(1).strip().strip('"').strip("'")
+            self.tk_safe(lambda: self.baud_var.set(baud_str))
+            return True
+        
+        # connect_serial()
+        if low == "connect_serial()":
+            self.tk_safe(lambda: self.connect_serial())
+            return True
+        
+        # close_serial()
+        if low == "close_serial()":
+            self.tk_safe(lambda: self.close_serial())
+            return True
+        
+        # toggle_serial()
+        if low == "toggle_serial()":
+            self.tk_safe(lambda: self.toggle_serial())
+            return True
+        
+        # open power shell / open_powershell()
+        if low == "open power shell" or low == "open_powershell()":
+            self.open_powershell()
+            return True
+        
+        # power shell send xxx / powershell_send("xxx")
+        if low.startswith("power shell send "):
+            cmd = command.strip()[len("power shell send "):]
+            self.powershell_send(cmd)
+            return True
+        m = re.match(r'^powershell_send\((.+)\)$', command.strip())
+        if m:
+            cmd = m.group(1).strip().strip('"').strip("'")
+            self.powershell_send(cmd)
+            return True
+        
+        # visa_init(address)
+        if low.startswith("visa_init"):
+            m = re.match(r'visa_init\(\s*([^\)]+?)\s*\)', command.strip(), re.IGNORECASE)
+            if m:
+                addr = m.group(1)
+                try:
+                    visa_res = self.rm.open_resource(addr, access_mode=AccessModes.shared_lock, open_timeout=3000)
+                    self.psu = VisaComm(visa_res)
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA 初始化成功: {addr}\n"))
+                except Exception as e:
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA 初始化失败: {e}\n"))
+            else:
+                self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_init 格式错误，应为 visa_init(ADDRESS)\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
+            return True
+        
+        # visa_query(command)
+        if low.startswith("visa_query"):
+            if not self.psu:
+                self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
+            else:
+                m = re.match(r'visa_query\(\s*(.+?)\s*\)', command.strip(), re.IGNORECASE)
+                if m:
+                    cmd = m.group(1)
+                    try:
+                        resp = self.psu.query(cmd)
+                        self.tk_safe(lambda: self.text_area.insert(tk.END, f">>> VISA QUERY: {cmd}\n{resp}\n"))
+                    except Exception as e:
+                        self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA QUERY 错误: {e}\n"))
+                else:
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_query 格式错误，应为 visa_query(COMMAND)\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
+            return True
+        
+        # visa_write(command)
+        if low.startswith("visa_write"):
+            if not self.psu:
+                self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
+            else:
+                m = re.match(r'visa_write\(\s*(.+?)\s*\)', command.strip(), re.IGNORECASE)
+                if m:
+                    cmd = m.group(1)
+                    try:
+                        self.psu.write(cmd)
+                        self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA WRITE: {cmd}\n"))
+                    except Exception as e:
+                        self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA WRITE 错误: {e}\n"))
+                else:
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_write 格式错误，应为 visa_write(COMMAND)\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
+            return True
+        
+        # visa_read()
+        if low.startswith("visa_read"):
+            if not self.psu:
+                self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
+            else:
+                try:
+                    resp = self.psu.read()
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, f">>> VISA READ:\n{resp}\n"))
+                except Exception as e:
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA READ 错误: {e}\n"))
+            self.tk_safe(lambda: self.text_area.see(tk.END))
+            return True
+        
+        return False
+
+    def send_all_with_callback(self, data, on_complete):
+        """带完成回调的 send_all，支持通过 cell_send_all_stop 中断"""
+        all_lines = data.splitlines()
+        self._send_next_command_with_stop(all_lines, 0, on_complete)
+
+    def _send_next_command_with_stop(self, all_lines, index, on_complete):
+        """递归执行命令，支持 stop 中断"""
+        if self.cell_send_all_stop:
+            on_complete()
+            return
+
+        if index >= len(all_lines):
+            on_complete()
+            return
+
+        command = all_lines[index].strip()
+        if not command:
+            self._send_next_command_with_stop(all_lines, index + 1, on_complete)
+            return
+
+        if re.match(r'^\s*#', command):
+            self._send_next_command_with_stop(all_lines, index + 1, on_complete)
+            return
+
+        # 处理 "wait for <substring> for <seconds>"
+        match_wait_for = re.match(r'^wait for (.+) for (\d+)$', command, re.IGNORECASE)
+        if match_wait_for:
+            wait_str = match_wait_for.group(1)
+            wait_time = int(match_wait_for.group(2))
+            self.wait_for_initial_index = self.tk_safe(lambda: self.text_area.index("end-1c"))
+            start_time = time.time()
+            self.auto_delete_lock_count += 1
+
+            def check_received():
+                if self.cell_send_all_stop:
+                    self.auto_delete_lock_count -= 1
+                    on_complete()
+                    return
+                current_index = self.tk_safe(lambda: self.text_area.index("end-1c"))
+                if self.tk_safe(lambda: self.text_area.compare(self.wait_for_initial_index, ">", current_index)):
+                    self.auto_delete_lock_count -= 1
+                    self._send_next_command_with_stop(all_lines, index + 1, on_complete)
+                    return
+                self.button_send_wait_for_new_text = self.tk_safe(lambda: self.text_area.get(self.wait_for_initial_index, current_index))
+                if wait_str in self.button_send_wait_for_new_text or (time.time() - start_time >= wait_time):
+                    self.auto_delete_lock_count -= 1
+                    self._send_next_command_with_stop(all_lines, index + 1, on_complete)
+                else:
+                    self.tk_safe(lambda: self.text_area.after(100, check_received))
+
+            check_received()
+            return
+
+        # 处理 "wait <seconds>"
+        match_wait = re.match(r'^wait (\d+)$', command, re.IGNORECASE)
+        if match_wait:
+            wait_time = int(match_wait.group(1)) * 1000
+            self.text_area.after(wait_time, lambda: self._send_next_command_with_stop(all_lines, index + 1, on_complete))
+            return
+
+        # 拦截自定义函数命令
+        if self._try_execute_cell_command(command):
+            self._send_next_command_with_stop(all_lines, index + 1, on_complete)
+            return
+
+        # 发送命令
+        self.send_via_serial(command)
+
+        if index + 1 >= len(all_lines):
+            on_complete()
+            return
+
+        next_command = all_lines[index + 1].strip()
+        if next_command.startswith("wait"):
+            self._send_next_command_with_stop(all_lines, index + 1, on_complete)
+            return
+
+        self.terminal_strs = [s.strip() for s in self.send_all_terminal_entry.get().split(',') if s.strip()]
+        self.over_time_str = self.send_all_over_time_entry.get().strip()
+        if self.terminal_strs and self.over_time_str:
+            try:
+                timeout = float(self.over_time_str)
+            except Exception:
+                timeout = 0
+            if timeout > 0:
+                start_time = time.time()
+                def check_terminal():
+                    if self.cell_send_all_stop:
+                        on_complete()
+                        return
+                    current_index = self.text_area.index("end-1c")
+                    if self.text_area.compare(self.last_send_index, ">", current_index):
+                        on_complete()
+                        return
+                    self.button_send_check_terminal_new_text = self.text_area.get(self.last_send_index, current_index)
+                    if any(term in self.button_send_check_terminal_new_text for term in self.terminal_strs):
+                        self._send_next_command_with_stop(all_lines, index + 1, on_complete)
+                    elif time.time() - start_time >= timeout:
+                        self.text_area.insert(tk.END, "串口未收到设置的等待符号，发送终止，请设置或去掉等待符号。", "red")
+                        self.text_area.yview(tk.END)
+                        on_complete()
+                    else:
+                        self.text_area.after(100, check_terminal)
+                check_terminal()
+                return
+
+        self.text_area.after(100, lambda: self._send_next_command_with_stop(all_lines, index + 1, on_complete))
 
     def send_all(self, data):
         """ 在后台线程中执行命令发送，避免 GUI 窗口卡顿 """
@@ -2533,17 +3263,20 @@ GUI 控件状态:
 
             self.wait_for_initial_index  = self.tk_safe(lambda: self.text_area.index("end-1c"))
             start_time = time.time()
+            self.auto_delete_lock_count += 1
 
             def check_received():
                 current_index = self.tk_safe(lambda: self.text_area.index("end-1c"))
                 if self.tk_safe(lambda: self.text_area.compare(self.wait_for_initial_index, ">", current_index)):
                     print("wait for x for t error, initial index bigger than current index, wait for skipped.")
+                    self.auto_delete_lock_count -= 1
                     self.tk_safe(lambda: messagebox.showerror("commands running error","wait for x for t error, initial index bigger than current index, wait for skipped."))
                     return
                         
                 self.button_send_wait_for_new_text = self.tk_safe(lambda: self.text_area.get(self.wait_for_initial_index, current_index))
 
                 if wait_str in self.button_send_wait_for_new_text or (time.time() - start_time >= wait_time):
+                    self.auto_delete_lock_count -= 1
                     self._send_next_command(all_lines, index + 1)  # 继续执行下一行
                 else:
                     self.tk_safe(lambda: self.text_area.after(100, check_received))  # 100ms 后再次检查
@@ -2556,6 +3289,11 @@ GUI 控件状态:
         if match_wait:
             wait_time = int(match_wait.group(1)) * 1000  # 转换为毫秒
             self.text_area.after(wait_time, lambda: self._send_next_command(all_lines, index + 1))
+            return
+
+        # 拦截自定义函数命令
+        if self._try_execute_cell_command(command):
+            self._send_next_command(all_lines, index + 1)
             return
 
         # 发送命令
@@ -2662,86 +3400,6 @@ GUI 控件状态:
             self.tk_safe(lambda: messagebox.showwarning("警告", "串口或 SSH 未连接"))
             return
         key = data.strip().lower()
-        # 拦截打开 PowerShell
-        if key == "open power shell":
-            self.open_powershell()
-            return
-        # 拦截向 PowerShell 发送命令
-        if key.startswith("power shell send "):
-            cmd = data.strip()[len("power shell send "):]
-            self.powershell_send(cmd)
-            return
-        # ── VISA 拦截 ──
-        # 1) 初始化 VISA 设备
-        if key.startswith("visa_init"):
-            m = re.match(r'visa_init\(\s*([^\)]+?)\s*\)', data, re.IGNORECASE)
-            if m:
-                addr = m.group(1)
-                try:
-                    # 使用 shared_lock 模式，等待解锁时间设为 3000 ms
-                    visa_res = self.rm.open_resource(
-                        addr,
-                        access_mode=AccessModes.shared_lock,  # ⑤ 共享锁
-                        open_timeout=3000                    # ⑥ 等待 3 s
-                    )
-                    self.psu = VisaComm(visa_res)
-                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA 初始化成功: {addr}\n"))
-                except Exception as e:
-                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA 初始化失败: {e}\n"))
-            else:
-                self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_init 格式错误，应为 visa_init(ADDRESS)\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
-            return
-
-        # 2) QUERY
-        if key.startswith("visa_query"):
-            if not self.psu:
-                self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
-            else:
-                m = re.match(r'visa_query\(\s*(.+?)\s*\)', data.strip(), re.IGNORECASE)
-                if m:
-                    cmd = m.group(1)
-                    try:
-                        resp = self.psu.query(cmd)
-                        self.tk_safe(lambda: self.text_area.insert(tk.END, f">>> VISA QUERY: {cmd}\n{resp}\n"))
-                    except Exception as e:
-                        self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA QUERY 错误: {e}\n"))
-                else:
-                    self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_query 格式错误，应为 visa_query(COMMAND)\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
-            return
-
-        # 3) WRITE
-        if key.startswith("visa_write"):
-            if not self.psu:
-                self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
-            else:
-                m = re.match(r'visa_write\(\s*(.+?)\s*\)', data.strip(), re.IGNORECASE)
-                if m:
-                    cmd = m.group(1)
-                    try:
-                        self.psu.write(cmd)
-                        self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA WRITE: {cmd}\n"))
-                    except Exception as e:
-                        self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA WRITE 错误: {e}\n"))
-                else:
-                    self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_write 格式错误，应为 visa_write(COMMAND)\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
-            return
-
-        # 4) READ
-        if key.startswith("visa_read"):
-            if not self.psu:
-                self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
-            else:
-                try:
-                    resp = self.psu.read()
-                    self.tk_safe(lambda: self.text_area.insert(tk.END, f">>> VISA READ:\n{resp}\n"))
-                except Exception as e:
-                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA READ 错误: {e}\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
-            return
-        
         # ========== 解析 \xA0\x01\x01\xA2 格式 ==========
         if "\\x" in data:
             try:
@@ -2871,8 +3529,8 @@ GUI 控件状态:
             self.send_btn.config(state=tk.DISABLED) #发送
             self.single_loop_send_btn.config(state=tk.DISABLED) #单行循环
             #self.start_button.config(state=tk.DISABLED) # 开始运行按钮，新增了脚本对COM口的操作，此行注释掉
-            self.stop_button.config(state=tk.DISABLED)
-            self.pause_button.config(state=tk.DISABLED)
+            #self.stop_button.config(state=tk.DISABLED)
+            #self.pause_button.config(state=tk.DISABLED)
             self.toggle_port_btn.config(text="打开串口")
             self.port_menu.config(state="readonly")
             self.baud_menu.config(state="readonly")
@@ -2881,9 +3539,9 @@ GUI 控件状态:
             self.tk_safe(lambda: self.text_area.insert(tk.END, "串口已关闭\n"))
             self.tk_safe(lambda: self.text_area.yview(tk.END))
 
-            if self.loop_sending:
-                self.loop_sending = False
-                self.single_loop_send_btn.config(text="单行循环")
+            #if self.loop_sending:
+                #self.loop_sending = False
+                #self.single_loop_send_btn.config(text="单行循环")
 
     def open_ssh_config_window(self):
         win = tk.Toplevel(self.root)
@@ -3396,7 +4054,7 @@ GUI 控件状态:
         """
         if self.auto_clear_onoff.get():
             # 如果wait for /wait for any函数将该标志位关闭，则不进行自动删除，避免引起index变化导致的问题
-            if self.allow_auto_delete:
+            if self.auto_delete_lock_count == 0:
                 self.auto_clear_all_content = self.tk_safe(lambda: self.text_area.get("1.0", "end-1c"))
                 lenth_total_chars = len(self.auto_clear_all_content)
                 if lenth_total_chars > 1000000:
@@ -3616,7 +4274,7 @@ GUI 控件状态:
             widget.configure(background=window_bg_color, foreground=text_fg_color) #, insertbackground=cursor_color
             
         # 设置所有Button的颜色
-        for widget in [self.show_keys_btn, self.show_script_btn, self.toggle_sidebar_btn,self.theme_btn,
+        for widget in [self.show_keys_btn, self.show_script_btn, self.toggle_sidebar_btn,self.theme_btn,self.regex_monitor_btn,
                         self.send_btn, self.single_loop_send_btn, self.clear_screen_btn,
                         self.start_button, self.pause_button, self.stop_button,
                         self.refresh_btn, self.toggle_port_btn,self.ssh_config_btn, self.square_button,self.script_path_button,self.multi_script_path_button,
