@@ -1,3 +1,10 @@
+2026.5.27
+1、将所有messagebox的弹窗都置顶了，不会被其他置顶的窗口挡住。
+
+2026.5.26
+1、修复了按键区域的send和send and next无法执行自定义函数的问题，之前只有send all会执行，修复后按键区域的三个发送按钮都会识别出自定义函数并执行。
+
+
 2026.5.15
 
 1、增加了一个脚本区域的自定义函数send_and_get()，详情参见“07-search for content matches pattern.txt”。
