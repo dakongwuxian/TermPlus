@@ -1014,7 +1014,6 @@ class SerialGUI:
         self.button_send_wait_for_new_text = None
         self.script_wait_for_new_text = None
         self.script_wait_for_any_new_text = None
-        self.auto_clear_all_content = None
         self.auto_save_new_text = None
         # ─── 新增：PowerShell 进程句柄 ───
         self.ps_proc = None
@@ -1285,7 +1284,7 @@ class SerialGUI:
             last_shown = int(seconds)
             if show_countdown:
                 countdown_suffix = f" ({last_shown})"
-                self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+                self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.insert(f"{ln}.end", cs))
             try:
                 while elapsed < seconds:
                     self.pause_event.wait()
@@ -1298,12 +1297,14 @@ class SerialGUI:
                         if remaining != last_shown:
                             old_suffix = countdown_suffix
                             countdown_suffix = f" ({remaining})"
-                            self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(old_suffix)}c", f"{line_num}.end"))
-                            self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+                            self.tk_safe(lambda os=old_suffix, cs=countdown_suffix, ln=line_num: (
+                                self.multi_loop_text.delete(f"{ln}.end - {len(os)}c", f"{ln}.end"),
+                                self.multi_loop_text.insert(f"{ln}.end", cs)
+                            ))
                             last_shown = remaining
             finally:
                 if show_countdown and countdown_suffix:
-                    self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(countdown_suffix)}c", f"{line_num}.end"))
+                    self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.delete(f"{ln}.end - {len(cs)}c", f"{ln}.end"))
 
         def wait_for(target_string, over_time):
             if target_string == '':
@@ -1327,22 +1328,26 @@ class SerialGUI:
             last_shown = int(over_time)
             if show_countdown:
                 countdown_suffix = f" ({last_shown})"
-                self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+                self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.insert(f"{ln}.end", cs))
 
             try:
                 while time.time() - start_time < over_time:
                     if self.loop_stop:
                         raise StopLoopException("循环已停止")
-                    current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
-                    if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for get function find last index bigger than current index. wait for function skipped"), parent=self.root)
-
+                    def _wait_for_check(li=last_index):
+                        ci = self.text_area.index("end-1c")
+                        if self.text_area.compare(li, ">", ci):
+                            return "error", "", ci
+                        if self.text_area.compare(li, "<", ci):
+                            return "new", self.text_area.get(li, ci), ci
+                        return "same", "", ci
+                    status, val, new_index = self.tk_safe(_wait_for_check)
+                    if status == "error":
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for get function find last index bigger than current index. wait for function skipped", parent=self.root))
                         return False
-                    if self.tk_safe(lambda:self.text_area.compare(last_index, "<", current_index)):    
-                        try:
-                            script_wait_for_new_text = self.tk_safe(lambda:self.text_area.get(last_index, current_index),wait = True)
-                        except Exception as e:
-                            script_wait_for_new_text = ""
+                    if status == "new":
+                        script_wait_for_new_text = val
+                        last_index = new_index
                     if target_string in script_wait_for_new_text:
                         return True
                     time.sleep(0.1)
@@ -1353,25 +1358,16 @@ class SerialGUI:
                         if remaining != last_shown:
                             old_suffix = countdown_suffix
                             countdown_suffix = f" ({remaining})"
-                            self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(old_suffix)}c", f"{line_num}.end"))
-                            self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+                            self.tk_safe(lambda os=old_suffix, cs=countdown_suffix, ln=line_num: (
+                                self.multi_loop_text.delete(f"{ln}.end - {len(os)}c", f"{ln}.end"),
+                                self.multi_loop_text.insert(f"{ln}.end", cs)
+                            ))
                             last_shown = remaining
 
-                    try:
-                        if self.tk_safe(lambda:self.text_area.compare("end-1c", "==", "1.0")) and target_string != "":
-                            last_index = "1.0"
-                        else:
-                            last_index = self.tk_safe(lambda:self.text_area.index(f"{current_index} - {max(1, len(target_string))}c"))
-                            if self.tk_safe(lambda:self.text_area.compare(last_index, "<", start_index)):
-                                last_index = start_index
-                    except Exception:
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for index auto change error 2"), parent=self.root)
-
-                        return False
             finally:
                 self.auto_delete_lock_count -= 1
                 if show_countdown and countdown_suffix:
-                    self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(countdown_suffix)}c", f"{line_num}.end"))
+                    self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.delete(f"{ln}.end - {len(cs)}c", f"{ln}.end"))
             return False
 
         def wait_for_any(target_list, timeout):
@@ -1393,7 +1389,7 @@ class SerialGUI:
             last_shown = int(timeout)
             if show_countdown:
                 countdown_suffix = f" ({last_shown})"
-                self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+                self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.insert(f"{ln}.end", cs))
 
             try:
                 start_time = time.time()
@@ -1411,16 +1407,20 @@ class SerialGUI:
                         return None
                     if time.time() - start_time >= timeout:
                         return None
-                    current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
-                    if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
+                    def _wait_for_any_check(li=last_index):
+                        ci = self.text_area.index("end-1c")
+                        if self.text_area.compare(li, ">", ci):
+                            return "error", "", ci
+                        if self.text_area.compare(li, "<", ci):
+                            return "new", self.text_area.get(li, ci), ci
+                        return "same", "", ci
+                    status, val, new_index = self.tk_safe(_wait_for_any_check)
+                    if status == "error":
                         self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait for any index error, last index bigger than current index. wait for any skipped."), parent=self.root)
-
                         return None
-                    if self.tk_safe(lambda:self.text_area.compare(last_index, "<", current_index)):
-                        try:
-                            self.script_wait_for_any_new_text = self.tk_safe(lambda:self.text_area.get(last_index, current_index))
-                        except Exception as e:
-                            self.script_wait_for_any_new_text = ""
+                    if status == "new":
+                        self.script_wait_for_any_new_text = val
+                        last_index = new_index  # ci already consumed in _wait_for_any_check
                     for target in target_list:
                         if target in self.script_wait_for_any_new_text:
                             return target
@@ -1432,25 +1432,16 @@ class SerialGUI:
                         if remaining != last_shown:
                             old_suffix = countdown_suffix
                             countdown_suffix = f" ({remaining})"
-                            self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(old_suffix)}c", f"{line_num}.end"))
-                            self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+                            self.tk_safe(lambda os=old_suffix, cs=countdown_suffix, ln=line_num: (
+                                self.multi_loop_text.delete(f"{ln}.end - {len(os)}c", f"{ln}.end"),
+                                self.multi_loop_text.insert(f"{ln}.end", cs)
+                            ))
                             last_shown = remaining
 
-                    try:
-                        if self.tk_safe(lambda:self.text_area.compare("end-1c", "==", "1.0")) and length_of_longest_string > 0:
-                            last_index = "1.0"
-                        else:
-                            last_index = self.tk_safe(lambda:self.text_area.index(f"{current_index} - {max(1, length_of_longest_string)}c"))
-                            if self.tk_safe(lambda:self.text_area.compare(last_index, "<", start_index)):
-                                last_index = start_index
-                    except Exception:
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for_any index auto change error 2"), parent=self.root)
-
-                        return None
             finally:
                 self.auto_delete_lock_count -= 1
                 if show_countdown and countdown_suffix:
-                    self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(countdown_suffix)}c", f"{line_num}.end"))
+                    self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.delete(f"{ln}.end - {len(cs)}c", f"{ln}.end"))
 
         def show_str(string_to_show):
             if string_to_show == "":
@@ -1483,7 +1474,7 @@ class SerialGUI:
             last_shown = int(over_time)
             if show_countdown:
                 countdown_suffix = f" ({last_shown})"
-                self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+                self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.insert(f"{ln}.end", cs))
 
             try:
                 while True:
@@ -1493,13 +1484,14 @@ class SerialGUI:
                     if time.time() - start_time >= over_time:
                         break
                     # 获取新内容
-                    current_index = self.tk_safe(lambda: self.text_area.index("end-1c"))
-                    if self.tk_safe(lambda: self.text_area.compare(last_index, "<", current_index)):
-                        try:
-                            new_text = self.tk_safe(lambda: self.text_area.get(last_index, current_index))
-                            collected_text += new_text
-                        except Exception:
-                            pass
+                    def _send_and_get_check(li=last_index):
+                        ci = self.text_area.index("end-1c")
+                        if self.text_area.compare(li, "<", ci):
+                            return ci, self.text_area.get(li, ci)
+                        return ci, ""
+                    current_index, new_text = self.tk_safe(_send_and_get_check)
+                    if new_text:
+                        collected_text += new_text
                         last_index = current_index
                     # 检查停止条件：wait_str
                     if wait_str and wait_str in collected_text:
@@ -1514,8 +1506,10 @@ class SerialGUI:
                         if remaining != last_shown:
                             old_suffix = countdown_suffix
                             countdown_suffix = f" ({remaining})"
-                            self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(old_suffix)}c", f"{line_num}.end"))
-                            self.tk_safe(lambda: self.multi_loop_text.insert(f"{line_num}.end", countdown_suffix))
+                            self.tk_safe(lambda os=old_suffix, cs=countdown_suffix, ln=line_num: (
+                                self.multi_loop_text.delete(f"{ln}.end - {len(os)}c", f"{ln}.end"),
+                                self.multi_loop_text.insert(f"{ln}.end", cs)
+                            ))
                             last_shown = remaining
                     time.sleep(0.1)
                 # 执行正则匹配
@@ -1536,7 +1530,7 @@ class SerialGUI:
             finally:
                 self.auto_delete_lock_count -= 1
                 if show_countdown and countdown_suffix:
-                    self.tk_safe(lambda: self.multi_loop_text.delete(f"{line_num}.end - {len(countdown_suffix)}c", f"{line_num}.end"))
+                    self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.delete(f"{ln}.end - {len(cs)}c", f"{ln}.end"))
             return last_match
 
         def show_date_time():
@@ -4101,8 +4095,8 @@ GUI 控件状态:
         if self.auto_clear_onoff.get():
             # 如果wait for /wait for any函数将该标志位关闭，则不进行自动删除，避免引起index变化导致的问题
             if self.auto_delete_lock_count == 0:
-                self.auto_clear_all_content = self.tk_safe(lambda: self.text_area.get("1.0", "end-1c"))
-                lenth_total_chars = len(self.auto_clear_all_content)
+                auto_clear_all_content = self.tk_safe(lambda: self.text_area.get("1.0", "end-1c"))
+                lenth_total_chars = len(auto_clear_all_content)
                 if lenth_total_chars > 1000000:
                     print("auto delete triggered")
                     # 获取当前总行数
