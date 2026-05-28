@@ -1,7 +1,5 @@
 
-由于公司内部杀毒软件屏蔽exe，后续直接发布pyw和bat文件，使用TermPlus前需要在本地电脑上安装python和依赖库，操作如下。
-
-1、将本文件夹所有文件复制到需要使用的电脑
+1、下载https://github.com/dakongwuxian/TermPlus/releases/tag/Install_Files
 
 2、安装python-3.13.3.amd64.exe，尽量勾选可勾选的内容
 
@@ -16,8 +14,10 @@ packages文件夹
 
 ）
 
-4、双击TermPlus_xxxx.bat即可运行TermPlus，效果跟启动TermPlus.exe是相同的，但不会被杀毒软件的屏蔽
+4、下载https://github.com/dakongwuxian/TermPlus/releases的最新的TermPlus.pyw和TermPlus_xxxxxxxx.bat
+
+5、双击TermPlus_xxxx.bat即可运行TermPlus
 
 （需要保留TermPlus.pyw和boot_TermPlus_2026xxxx.bat这2个文件，boot_TermPlus_2026xxxx.bat可以被重命名或创建快捷方式，后缀名不能修改）
 
-老版本的exe可以在history version文件夹找到，不推荐使用。
+老版本的exe不推荐使用。也可以自行使用TermPlus.py压制exe文件。
