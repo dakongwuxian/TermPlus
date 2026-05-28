@@ -406,7 +406,7 @@ class SerialGUI:
         self.about_menu.add_command(label="Developed by Xian.Wu", state="disabled")
         self.about_menu.add_command(label="dakongwuxian@gmail.com", state="disabled")
 
-        self.about_menu.add_command(label="Version.20260409", state="disabled")
+        self.about_menu.add_command(label="Version.20260527", state="disabled")
 
         self.about_menu.add_command(label="Buy me a coffee ☕",command=self.show_about_window,state="normal")
         
@@ -1064,7 +1064,8 @@ class SerialGUI:
 
         # 弹出错误提示，但不中断程序
         try:
-            messagebox.showerror("程序异常", f"发生异常:\n{val}")
+            messagebox.showerror("程序异常", f"发生异常:\n{val}", parent=self.root)
+
         except Exception:
             # 避免在没有主窗口或多线程时弹窗崩溃
             pass
@@ -1118,7 +1119,8 @@ class SerialGUI:
         dir_path = self.multi_script_path_entry.get().strip()
         file_name = self.multi_script_file_combo.get().strip()
         if not dir_path or not file_name:
-            messagebox.showwarning("警告", "请选择脚本路径和脚本文件")
+            messagebox.showwarning("警告", "请选择脚本路径和脚本文件", parent=self.root)
+
             return
         full_path = os.path.join(dir_path, file_name)
         try:
@@ -1130,7 +1132,8 @@ class SerialGUI:
                 self.multi_loop_text.insert("1.0", content)
                 self.multi_loop_txt_filepath = full_path
         except Exception as e:
-            messagebox.showerror("错误", f"加载脚本失败：{e}")
+            messagebox.showerror("错误", f"加载脚本失败：{e}", parent=self.root)
+
             return
 
     # 保存 按键
@@ -1143,9 +1146,11 @@ class SerialGUI:
             try:
                 with open(self.multi_loop_txt_filepath, "w", encoding="utf-8") as f:
                     f.write(self.multi_loop_text.get("1.0", tk.END))
-                messagebox.showinfo("提示", "保存成功")
+                messagebox.showinfo("提示", "保存成功", parent=self.root)
+
             except Exception as e:
-                messagebox.showerror("错误", f"保存文件失败: {e}")
+                messagebox.showerror("错误", f"保存文件失败: {e}", parent=self.root)
+
         else:
             # 若之前未指定路径，则调用另存为功能
             self.save_multi_loop_file_as()
@@ -1172,10 +1177,12 @@ class SerialGUI:
                     self.multi_script_file_combo.config(values=current_values)
                 # 将当前选中项设置为新保存的文件
                 self.multi_script_file_combo.set(file_name)
-                messagebox.showinfo("提示", "保存成功")
+                messagebox.showinfo("提示", "保存成功", parent=self.root)
+
 
             except Exception as e:
-                messagebox.showerror("错误", f"保存文件失败: {e}")
+                messagebox.showerror("错误", f"保存文件失败: {e}", parent=self.root)
+
 
     # 根据窗口名文本框更新窗口名
     def update_window_title(self, event=None):
@@ -1300,10 +1307,12 @@ class SerialGUI:
 
         def wait_for(target_string, over_time):
             if target_string == '':
-                self.tk_safe(lambda: messagebox.showwarning("Warning", "wait for must have a target string."))
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "wait for must have a target string."), parent=self.root)
+
                 return False
             if over_time <= 0:
-                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."))
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."), parent=self.root)
+
                 return False
 
             self.auto_delete_lock_count += 1
@@ -1326,7 +1335,8 @@ class SerialGUI:
                         raise StopLoopException("循环已停止")
                     current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
                     if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for get function find last index bigger than current index. wait for function skipped"))
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for get function find last index bigger than current index. wait for function skipped"), parent=self.root)
+
                         return False
                     if self.tk_safe(lambda:self.text_area.compare(last_index, "<", current_index)):    
                         try:
@@ -1355,7 +1365,8 @@ class SerialGUI:
                             if self.tk_safe(lambda:self.text_area.compare(last_index, "<", start_index)):
                                 last_index = start_index
                     except Exception:
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for index auto change error 2"))
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for index auto change error 2"), parent=self.root)
+
                         return False
             finally:
                 self.auto_delete_lock_count -= 1
@@ -1365,10 +1376,12 @@ class SerialGUI:
 
         def wait_for_any(target_list, timeout):
             if not target_list:
-                self.tk_safe(lambda: messagebox.showwarning("Warning", "wait_for_any must have a non-empty target list."))
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "wait_for_any must have a non-empty target list."), parent=self.root)
+
                 return None
             if timeout <= 0:
-                self.tk_safe(lambda: messagebox.showwarning("Warning", "Timeout must be positive."))
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "Timeout must be positive."), parent=self.root)
+
                 return None
 
             self.auto_delete_lock_count += 1
@@ -1400,7 +1413,8 @@ class SerialGUI:
                         return None
                     current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
                     if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait for any index error, last index bigger than current index. wait for any skipped."))
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait for any index error, last index bigger than current index. wait for any skipped."), parent=self.root)
+
                         return None
                     if self.tk_safe(lambda:self.text_area.compare(last_index, "<", current_index)):
                         try:
@@ -1430,7 +1444,8 @@ class SerialGUI:
                             if self.tk_safe(lambda:self.text_area.compare(last_index, "<", start_index)):
                                 last_index = start_index
                     except Exception:
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for_any index auto change error 2"))
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for_any index auto change error 2"), parent=self.root)
+
                         return None
             finally:
                 self.auto_delete_lock_count -= 1
@@ -1439,7 +1454,8 @@ class SerialGUI:
 
         def show_str(string_to_show):
             if string_to_show == "":
-                self.tk_safe(lambda: messagebox.showerror("函数错误", "show_str函数的输入值不能为空."))
+                self.tk_safe(lambda: messagebox.showerror("函数错误", "show_str函数的输入值不能为空."), parent=self.root)
+
                 return
             self.tk_safe(lambda:self.text_area.insert(tk.END, string_to_show))
             self.tk_safe(lambda:self.text_area.see(tk.END))
@@ -1539,7 +1555,8 @@ class SerialGUI:
             if line_amount<1:
                 return None
             if over_time <= 0:
-                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."))
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."), parent=self.root)
+
                 return None
 
             self.auto_delete_lock_count += 1
@@ -1555,7 +1572,8 @@ class SerialGUI:
                     current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
                     if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
                         #print(f"get_future_lines function failed due to last index bigger than current index.\n")
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index."))
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index."), parent=self.root)
+
                         return None
                     if self.tk_safe(lambda:self.text_area.compare(last_index, "==", current_index)):
                         self.script_wait_for_new_text = ""
@@ -1580,10 +1598,12 @@ class SerialGUI:
 
         def get_future_lines_till_str_or_overtime(end_str,over_time):
             if end_str == '':
-                self.tk_safe(lambda: messagebox.showwarning("Warning", "end_str must not be empty."))
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "end_str must not be empty."), parent=self.root)
+
                 return None
             if over_time <= 0:
-                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."))
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."), parent=self.root)
+
                 return None
 
             self.auto_delete_lock_count += 1
@@ -1599,7 +1619,8 @@ class SerialGUI:
                     current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
                     if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
                         #print(f"get_future_lines function failed due to last index bigger than current index.\n")
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index."))
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index."), parent=self.root)
+
                         return None
                     if self.tk_safe(lambda:self.text_area.compare(last_index, "==", current_index)):
                         self.script_wait_for_new_text = ""
@@ -1626,14 +1647,16 @@ class SerialGUI:
             try:
                 self.tk_safe(lambda: self.port_menu.set(port_str))
             except Exception as e:
-                self.tk_safe(lambda: messagebox.showerror("错误", f"设置端口失败: {e}"))
+                self.tk_safe(lambda: messagebox.showerror("错误", f"设置端口失败: {e}"), parent=self.root)
+
 
         def set_baudrate(baud):
             baud_str = str(baud)
             try:
                 self.tk_safe(lambda: self.baud_var.set(baud_str))
             except Exception as e:
-                self.tk_safe(lambda: messagebox.showerror("错误", f"设置波特率失败: {e}"))
+                self.tk_safe(lambda: messagebox.showerror("错误", f"设置波特率失败: {e}"), parent=self.root)
+
 
         # This function will be injected into the user's script
         # It handles highlighting and pausing
@@ -2011,7 +2034,8 @@ GUI 控件状态:
                     f"错误原因:\n{e}\n\n"
                     f"出错位置：\n{last_tb_line}\n\n"
                     f"错误详情：\n{tb_str}\n\n"
-                    f"详细信息参见 script_error_info.txt"
+                    f"详细信息参见 script_error_info.txt",
+                    parent=self.root
                 ))
 
                 break
@@ -2138,9 +2162,11 @@ GUI 控件状态:
                 self.ps_proc.stdin.write(cmd_text + "\n")
                 self.ps_proc.stdin.flush()
             except Exception as e:
-                self.tk_safe(lambda: messagebox.showerror("错误", f"PowerShell 发送失败: {e}"))
+                self.tk_safe(lambda: messagebox.showerror("错误", f"PowerShell 发送失败: {e}"), parent=self.root)
+
         else:
-            self.tk_safe(lambda: messagebox.showwarning("警告", "请先执行 open power shell"))
+            self.tk_safe(lambda: messagebox.showwarning("警告", "请先执行 open power shell"), parent=self.root)
+
     
 
     def on_closing(self):
@@ -2287,7 +2313,8 @@ GUI 控件状态:
     def save_current_script(self):
         """保存当前正在编辑的脚本文件"""
         if not self.current_script_path or not self.current_script_file:
-            messagebox.showwarning("警告", "无法确定当前编辑的脚本文件")
+            messagebox.showwarning("警告", "无法确定当前编辑的脚本文件", parent=self.root)
+
             return
             
         full_path = os.path.join(self.current_script_path, self.current_script_file)
@@ -2332,9 +2359,11 @@ GUI 控件状态:
                 f.write(script_content)
             # 保存成功后重置修改标记
             self.script_modified = False
-            messagebox.showinfo("提示", "脚本保存成功")
+            messagebox.showinfo("提示", "脚本保存成功", parent=self.root)
+
         except Exception as e:
-            messagebox.showerror("错误", f"保存脚本失败：{e}")
+            messagebox.showerror("错误", f"保存脚本失败：{e}", parent=self.root)
+
 
     def load_script(self):
         # 检查是否有未保存的更改
@@ -2344,7 +2373,8 @@ GUI 控件状态:
         dir_path = self.script_path_entry.get().strip()
         file_name = self.script_file_combo.get().strip()
         if not dir_path or not file_name:
-            messagebox.showwarning("警告", "请选择脚本路径和脚本文件")
+            messagebox.showwarning("警告", "请选择脚本路径和脚本文件", parent=self.root)
+
             return
         full_path = os.path.join(dir_path, file_name)
         
@@ -2362,7 +2392,8 @@ GUI 控件状态:
             except UnicodeDecodeError:
                 continue
             except Exception as e:
-                messagebox.showerror("错误", f"加载脚本失败：{e}")
+                messagebox.showerror("错误", f"加载脚本失败：{e}", parent=self.root)
+
                 return
         
         # 如果所有编码都失败，使用gbk并处理错误字符
@@ -2372,7 +2403,8 @@ GUI 控件状态:
                     content = f.read()
                 used_encoding = "gbk"
             except Exception as e:
-                messagebox.showerror("错误", f"加载脚本失败：{e}")
+                messagebox.showerror("错误", f"加载脚本失败：{e}", parent=self.root)
+
                 return
         # 使用正则表达式解析标签页和按钮信息
         tab_pattern = re.compile(r'<tab\s*\{([^}]+)\}>(.*?)</tab>', re.DOTALL)
@@ -2380,7 +2412,8 @@ GUI 控件状态:
         data_pattern = re.compile(r'<data>\s*(.*?)\s*</data>', re.DOTALL)
         tabs = tab_pattern.findall(content)
         if not tabs:
-            messagebox.showwarning("警告", "未找到任何标签页定义")
+            messagebox.showwarning("警告", "未找到任何标签页定义", parent=self.root)
+
             return
         # 清除现有标签页
         for tab in self.notebook.tabs():
@@ -2405,12 +2438,14 @@ GUI 控件状态:
         # 获取脚本文件名，如果为空则提示警告
         file_name = self.script_file_combo.get().strip()
         if not file_name:
-            messagebox.showwarning("警告", "未指定保存文件")
+            messagebox.showwarning("警告", "未指定保存文件", parent=self.root)
+
             return
         # 获取脚本路径
         dir_path = self.script_path_entry.get().strip()
         if not dir_path:
-            messagebox.showwarning("警告", "未指定脚本路径")
+            messagebox.showwarning("警告", "未指定脚本路径", parent=self.root)
+
             return
         full_path = os.path.join(dir_path, file_name)
     
@@ -2453,9 +2488,11 @@ GUI 控件状态:
                 f.write(script_content)
             # 保存成功后重置修改标记
             self.script_modified = False
-            messagebox.showinfo("提示", "脚本保存成功")
+            messagebox.showinfo("提示", "脚本保存成功", parent=self.root)
+
         except Exception as e:
-            messagebox.showerror("错误", f"保存脚本失败：{e}")
+            messagebox.showerror("错误", f"保存脚本失败：{e}", parent=self.root)
+
 
     def save_as_new_script(self):
         # 弹出新窗口，允许选择保存路径和输入文件名
@@ -2807,8 +2844,9 @@ GUI 控件状态:
                 return  # 没有可发送的内容
 
             if start_line == end_line:
-                # 单行：直接发送
-                self.send_via_serial(all_lines[0])
+                # 单行：先检查是否是自定义函数命令
+                if not self._try_execute_cell_command(all_lines[0]):
+                    self.send_via_serial(all_lines[0])
             else:
                 # 多行：调用已有的递归发送函数，从第 0 行开始
                 self._send_next_command(all_lines, 0)
@@ -2825,7 +2863,7 @@ GUI 控件状态:
                 if current_line.lower().startswith(("wait", "#")):
                     # 注释或 wait 开头，跳过发送
                     pass  
-                else:
+                elif not self._try_execute_cell_command(current_line):
                     self.send_via_serial(current_line)
 
             # 查找下一个非空且不以#开头的行
@@ -3270,7 +3308,8 @@ GUI 控件状态:
                 if self.tk_safe(lambda: self.text_area.compare(self.wait_for_initial_index, ">", current_index)):
                     print("wait for x for t error, initial index bigger than current index, wait for skipped.")
                     self.auto_delete_lock_count -= 1
-                    self.tk_safe(lambda: messagebox.showerror("commands running error","wait for x for t error, initial index bigger than current index, wait for skipped."))
+                    self.tk_safe(lambda: messagebox.showerror("commands running error","wait for x for t error, initial index bigger than current index, wait for skipped."), parent=self.root)
+
                     return
                         
                 self.button_send_wait_for_new_text = self.tk_safe(lambda: self.text_area.get(self.wait_for_initial_index, current_index))
@@ -3323,7 +3362,8 @@ GUI 控件状态:
                     current_index = self.text_area.index("end-1c")
                     if self.text_area.compare(self.last_send_index, ">", current_index):
                         #print("wait terminal symbol error, last index bigger than current index, wait for skipped.")
-                        self.tk_safe(lambda: messagebox.showerror("wait terminal symbol error","wait terminal symbol error, last index bigger than current index, wait for skipped."))
+                        self.tk_safe(lambda: messagebox.showerror("wait terminal symbol error","wait terminal symbol error, last index bigger than current index, wait for skipped."), parent=self.root)
+
                         return
                         
                     self.button_send_check_terminal_new_text = self.text_area.get(self.last_send_index, current_index)
@@ -3397,7 +3437,8 @@ GUI 控件状态:
         ):
             # 将SSH状态色块置为灰色
             self.tk_safe(lambda: self.ssh_status_canvas.config(bg="gray"))
-            self.tk_safe(lambda: messagebox.showwarning("警告", "串口或 SSH 未连接"))
+            self.tk_safe(lambda: messagebox.showwarning("警告", "串口或 SSH 未连接"), parent=self.root)
+
             return
         key = data.strip().lower()
         # ========== 解析 \xA0\x01\x01\xA2 格式 ==========
@@ -3422,7 +3463,8 @@ GUI 控件状态:
                         ))
                     return
             except Exception as e:
-                messagebox.showerror("HEX 转义形式错误", f"{e}")
+                messagebox.showerror("HEX 转义形式错误", f"{e}", parent=self.root)
+
                 return
 
         # 默认走串口
@@ -3438,7 +3480,8 @@ GUI 控件状态:
             try:
                 self.ssh_channel.send(raw)
             except Exception as e:
-                self.tk_safe(lambda: messagebox.showerror("SSH 发送失败", str(e)))
+                self.tk_safe(lambda: messagebox.showerror("SSH 发送失败", str(e)), parent=self.root)
+
                 return
         else:
             self.serial_conn.send_data(raw)  
@@ -3608,7 +3651,8 @@ GUI 控件状态:
             threading.Thread(target=self._ssh_receive_loop, daemon=True).start()
 
         except Exception as e:
-            messagebox.showerror("SSH 连接失败", str(e))
+            messagebox.showerror("SSH 连接失败", str(e), parent=self.root)
+
 
     def _ssh_disconnect(self):
         try:
@@ -3639,7 +3683,8 @@ GUI 控件状态:
         path = self.auto_save_path_entry.get().strip()
         fname = self.file_name_entry.get().strip()
         if not path or not fname:
-            self.tk_safe(lambda: messagebox.showwarning("警告", "未指定路径和文件名"))
+            self.tk_safe(lambda: messagebox.showwarning("警告", "未指定路径和文件名"), parent=self.root)
+
             return None
         # 构造文件名：保存文件名_YYYY-MM-DD_HH_MM_SS.txt
         filename = f"{fname}_{time.strftime('%Y-%m-%d')}_{time.strftime('%H-%M-%S')}.txt"
@@ -3648,7 +3693,8 @@ GUI 控件状态:
             new_file = open(full_path, "w", encoding="utf-8")
             return new_file
         except Exception as e:
-            self.tk_safe(lambda: messagebox.showerror("错误", f"无法创建自动保存文件：{e}"))
+            self.tk_safe(lambda: messagebox.showerror("错误", f"无法创建自动保存文件：{e}"), parent=self.root)
+
             return None
 
     def send_data_btn(self, event=None):
@@ -4453,6 +4499,7 @@ except Exception:
     with open("TermPlus_crash.log", "a", encoding="utf-8") as f:
         f.write("\n\n==== Crash on {} ====\n".format(datetime.now()))
         f.write(traceback.format_exc())
-    self.tk_safe(lambda: messagebox.showerror("程序异常", "发生未捕获异常，程序已记录日志，参见TermPlus_crash.log。"))
+    self.tk_safe(lambda: messagebox.showerror("程序异常", "发生未捕获异常，程序已记录日志，参见TermPlus_crash.log。"), parent=self.root)
+
 
 
