@@ -192,7 +192,7 @@ class RegexMonitor:
                 for m in compiled.finditer(text_block):
                     g_start = self.global_offset + block_start_in_buffer + m.start()
                     g_end = self.global_offset + block_start_in_buffer + m.end()
-                    self._add_result(rule, g_start, g_end, m.group())
+                    self._add_result(rule, g_start, g_end, m.group(1) if m.lastindex else m.group())
 
         overlap_count = max(max_lines - 1, 0)
         if overlap_count > 0 and len(complete_lines) > overlap_count:
@@ -223,17 +223,47 @@ class RegexMonitor:
         for i in reversed(to_remove):
             results.pop(i)
         results.append((g_start, g_end, text))
-        self._refresh_rule_display(rule)
+        self._refresh_all_columns()
 
-    def _refresh_rule_display(self, rule):
-        tw = rule.get("text_widget")
-        if tw and tw.winfo_exists():
-            tw.config(state="normal")
-            tw.delete("1.0", tk.END)
-            for _, _, text in rule["results"]:
-                tw.insert(tk.END, text + "\n")
-            tw.see(tk.END)
-            tw.config(state="disabled")
+    def _refresh_all_columns(self):
+        if not self.window or not self.window.winfo_exists():
+            return
+        if not hasattr(self, '_result_text') or not self._result_text.winfo_exists():
+            return
+        col_width = 30
+        seq_width = 5  # 序号列宽度
+        self._result_text.delete("1.0", tk.END)
+        # 第一行：序号列标题 + 各正则表达式
+        header = "No.".ljust(seq_width)
+        for rule in self.rules:
+            header += rule["pattern_str"][:col_width].ljust(col_width)
+        self._result_text.insert(tk.END, header.rstrip() + '\n')
+        # 数据行
+        max_rows = max((len(r["results"]) for r in self.rules), default=0)
+        for row in range(max_rows):
+            line = str(row + 1).ljust(seq_width)
+            for rule in self.rules:
+                if row < len(rule["results"]):
+                    cell = rule["results"][row][2].replace('\n', ' ')
+                else:
+                    cell = ""
+                line += cell.ljust(col_width)
+            self._result_text.insert(tk.END, line.rstrip() + '\n')
+        self._result_text.see(tk.END)
+
+    def _get_cursor_col(self):
+        if not self.rules:
+            return 0
+        col_width = 30
+        seq_width = 5
+        idx = self._result_text.index(tk.INSERT)
+        col_char = int(idx.split('.')[1])
+        if col_char < seq_width:
+            return 0
+        return min((col_char - seq_width) // col_width, len(self.rules) - 1)
+
+    def _refresh_header(self):
+        pass  # 标题已嵌入结果文本框第一行
 
     def toggle_window(self):
         if self.window and self.window.winfo_exists():
@@ -242,74 +272,158 @@ class RegexMonitor:
             return
         self.window = tk.Toplevel(self.gui.root)
         self.window.title("正则匹配监控")
-        self.window.geometry("500x400")
+        self.window.geometry("800x500")
         self.window.protocol("WM_DELETE_WINDOW", lambda: (self.window.destroy(), setattr(self, 'window', None)))
 
         ctrl = tk.Frame(self.window)
         ctrl.pack(fill="x", padx=5, pady=5)
-        tk.Label(ctrl, text="正则:").pack(side="left")
+        tk.Label(ctrl, text="正则表达式:").pack(side="left")
         self._regex_entry = tk.Entry(ctrl, width=25)
         self._regex_entry.pack(side="left", padx=2)
-        tk.Label(ctrl, text="行数:").pack(side="left")
+        tk.Label(ctrl, text="匹配窗口行数:").pack(side="left")
         self._lines_entry = tk.Entry(ctrl, width=3)
         self._lines_entry.insert(0, "1")
         self._lines_entry.pack(side="left", padx=2)
         tk.Button(ctrl, text="添加", command=self._add_rule).pack(side="left", padx=2)
-        tk.Button(ctrl, text="清空全部结果", command=self._clear_all_results).pack(side="right", padx=2)
+        tk.Button(ctrl, text="测试", command=self._test_all).pack(side="left", padx=2)
+        tk.Button(ctrl, text="<", command=self._swap_col_left).pack(side="left", padx=2)
+        tk.Button(ctrl, text=">", command=self._swap_col_right).pack(side="left", padx=2)
+        tk.Button(ctrl, text="清空该列", command=self._clear_col_results).pack(side="left", padx=8)
+        tk.Button(ctrl, text="清空所有", command=self._clear_all_results).pack(side="left", padx=2)
+        tk.Button(ctrl, text="删除该列正则", command=self._delete_col_rule).pack(side="left", padx=2)
+        tk.Button(ctrl, text="删除所有正则", command=self._delete_all_rules).pack(side="left", padx=2)
 
-        self._rules_container = tk.Frame(self.window)
-        self._rules_container.pack(fill="both", expand=True, padx=5, pady=5)
+        # 文本框 + 水平滚动条
+        txt_frame = tk.Frame(self.window)
+        txt_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        xscroll = tk.Scrollbar(txt_frame, orient="horizontal")
+        xscroll.pack(side="bottom", fill="x")
+        yscroll = tk.Scrollbar(txt_frame, orient="vertical")
+        yscroll.pack(side="right", fill="y")
+        self._result_text = tk.Text(
+            txt_frame, wrap=tk.NONE, font=("Courier New", 9),
+            xscrollcommand=xscroll.set, yscrollcommand=yscroll.set,
+            insertbackground="black", insertwidth=2)
+        self._result_text.pack(side="left", fill="both", expand=True)
+        xscroll.config(command=self._result_text.xview)
+        yscroll.config(command=self._result_text.yview)
 
-        for rule in self.rules:
-            self._build_rule_ui(rule)
+        self._refresh_all_columns()
 
     def _add_rule(self):
+        if not self.window or not self.window.winfo_exists():
+            return
         pattern_str = self._regex_entry.get().strip()
         if not pattern_str:
             return
         try:
             compiled = re.compile(pattern_str, re.DOTALL)
         except re.error as e:
-            messagebox.showerror("正则错误", f"无效的正则表达式:\n{e}", parent=self.window)
+            messagebox.showerror("正则错误", "无效的正则表达式:\n{}".format(e), parent=self.window)
             return
         try:
             lines = max(1, int(self._lines_entry.get().strip()))
         except ValueError:
             lines = 1
-        rule = {"pattern_str": pattern_str, "lines": lines, "compiled": compiled, "results": [], "frame": None, "text_widget": None}
+        rule = {"pattern_str": pattern_str, "lines": lines, "compiled": compiled, "results": []}
         self.rules.append(rule)
-        self._build_rule_ui(rule)
         self._regex_entry.delete(0, tk.END)
+        self._refresh_header()
+        self._refresh_all_columns()
 
-    def _build_rule_ui(self, rule):
-        if not self.window or not self.window.winfo_exists():
+    def _clear_col_results(self):
+        if not self.rules:
             return
-        frame = tk.LabelFrame(self._rules_container, text=f"  {rule['pattern_str']}  (行数:{rule['lines']})  ")
-        frame.pack(fill="both", expand=True, pady=2)
-        rule["frame"] = frame
-        btn_frame = tk.Frame(frame)
-        btn_frame.pack(fill="x")
-        tk.Button(btn_frame, text="删除规则", command=lambda r=rule: self._remove_rule(r)).pack(side="right", padx=2)
-        tk.Button(btn_frame, text="清空结果", command=lambda r=rule: self._clear_rule_results(r)).pack(side="right", padx=2)
-        tw = scrolledtext.ScrolledText(frame, height=4, state="disabled", wrap=tk.WORD)
-        tw.pack(fill="both", expand=True, padx=2, pady=2)
-        rule["text_widget"] = tw
-        self._refresh_rule_display(rule)
-
-    def _remove_rule(self, rule):
-        if rule["frame"] and rule["frame"].winfo_exists():
-            rule["frame"].destroy()
-        if rule in self.rules:
-            self.rules.remove(rule)
-
-    def _clear_rule_results(self, rule):
-        rule["results"] = []
-        self._refresh_rule_display(rule)
+        col = self._get_cursor_col()
+        self.rules[col]["results"] = []
+        self._refresh_all_columns()
 
     def _clear_all_results(self):
         for rule in self.rules:
             rule["results"] = []
-            self._refresh_rule_display(rule)
+        self._refresh_all_columns()
+
+    def _delete_col_rule(self):
+        if not self.rules:
+            return
+        col = self._get_cursor_col()
+        self.rules.pop(col)
+        self._refresh_header()
+        self._refresh_all_columns()
+
+    def _delete_all_rules(self):
+        self.rules = []
+        self._refresh_header()
+        self._refresh_all_columns()
+
+    def _test_all(self):
+        """用主窗口当前全部文本对所有正则做一次完整匹配"""
+        if not self.rules:
+            return
+        text = self.gui.text_area.get("1.0", tk.END)
+        for rule in self.rules:
+            rule["results"] = []
+            compiled = rule["compiled"]
+            if compiled is None:
+                continue
+            lines = text.split('\n')
+            n = rule["lines"]
+            for i in range(len(lines)):
+                window_lines = lines[i:i + n]
+                if len(window_lines) < n:
+                    break
+                text_block = '\n'.join(window_lines)
+                block_start = sum(len(lines[j]) + 1 for j in range(i))
+                for m in compiled.finditer(text_block):
+                    g_start = block_start + m.start()
+                    g_end = block_start + m.end()
+                    matched = m.group(1) if m.lastindex else m.group()
+                    # 去重逻辑
+                    results = rule["results"]
+                    skip = False
+                    to_remove = []
+                    for k, (rs, re_, rt) in enumerate(results):
+                        if rs <= g_start and g_end <= re_:
+                            skip = True
+                            break
+                        if g_start <= rs and re_ <= g_end:
+                            to_remove.append(k)
+                    if skip:
+                        continue
+                    for k in reversed(to_remove):
+                        results.pop(k)
+                    results.append((g_start, g_end, matched))
+        self._refresh_all_columns()
+
+    def _swap_col_left(self):
+        if not self.rules:
+            return
+        col = self._get_cursor_col()
+        if col == 0:
+            return
+        self.rules[col], self.rules[col - 1] = self.rules[col - 1], self.rules[col]
+        self._refresh_all_columns()
+        self._move_cursor_to_col(col - 1)
+
+    def _swap_col_right(self):
+        if not self.rules:
+            return
+        col = self._get_cursor_col()
+        if col >= len(self.rules) - 1:
+            return
+        self.rules[col], self.rules[col + 1] = self.rules[col + 1], self.rules[col]
+        self._refresh_all_columns()
+        self._move_cursor_to_col(col + 1)
+
+    def _move_cursor_to_col(self, col):
+        seq_width = 5
+        col_width = 30
+        char_pos = seq_width + col * col_width
+        total_lines = int(self._result_text.index(tk.END).split('.')[0])
+        target_line = 2 if total_lines >= 2 else 1
+        self._result_text.mark_set(tk.INSERT, "{}.{}".format(target_line, char_pos))
+        self._result_text.see("{}.{}".format(target_line, char_pos))
+        self._result_text.focus_set()
 
 
 class SerialGUI:
@@ -406,7 +520,7 @@ class SerialGUI:
         self.about_menu.add_command(label="Developed by Xian.Wu", state="disabled")
         self.about_menu.add_command(label="dakongwuxian@gmail.com", state="disabled")
 
-        self.about_menu.add_command(label="Version.20260527", state="disabled")
+        self.about_menu.add_command(label="Version.20260610", state="disabled")
 
         self.about_menu.add_command(label="Buy me a coffee ☕",command=self.show_about_window,state="normal")
         
@@ -454,7 +568,7 @@ class SerialGUI:
         self.theme_btn.pack(side="left", padx=4)
 
         # 正则匹配按钮
-        self.regex_monitor_btn = tk.Button(self.row_0_frame, text="匹配", command=self.toggle_regex_monitor)
+        self.regex_monitor_btn = tk.Button(self.row_0_frame, text="正则匹配", command=self.toggle_regex_monitor)
         self.regex_monitor_btn.pack(side="left", padx=4)
 
         # row 1 text_area
@@ -464,7 +578,7 @@ class SerialGUI:
             wrap=tk.WORD,
             undo=True,              # 启用撤销栈
             autoseparators=False,   # 关闭自动分隔
-            maxundo=20              # 不限撤销步数
+            maxundo=20              # 限制undo栈避免长时间运行内存增长，勿改为-1
         )
         # 添加右键菜单
         self.text_popup_menu = tk.Menu(self.text_area, tearoff=0)
@@ -675,7 +789,7 @@ class SerialGUI:
         # 按键控制控件行
         self.row_5_frame = tk.Frame(self.main_frame, width=730, height=30)
         self.row_5_frame.grid(row=5, column=0, sticky="ew", padx=(10,0), pady=(0,5))
-        self.row_5_frame.grid_propagate(False) # 固定该父容器
+        self.row_5_frame.grid_propagate(False) # 固定该父容器，history按键超出730宽度时会被裁剪但不影响功能
 
         # 脚本路径选择框：上方标签、文本框及小三角按钮
         self.script_path_label = tk.Label(self.row_5_frame, text="按键选择")
@@ -700,6 +814,20 @@ class SerialGUI:
         # 另存按钮
         self.save_as_script_button = tk.Button(self.row_5_frame, width = 5,text="另存", command=self.save_as_new_script)
         self.save_as_script_button.place(relx=0, rely=0.5, anchor="w",x=685)
+
+        # history 按键区域
+        self.history_label = tk.Label(self.row_5_frame, text="历史...")
+        self.history_label.place(relx=0, rely=0.5, anchor="w", x=740)
+        self.history_paths = [""] * 5
+        self.history_buttons = []
+        self.history_strike = [False] * 5
+        self.history_btn_frame = tk.Frame(self.row_5_frame)
+        self.history_btn_frame.place(relx=0, rely=0.5, anchor="w", x=795)
+        for i in range(5):
+            btn = tk.Button(self.history_btn_frame, text=str(i+1),
+                            command=lambda idx=i: self._load_from_history(idx))
+            btn.pack(side="left", padx=1)
+            self.history_buttons.append(btn)
 
         # Row 6: Notebook区域（标签页区域），创建一个一行两列的区域，让notebook占据第一行一列，第一行第二列固定宽度。
         self.row_6_frame = tk.Frame(self.main_frame, height=186)#width=730, 
@@ -778,7 +906,7 @@ class SerialGUI:
             height=15,
             undo=True,               # 打开撤销功能 :contentReference[oaicite:0]{index=0}
             autoseparators=False,     # 禁用自动分隔编辑操作 :contentReference[oaicite:1]{index=1}
-            maxundo=20               # 不限制撤销步数 :contentReference[oaicite:2]{index=2}
+            maxundo=20               # 限制undo栈避免长时间运行内存增长，勿改为-1
         )
 
         # 为 multi_loop_text 添加右键菜单
@@ -941,7 +1069,7 @@ class SerialGUI:
         # 串口指示、打开串口/关闭串口
         self.toggle_frame = tk.Frame(self.right_frame)
         self.toggle_frame.pack(fill="x", pady=2, anchor="se")
-        self.toggle_port_btn = tk.Button(self.toggle_frame, text="打开串口", command=self.toggle_serial, width=10)
+        self.toggle_port_btn = tk.Button(self.toggle_frame, text="连接串口", command=self.toggle_serial, width=10)
         self.toggle_port_btn.pack(side="left", anchor="se")
         # 将状态画布放在按钮右侧，设置一些水平间距
         self.status_canvas = Canvas(self.toggle_frame, width=20, height=20, bg="gray", highlightthickness=0)
@@ -2359,6 +2487,83 @@ GUI 控件状态:
             messagebox.showerror("错误", f"保存脚本失败：{e}", parent=self.root)
 
 
+    def _update_history_button(self, idx):
+        btn = self.history_buttons[idx]
+        path = self.history_paths[idx]
+        strike = self.history_strike[idx]
+        if not path:
+            btn.config(text=str(idx+1), width=2, font=('Microsoft YaHei UI', 9))
+        else:
+            name = os.path.basename(path)
+            display = name if len(name) <= 20 else name[:20] + '...'
+            w = max(2, min(20, len(display)))
+            if strike:
+                btn.config(text=display, width=w, font=('Microsoft YaHei UI', 9, 'overstrike'))
+            else:
+                btn.config(text=display, width=w, font=('Microsoft YaHei UI', 9))
+
+    def _push_history(self, full_path):
+        if not full_path:
+            return
+        # 如果要推入的文件就是当前加载的文件，不推入
+        cur_dir = self.script_path_entry.get().strip()
+        cur_file = self.script_file_combo.get().strip()
+        if cur_dir and cur_file:
+            cur_full = os.path.join(cur_dir, cur_file)
+            if full_path == cur_full:
+                return
+        # 如果已在历史里，不移动位置，不做任何操作（交换逻辑不需要提前）
+        if full_path in self.history_paths:
+            return
+        # 不在历史里，插入位置1，丢弃位置5
+        self.history_paths.insert(0, full_path)
+        self.history_paths.pop()
+        self.history_strike.insert(0, False)
+        self.history_strike.pop()
+        for i in range(5):
+            self._update_history_button(i)
+
+    def _load_from_history(self, idx):
+        full_path = self.history_paths[idx]
+        if not full_path:
+            return
+        if not self.check_unsaved_changes():
+            return
+        if not os.path.isfile(full_path):
+            messagebox.showwarning("警告", f"文件不存在或已移动：\n{full_path}", parent=self.root)
+            self.history_strike[idx] = True
+            self._update_history_button(idx)
+            return
+        # 获取当前文件，准备和该按键做交换
+        old_path = self.current_script_path
+        old_file = self.current_script_file
+        # 填入路径和文件名，执行加载
+        dir_path = os.path.dirname(full_path)
+        file_name = os.path.basename(full_path)
+        self.script_path_entry.delete(0, tk.END)
+        self.script_path_entry.insert(0, dir_path)
+        self.script_path_entry.xview_moveto(1.0)
+        try:
+            ts_files = [f for f in os.listdir(dir_path)
+                        if os.path.isfile(os.path.join(dir_path, f)) and f.lower().endswith('.ts')]
+        except Exception:
+            ts_files = []
+        self.script_file_combo['values'] = ts_files
+        self.script_file_combo.set(file_name)
+        # 加载前先把历史按键的文件设为当前文件，避免 load_script 里的推入历史逻辑干扰
+        self.current_script_path = dir_path
+        self.current_script_file = file_name
+        # 调用 load_script（此时 current_script_file 已是新文件，不会推入历史）
+        self.load_script()
+        # 加载成功后，把旧文件写入该按键（实现交换）
+        if os.path.isfile(full_path):
+            if old_path and old_file:
+                self.history_paths[idx] = os.path.join(old_path, old_file)
+            else:
+                self.history_paths[idx] = ""
+            self.history_strike[idx] = False
+            self._update_history_button(idx)
+
     def load_script(self):
         # 检查是否有未保存的更改
         if not self.check_unsaved_changes():
@@ -2422,6 +2627,14 @@ GUI 控件状态:
                 button_info[int(btn_index)] = (btn_name, btn_text)
             self.create_tab_from_script(tab_name, button_info)
         
+        # 加载成功前，把被换下的旧文件推入历史
+        old_path = self.current_script_path
+        old_file = self.current_script_file
+        if old_path and old_file:
+            old_full = os.path.join(old_path, old_file)
+            # 只有旧文件与新文件不同时才推入历史
+            if old_full != full_path:
+                self._push_history(old_full)
         # 加载成功后更新当前编辑文件信息并重置修改标记
         self.current_script_path = dir_path
         self.current_script_file = file_name
@@ -2526,6 +2739,13 @@ GUI 控件状态:
             if not file_name.lower().endswith(".ts"):
                 file_name += ".ts"
             full_path = os.path.join(folder, file_name)
+            # 另存前，把原文件推入历史（文件名发生变化时）
+            orig_file = self.script_file_combo.get().strip()
+            orig_path = self.script_path_entry.get().strip()
+            if orig_file and orig_path:
+                orig_full = os.path.join(orig_path, orig_file)
+                if orig_full != full_path:
+                    self._push_history(orig_full)
             try:
                 # 创建新文件（若已存在则覆盖为空）
                 with open(full_path, "w", encoding="utf-8") as f:
@@ -2730,7 +2950,7 @@ GUI 控件状态:
             edit_win,
             undo=True,               # 启用撤销栈
             autoseparators=False,    # 关闭自动分隔
-            maxundo=20,               # 不限撤销步数
+            maxundo=20,               # 限制undo栈避免长时间运行内存增长，勿改为-1
             bg=text_bg_color,
             fg=text_fg_color,
             insertbackground=cursor_color,  # 光标颜色
@@ -3524,12 +3744,12 @@ GUI 控件状态:
     # 如果当前没有连接或串口未打开，则尝试连接
         if self.serial_conn is None or not (self.serial_conn.ser and self.serial_conn.ser.is_open):
             self.connect_serial()  # connect_serial 内部会更新相关状态
-            # 如果连接成功，则更新按钮文字为“关闭串口”
+            # 如果连接成功，则更新按钮文字为“断开串口”
             if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
-                self.toggle_port_btn.config(text="关闭串口")
+                self.toggle_port_btn.config(text="断开串口")
         else:
             self.close_serial()  # close_serial 内部更新状态
-            self.toggle_port_btn.config(text="打开串口")
+            self.toggle_port_btn.config(text="连接串口")
 
     def connect_serial(self):
         port = self.port_var.get()
@@ -4162,6 +4382,10 @@ GUI 控件状态:
             'terminal_wait_over_time': self.send_all_over_time_entry.get(),
             'sent_commands': self.sent_commands
         }
+        for i, p in enumerate(self.history_paths):
+            config['Setup'][f'history_{i+1}'] = p
+        for i, s in enumerate(self.history_strike):
+            config['Setup'][f'history_{i+1}_strike'] = str(s)
         # 在程序所在目录创建/覆盖 TermPlusSetup.ini
         with open("TermPlusSetup.ini", "w", encoding="utf-8") as configfile:
             config.write(configfile)
@@ -4288,6 +4512,7 @@ GUI 控件状态:
         self.auto_save_frame.configure(background=window_bg_color)
         self.ssh_frame.configure(background=window_bg_color)
         self.file_capacity_frame.configure(background=window_bg_color)
+        self.history_btn_frame.configure(background=window_bg_color)
 
         # 设置窗口背景色
         self.root.configure(bg=window_bg_color)
@@ -4303,7 +4528,7 @@ GUI 控件状态:
                         self.multi_loop_label, self.current_loop_count_label,
                         self.default_delay_time_label, self.loop_count_label, self.window_name_label, self.choose_port_label, 
                         self.baud_label, self.auto_save_label,self.auto_save_path_label,self.save_file_name_label,self.file_max_volume_label,
-                        self.MB_label,self.script_path_label,self.multi_script_path_label]:
+                        self.MB_label,self.script_path_label,self.multi_script_path_label,self.history_label]:
             widget.configure(background=window_bg_color, foreground=text_fg_color)
            
         # 设置所有Entry的颜色
@@ -4319,7 +4544,7 @@ GUI 控件状态:
                         self.start_button, self.pause_button, self.stop_button,
                         self.refresh_btn, self.toggle_port_btn,self.ssh_config_btn, self.square_button,self.script_path_button,self.multi_script_path_button,
                         self.load_script_button,self.save_script_button,self.save_as_script_button,self.open_multi_loop_btn,
-                        self.save_multi_loop_btn,self.save_as_multi_loop_btn]:
+                        self.save_multi_loop_btn,self.save_as_multi_loop_btn] + self.history_buttons:
             widget.configure(background=window_bg_color, foreground=text_fg_color)
 
         # 设置tab的颜色
