@@ -13,7 +13,7 @@ Serial port GUI tool on Windows, key features: button send, loop send, customize
 
 该软件提供了python代码的运行空间，可以不依赖python的安装即可运行python的代码。对于未安装的依赖库，需要在源代码中添加后重新打包才能使用。
 
-直接下载exe后即可使用，也可以用源代码自行压制可执行程序。下载链接如下：
+直接下载exe后即可使用，也可以用源代码自行压制可执行程序（由于某些原因，后续不再直接发布exe版本的release，改为发布pyw和bat，请参考0_readme文档进行安装和使用）。下载链接如下：
 
 https://github.com/dakongwuxian/TermPlus/releases
 
