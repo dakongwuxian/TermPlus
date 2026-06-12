@@ -142,6 +142,8 @@ class StopLoopException(Exception):
     pass
 
 class RegexMonitor:
+    MAX_ROWS = 5000  # 最大行数，超过后删除前一半，避免内存无限增长
+
     def __init__(self, gui):
         self.gui = gui
         self.window = None
@@ -149,11 +151,18 @@ class RegexMonitor:
         self.match_buffer = ""
         self.global_offset = 0
         self.idle_timer_id = None
-        self.IDLE_MS = 300
+        self.IDLE_MS = 100
         self.BUFFER_LIMIT = 2048
+        # 自动保存
+        self._save_file = None
+        self._save_stop = True
+        # 正则规则文件路径缓存
+        self._rules_filepath = ""
+        # 监控开关
+        self._monitoring = False
 
     def on_new_text(self, chars):
-        if not self.rules or not self.window:
+        if not self.rules or not self.window or not self._monitoring:
             return
         self.match_buffer += chars
         if self.idle_timer_id is not None:
@@ -178,7 +187,13 @@ class RegexMonitor:
         if not complete_lines:
             return
 
-        for rule in self.rules:
+        # 收集所有规则的匹配结果，按行号分组，最后统一写入避免中间状态干扰对齐
+        # pending: {row_key: {rule_index: (g_start, g_end, text)}}
+        # 用 (block_start_in_buffer, m.start()) 作为行标识不合适，直接按源行号i分组
+        # 但同一行可能有多个匹配，所以用列表收集每个规则的匹配
+        all_matches = [[] for _ in self.rules]  # all_matches[rule_idx] = [(g_start,g_end,text), ...]
+
+        for rule_idx, rule in enumerate(self.rules):
             n = rule["lines"]
             compiled = rule["compiled"]
             if compiled is None:
@@ -192,7 +207,23 @@ class RegexMonitor:
                 for m in compiled.finditer(text_block):
                     g_start = self.global_offset + block_start_in_buffer + m.start()
                     g_end = self.global_offset + block_start_in_buffer + m.end()
-                    self._add_result(rule, g_start, g_end, m.group(1) if m.lastindex else m.group())
+                    all_matches[rule_idx].append((g_start, g_end, m.group(1) if m.lastindex else m.group()))
+
+        # 统一写入：每轮写入前先快照当前最大行数，所有规则都对齐到这一快照值再追加
+        max_count = max((len(m) for m in all_matches), default=0)
+        for i in range(max_count):
+            # 快照本轮开始时各列的行数基准
+            row_base = max((len(r["results"]) for r in self.rules), default=0)
+            # 先将本轮有匹配的列全部补齐到 row_base
+            for rule_idx, rule in enumerate(self.rules):
+                if i < len(all_matches[rule_idx]):
+                    while len(rule["results"]) < row_base:
+                        rule["results"].append((0, 0, ""))
+            # 再追加本轮所有匹配
+            for rule_idx, rule in enumerate(self.rules):
+                if i < len(all_matches[rule_idx]):
+                    g_start, g_end, text = all_matches[rule_idx][i]
+                    self._add_result_aligned(rule, g_start, g_end, text)
 
         overlap_count = max(max_lines - 1, 0)
         if overlap_count > 0 and len(complete_lines) > overlap_count:
@@ -212,42 +243,118 @@ class RegexMonitor:
             remaining += '\n'
         self.match_buffer = remaining + leftover
 
-    def _add_result(self, rule, g_start, g_end, text):
+    def _add_result_aligned(self, rule, g_start, g_end, text):
+        """写入一条匹配结果，调用前外部已保证各列行数对齐，直接追加即可"""
         results = rule["results"]
-        to_remove = []
-        for i, (rs, re_, rt) in enumerate(results):
+        # 去重
+        for rs, re_, rt in results:
             if rs <= g_start and g_end <= re_:
                 return
-            if g_start <= rs and re_ <= g_end:
-                to_remove.append(i)
-        for i in reversed(to_remove):
-            results.pop(i)
+        results[:] = [(rs, re_, rt) for rs, re_, rt in results if not (g_start <= rs and re_ <= g_end)]
         results.append((g_start, g_end, text))
+        self._check_max_rows()
         self._refresh_all_columns()
+        self._autosave_new_rows()
+
+    def _add_result(self, rule, g_start, g_end, text):
+        results = rule["results"]
+        # 去重
+        for rs, re_, rt in results:
+            if rs <= g_start and g_end <= re_:
+                return
+        results[:] = [(rs, re_, rt) for rs, re_, rt in results if not (g_start <= rs and re_ <= g_end)]
+        # 对齐逻辑：
+        # max_row = 所有列结果数的最大值
+        # 如果本列行数 < max_row，写入第max_row行（补空占位到max_row-1，再写入）
+        # 如果本列行数 == max_row，新起一行（追加）
+        max_row = max((len(r["results"]) for r in self.rules), default=0)
+        while len(results) < max_row - 1:
+            results.append((0, 0, ""))
+        if len(results) < max_row:
+            # 本列行数 < max_row，覆盖写入第max_row行（即index max_row-1）
+            results.append((g_start, g_end, text))
+        else:
+            # 本列行数 == max_row，新起一行
+            results.append((g_start, g_end, text))
+        # 检查是否超过最大行数
+        self._check_max_rows()
+        self._refresh_all_columns()
+        # 自动保存：写入新增行
+        self._autosave_new_rows()
+
+    def _check_max_rows(self):
+        max_row = max((len(r["results"]) for r in self.rules), default=0)
+        if max_row > self.MAX_ROWS:
+            keep_from = max_row // 2
+            for rule in self.rules:
+                deleted = keep_from
+                rule["results"] = rule["results"][keep_from:]
+                rule["saved_count"] = max(0, rule.get("saved_count", 0) - deleted)
+
+    def _autosave_new_rows(self):
+        if self._save_stop or self._save_file is None:
+            return
+        max_row = max((len(r["results"]) for r in self.rules), default=0)
+        # 找到所有列已保存的最小行数（即从哪行开始有新数据）
+        min_saved = min((r.get("saved_count", 0) for r in self.rules), default=0)
+        if min_saved >= max_row:
+            return
+        col_width = 30
+        seq_width = 5
+        try:
+            for row in range(min_saved, max_row):
+                line = str(row + 1).ljust(seq_width)
+                for rule in self.rules:
+                    if row < len(rule["results"]):
+                        cell = rule["results"][row][2].replace('\n', ' ')
+                    else:
+                        cell = ""
+                    line += cell.ljust(col_width)
+                self._save_file.write(line.rstrip() + '\n')
+            self._save_file.flush()
+            # 检查文件大小
+            try:
+                max_mb = float(self._save_max_mb_entry.get().strip())
+            except Exception:
+                max_mb = 10
+            if self._save_file.tell() >= max_mb * 1024 * 1024:
+                self._save_file.close()
+                self._create_save_file()
+            # 更新saved_count
+            for rule in self.rules:
+                rule["saved_count"] = max_row
+        except Exception as e:
+            print("RegexMonitor autosave error:", e)
 
     def _refresh_all_columns(self):
         if not self.window or not self.window.winfo_exists():
             return
         if not hasattr(self, '_result_text') or not self._result_text.winfo_exists():
             return
-        col_width = 30
-        seq_width = 5  # 序号列宽度
-        self._result_text.delete("1.0", tk.END)
-        # 第一行：序号列标题 + 各正则表达式
-        header = "No.".ljust(seq_width)
-        for rule in self.rules:
-            header += rule["pattern_str"][:col_width].ljust(col_width)
-        self._result_text.insert(tk.END, header.rstrip() + '\n')
-        # 数据行
+        seq_width = 5
+        # 每列宽度动态计算：取列头和所有内容中最长的，加2作为间距，最小10
+        col_widths = []
         max_rows = max((len(r["results"]) for r in self.rules), default=0)
+        for rule in self.rules:
+            w = len(rule["pattern_str"])
+            for row in range(max_rows):
+                if row < len(rule["results"]):
+                    cell = rule["results"][row][2].replace('\n', ' ')
+                    w = max(w, len(cell))
+            col_widths.append(max(10, w + 2))
+        self._result_text.delete("1.0", tk.END)
+        header = "No.".ljust(seq_width)
+        for i, rule in enumerate(self.rules):
+            header += rule["pattern_str"][:col_widths[i]].ljust(col_widths[i])
+        self._result_text.insert(tk.END, header.rstrip() + '\n')
         for row in range(max_rows):
             line = str(row + 1).ljust(seq_width)
-            for rule in self.rules:
+            for i, rule in enumerate(self.rules):
                 if row < len(rule["results"]):
                     cell = rule["results"][row][2].replace('\n', ' ')
                 else:
                     cell = ""
-                line += cell.ljust(col_width)
+                line += cell.ljust(col_widths[i])
             self._result_text.insert(tk.END, line.rstrip() + '\n')
         self._result_text.see(tk.END)
 
@@ -263,39 +370,95 @@ class RegexMonitor:
         return min((col_char - seq_width) // col_width, len(self.rules) - 1)
 
     def _refresh_header(self):
-        pass  # 标题已嵌入结果文本框第一行
+        pass
+
+    def _close_window(self):
+        # 情况1：自动保存正在运行，弹窗询问
+        if not self._save_stop:
+            dialog = tk.Toplevel(self.window)
+            dialog.title("自动保存运行中")
+            dialog.geometry("300x110")
+            dialog.resizable(False, False)
+            dialog.grab_set()
+            dialog.update_idletasks()
+            x = (dialog.winfo_screenwidth() - dialog.winfo_width()) // 2
+            y = (dialog.winfo_screenheight() - dialog.winfo_height()) // 2
+            dialog.geometry(f"+{x}+{y}")
+            tk.Label(dialog, text="自动保存正在运行，请选择：", justify="center").pack(pady=(15, 5))
+            btn_frame = tk.Frame(dialog)
+            btn_frame.pack(pady=5)
+            result = [None]
+            def do_stop():
+                result[0] = "stop"
+                dialog.destroy()
+            def do_keep():
+                result[0] = "keep"
+                dialog.destroy()
+            tk.Button(btn_frame, text="停止并关闭窗口", command=do_stop, width=14).pack(side="left", padx=5)
+            tk.Button(btn_frame, text="继续运行不关闭", command=do_keep, width=14).pack(side="left", padx=5)
+            dialog.wait_window()
+            if result[0] != "stop":
+                return
+            self._stop_autosave()
+            self.rules = []
+            self.match_buffer = ""
+            self.global_offset = 0
+        # 情况2：无自动保存但有规则，直接清空规则并停止
+        elif self.rules:
+            self.rules = []
+            self.match_buffer = ""
+            self.global_offset = 0
+        self.gui.save_setup()
+        if self.window and self.window.winfo_exists():
+            self.window.destroy()
+        self.window = None
 
     def toggle_window(self):
         if self.window and self.window.winfo_exists():
-            self.window.destroy()
-            self.window = None
+            self._close_window()
             return
         self.window = tk.Toplevel(self.gui.root)
         self.window.title("正则匹配监控")
-        self.window.geometry("800x500")
-        self.window.protocol("WM_DELETE_WINDOW", lambda: (self.window.destroy(), setattr(self, 'window', None)))
+        self.window.geometry("910x560")
+        self.window.protocol("WM_DELETE_WINDOW", self._close_window)
 
         ctrl = tk.Frame(self.window)
         ctrl.pack(fill="x", padx=5, pady=5)
         tk.Label(ctrl, text="正则表达式:").pack(side="left")
         self._regex_entry = tk.Entry(ctrl, width=25)
         self._regex_entry.pack(side="left", padx=2)
+        self._regex_entry.bind("<Return>", lambda e: self._add_rule())
         tk.Label(ctrl, text="匹配窗口行数:").pack(side="left")
         self._lines_entry = tk.Entry(ctrl, width=3)
         self._lines_entry.insert(0, "1")
         self._lines_entry.pack(side="left", padx=2)
-        tk.Button(ctrl, text="添加", command=self._add_rule).pack(side="left", padx=2)
-        tk.Button(ctrl, text="测试", command=self._test_all).pack(side="left", padx=2)
-        tk.Button(ctrl, text="<", command=self._swap_col_left).pack(side="left", padx=2)
-        tk.Button(ctrl, text=">", command=self._swap_col_right).pack(side="left", padx=2)
-        tk.Button(ctrl, text="清空该列", command=self._clear_col_results).pack(side="left", padx=8)
-        tk.Button(ctrl, text="清空所有", command=self._clear_all_results).pack(side="left", padx=2)
-        tk.Button(ctrl, text="删除该列正则", command=self._delete_col_rule).pack(side="left", padx=2)
-        tk.Button(ctrl, text="删除所有正则", command=self._delete_all_rules).pack(side="left", padx=2)
+        tk.Button(ctrl, text="添加⏎", width=8, command=self._add_rule).pack(side="left", padx=5)
+        tk.Button(ctrl, text="测试", width=8, command=self._test_all).pack(side="left", padx=5)
+        self._monitor_btn = tk.Button(ctrl, text="开始监控", width=8, bg="gray",
+                                      command=self._toggle_monitoring)
+        self._monitor_btn.pack(side="left", padx=5)
 
-        # 文本框 + 水平滚动条
+        ctrl2 = tk.Frame(self.window)
+        ctrl2.pack(fill="x", padx=5, pady=(0, 2))
+        tk.Button(ctrl2, text="<", command=self._swap_col_left).pack(side="left", padx=2)
+        tk.Button(ctrl2, text=">", command=self._swap_col_right).pack(side="left", padx=2)
+        tk.Button(ctrl2, text="清空该列", command=self._clear_col_results).pack(side="left", padx=8)
+        tk.Button(ctrl2, text="清空所有", command=self._clear_all_results).pack(side="left", padx=2)
+        tk.Button(ctrl2, text="删除该列正则", command=self._delete_col_rule).pack(side="left", padx=2)
+        tk.Button(ctrl2, text="删除所有正则", command=self._delete_all_rules).pack(side="left", padx=2)
+        tk.Label(ctrl2, text="正则：").pack(side="left", padx=(16, 2))
+        tk.Button(ctrl2, text="加载", command=self._load_rules_file).pack(side="left", padx=2)
+        tk.Button(ctrl2, text="保存", command=self._save_rules_file).pack(side="left", padx=2)
+        tk.Button(ctrl2, text="另存为", command=self._saveas_rules_file).pack(side="left", padx=2)
+        tk.Label(ctrl2, text="").pack(side="left", padx=(16, 0))
+        tk.Label(ctrl2, text="结果：").pack(side="left", padx=(0, 2))
+        tk.Button(ctrl2, text="复制到剪贴板", command=self._copy_result_to_clipboard).pack(side="left", padx=2)
+        tk.Button(ctrl2, text="另存为文件", command=self._save_result_to_file).pack(side="left", padx=2)
+        tk.Button(ctrl2, text="在Excel中打开", command=self._open_result_in_excel).pack(side="left", padx=2)
+
+        # 文本框 + 滚动条
         txt_frame = tk.Frame(self.window)
-        txt_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        txt_frame.pack(fill="both", expand=True, padx=5, pady=(5, 0))
         xscroll = tk.Scrollbar(txt_frame, orient="horizontal")
         xscroll.pack(side="bottom", fill="x")
         yscroll = tk.Scrollbar(txt_frame, orient="vertical")
@@ -308,7 +471,125 @@ class RegexMonitor:
         xscroll.config(command=self._result_text.xview)
         yscroll.config(command=self._result_text.yview)
 
+        # 底部自动保存控件行
+        save_frame = tk.Frame(self.window)
+        save_frame.pack(fill="x", padx=5, pady=(2, 5))
+        tk.Label(save_frame, text="自动保存").pack(side="left")
+        self._save_btn = tk.Button(save_frame, text="OFF", width=4, bg="gray",
+                                   command=self._toggle_autosave)
+        self._save_btn.pack(side="left", padx=2)
+        tk.Label(save_frame, text="路径").pack(side="left", padx=(8, 2))
+        self._save_path_entry = tk.Entry(save_frame, width=20, justify="right")
+        self._save_path_entry.pack(side="left", padx=2)
+        tk.Button(save_frame, text="...", command=self._choose_save_path).pack(side="left", padx=2)
+        tk.Label(save_frame, text="文件名").pack(side="left", padx=(8, 2))
+        self._save_name_entry = tk.Entry(save_frame, width=15)
+        self._save_name_entry.pack(side="left", padx=2)
+        tk.Label(save_frame, text="最大容量").pack(side="left", padx=(8, 2))
+        self._save_max_mb_entry = tk.Entry(save_frame, width=5)
+        self._save_max_mb_entry.insert(0, "10")
+        self._save_max_mb_entry.pack(side="left", padx=2)
+        tk.Label(save_frame, text="MB").pack(side="left")
+
+        # 从ini恢复
+        self._load_save_settings_from_ini()
         self._refresh_all_columns()
+
+    def _load_save_settings_from_ini(self):
+        # 优先从gui上已加载的init值恢复（load_setup已读取）
+        p = getattr(self.gui, '_regex_save_path_init', '')
+        n = getattr(self.gui, '_regex_save_filename_init', '')
+        m = getattr(self.gui, '_regex_save_max_mb_init', '10')
+        self._save_path_entry.delete(0, tk.END)
+        self._save_path_entry.insert(0, p if p else os.path.dirname(os.path.abspath(__file__)))
+        self._save_path_entry.xview_moveto(1.0)
+        self._save_name_entry.delete(0, tk.END)
+        self._save_name_entry.insert(0, n if n else 'AutoSaveRegexMatch')
+        self._save_max_mb_entry.delete(0, tk.END)
+        self._save_max_mb_entry.insert(0, m if m else '10')
+
+    def _toggle_monitoring(self):
+        self._monitoring = not self._monitoring
+        if self._monitoring:
+            self._monitor_btn.config(text="停止监控", bg="green")
+        else:
+            self._monitor_btn.config(text="开始监控", bg="gray")
+
+    def _choose_save_path(self):
+        from tkinter import filedialog
+        path = filedialog.askdirectory(title="选择保存路径", parent=self.window)
+        if path:
+            self._save_path_entry.delete(0, tk.END)
+            self._save_path_entry.insert(0, path)
+            self._save_path_entry.xview_moveto(1.0)
+
+    def _toggle_autosave(self):
+        if self._save_stop:
+            path = self._save_path_entry.get().strip()
+            name = self._save_name_entry.get().strip()
+            if not path or not os.path.isdir(path):
+                messagebox.showwarning("警告", "请选择有效的保存路径", parent=self.window)
+                return
+            if not name:
+                messagebox.showwarning("警告", "请输入文件名", parent=self.window)
+                return
+            if self._create_save_file():
+                self._save_stop = False
+                self._save_btn.config(text="ON", bg="green")
+        else:
+            self._stop_autosave()
+
+    def _create_save_file(self):
+        import time
+        path = self._save_path_entry.get().strip()
+        name = self._save_name_entry.get().strip()
+        ts = time.strftime('%Y-%m-%d_%H-%M-%S')
+        filename = "{}-{}.txt".format(name, ts)
+        full_path = os.path.join(path, filename)
+        try:
+            self._save_file = open(full_path, 'w', encoding='utf-8')
+            # 写标题行
+            col_width = 30
+            seq_width = 5
+            header = "No.".ljust(seq_width)
+            for rule in self.rules:
+                header += rule["pattern_str"][:col_width].ljust(col_width)
+            self._save_file.write(header.rstrip() + '\n')
+            self._save_file.flush()
+            for rule in self.rules:
+                rule["saved_count"] = len(rule["results"])
+            return True
+        except Exception as e:
+            messagebox.showerror("错误", "无法创建文件：{}".format(e), parent=self.window)
+            return False
+
+    def _stop_autosave(self):
+        self._save_stop = True
+        if self._save_file:
+            try:
+                self._save_file.close()
+            except Exception:
+                pass
+            self._save_file = None
+        if hasattr(self, '_save_btn') and self._save_btn.winfo_exists():
+            self._save_btn.config(text="OFF", bg="gray")
+
+    def get_save_settings(self):
+        """供save_setup调用，返回当前控件值"""
+        if not self.window or not self.window.winfo_exists():
+            # 窗口未打开时从init缓存读取
+            p = getattr(self.gui, '_regex_save_path_init', '')
+            n = getattr(self.gui, '_regex_save_filename_init', '')
+            m = getattr(self.gui, '_regex_save_max_mb_init', '10')
+            return str(p), str(n), str(m or '10')
+        p = self._save_path_entry.get().strip()
+        n = self._save_name_entry.get().strip()
+        m = self._save_max_mb_entry.get().strip()
+        # 同步更新缓存，避免窗口关闭后下次save_setup读到旧值
+        self.gui._regex_save_path_init = p
+        self.gui._regex_save_filename_init = n
+        self.gui._regex_save_max_mb_init = m
+        return p, n, m
 
     def _add_rule(self):
         if not self.window or not self.window.winfo_exists():
@@ -325,7 +606,8 @@ class RegexMonitor:
             lines = max(1, int(self._lines_entry.get().strip()))
         except ValueError:
             lines = 1
-        rule = {"pattern_str": pattern_str, "lines": lines, "compiled": compiled, "results": []}
+        rule = {"pattern_str": pattern_str, "lines": lines, "compiled": compiled,
+                "results": [], "saved_count": 0}
         self.rules.append(rule)
         self._regex_entry.delete(0, tk.END)
         self._refresh_header()
@@ -336,11 +618,13 @@ class RegexMonitor:
             return
         col = self._get_cursor_col()
         self.rules[col]["results"] = []
+        self.rules[col]["saved_count"] = 0
         self._refresh_all_columns()
 
     def _clear_all_results(self):
         for rule in self.rules:
             rule["results"] = []
+            rule["saved_count"] = 0
         self._refresh_all_columns()
 
     def _delete_col_rule(self):
@@ -357,12 +641,11 @@ class RegexMonitor:
         self._refresh_all_columns()
 
     def _test_all(self):
-        """用主窗口当前全部文本对所有正则做一次完整匹配"""
+        """用主窗口当前全部文本对所有正则做一次完整匹配，结果追加到现有结果末尾"""
         if not self.rules:
             return
         text = self.gui.text_area.get("1.0", tk.END)
         for rule in self.rules:
-            rule["results"] = []
             compiled = rule["compiled"]
             if compiled is None:
                 continue
@@ -378,20 +661,16 @@ class RegexMonitor:
                     g_start = block_start + m.start()
                     g_end = block_start + m.end()
                     matched = m.group(1) if m.lastindex else m.group()
-                    # 去重逻辑
                     results = rule["results"]
-                    skip = False
-                    to_remove = []
-                    for k, (rs, re_, rt) in enumerate(results):
-                        if rs <= g_start and g_end <= re_:
-                            skip = True
-                            break
-                        if g_start <= rs and re_ <= g_end:
-                            to_remove.append(k)
+                    skip = any(rs <= g_start and g_end <= re_ for rs, re_, rt in results)
                     if skip:
                         continue
-                    for k in reversed(to_remove):
-                        results.pop(k)
+                    results[:] = [(rs, re_, rt) for rs, re_, rt in results
+                                  if not (g_start <= rs and re_ <= g_end)]
+                    # 对齐逻辑
+                    max_row = max((len(r["results"]) for r in self.rules), default=0)
+                    while len(results) < max_row:
+                        results.append((0, 0, ""))
                     results.append((g_start, g_end, matched))
         self._refresh_all_columns()
 
@@ -424,6 +703,145 @@ class RegexMonitor:
         self._result_text.mark_set(tk.INSERT, "{}.{}".format(target_line, char_pos))
         self._result_text.see("{}.{}".format(target_line, char_pos))
         self._result_text.focus_set()
+
+    def _load_rules_file(self):
+        path = filedialog.askopenfilename(
+            title="加载正则规则",
+            filetypes=(("Text Files", "*.txt"), ("All Files", "*.*")),
+            parent=self.window
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = [l.rstrip("\n") for l in f.readlines()]
+        except Exception as e:
+            messagebox.showerror("错误", "无法读取文件：{}".format(e), parent=self.window)
+            return
+        # 验证所有行都是合法正则
+        for i, line in enumerate(lines):
+            if not line.strip():
+                continue
+            try:
+                re.compile(line.strip(), re.DOTALL)
+            except re.error as e:
+                messagebox.showerror("正则错误", "第{}行无效：{}\n{}".format(i + 1, line.strip(), e), parent=self.window)
+                return
+        # 依次添加
+        for line in lines:
+            if not line.strip():
+                continue
+            self._regex_entry.delete(0, tk.END)
+            self._regex_entry.insert(0, line.strip())
+            self._add_rule()
+        self._rules_filepath = path
+
+    def _save_rules_file(self):
+        if not self.rules:
+            messagebox.showwarning("警告", "当前没有任何正则规则", parent=self.window)
+            return
+        if not self._rules_filepath:
+            self._saveas_rules_file()
+            return
+        try:
+            with open(self._rules_filepath, "w", encoding="utf-8") as f:
+                for rule in self.rules:
+                    f.write(rule["pattern_str"] + "\n")
+            messagebox.showinfo("提示", "已保存到：{}".format(self._rules_filepath), parent=self.window)
+        except Exception as e:
+            messagebox.showerror("错误", "保存失败：{}".format(e), parent=self.window)
+
+    def _saveas_rules_file(self):
+        if not self.rules:
+            messagebox.showwarning("警告", "当前没有任何正则规则", parent=self.window)
+            return
+        path = filedialog.asksaveasfilename(
+            title="另存为正则规则",
+            defaultextension=".txt",
+            filetypes=(("Text Files", "*.txt"), ("All Files", "*.*")),
+            parent=self.window
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                for rule in self.rules:
+                    f.write(rule["pattern_str"] + "\n")
+            self._rules_filepath = path
+            messagebox.showinfo("提示", "已保存到：{}".format(path), parent=self.window)
+        except Exception as e:
+            messagebox.showerror("错误", "保存失败：{}".format(e), parent=self.window)
+
+
+    def _copy_result_to_clipboard(self):
+        if not self.window or not self.window.winfo_exists():
+            return
+        text = self._result_text.get("1.0", "end")
+        self.window.clipboard_clear()
+        self.window.clipboard_append(text)
+
+    def _save_result_to_file(self):
+        if not self.window or not self.window.winfo_exists():
+            return
+        path = filedialog.asksaveasfilename(
+            title="另存为文件",
+            defaultextension=".xlsx",
+            filetypes=(("Excel Files", "*.xlsx"), ("Text Files", "*.txt"), ("All Files", "*.*")),
+            parent=self.window
+        )
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".xlsx"):
+                self._save_result_as_xlsx(path)
+            else:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(self._result_text.get("1.0", "end"))
+        except Exception as e:
+            messagebox.showerror("错误", "保存失败：{}".format(e), parent=self.window)
+
+    def _save_result_as_xlsx(self, path):
+        import openpyxl
+        seq_width = 5
+        col_widths = []
+        max_rows = max((len(r["results"]) for r in self.rules), default=0)
+        for rule in self.rules:
+            w = len(rule["pattern_str"])
+            for row in range(max_rows):
+                if row < len(rule["results"]):
+                    cell = rule["results"][row][2].replace('\n', ' ')
+                    w = max(w, len(cell))
+            col_widths.append(max(10, w + 2))
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        text = self._result_text.get("1.0", "end")
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            row_data = [line[:seq_width].strip()]
+            pos = seq_width
+            for w in col_widths:
+                row_data.append(line[pos:pos + w].strip())
+                pos += w
+            ws.append(row_data)
+        wb.save(path)
+
+    def _open_result_in_excel(self):
+        if not self.window or not self.window.winfo_exists():
+            return
+        import tempfile
+        text = self._result_text.get("1.0", "end")
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False,
+                                             encoding="utf-8-sig") as f:
+                tmp_path = f.name
+                for line in text.splitlines():
+                    if line.strip():
+                        f.write(",".join(col for col in line.split()) + "\n")
+            import subprocess as sp
+            sp.Popen(["cmd", "/c", "start", "", tmp_path], shell=False)
+        except Exception as e:
+            messagebox.showerror("错误", "打开Excel失败：{}".format(e), parent=self.window)
 
 
 class SerialGUI:
@@ -520,7 +938,7 @@ class SerialGUI:
         self.about_menu.add_command(label="Developed by Xian.Wu", state="disabled")
         self.about_menu.add_command(label="dakongwuxian@gmail.com", state="disabled")
 
-        self.about_menu.add_command(label="Version.20260610", state="disabled")
+        self.about_menu.add_command(label="Version.20260612", state="disabled")
 
         self.about_menu.add_command(label="Buy me a coffee ☕",command=self.show_about_window,state="normal")
         
@@ -1325,6 +1743,8 @@ class SerialGUI:
         #     ))
         self.text_area.delete("1.0", "end"),
         self.last_saved_index = "1.0"
+        self.regex_monitor.global_offset = 0
+        self.regex_monitor.match_buffer = ""
         self.sent_bytes = 0
         self.received_bytes = 0
         self.update_data_stats()
@@ -4336,6 +4756,10 @@ GUI 控件状态:
                         self.tk_safe(lambda: self.text_area.delete("1.0", f"{delete_end_line}.0"),wait=True)
                         print(f"delete content start index=1.0 end index={delete_end_line}.0")
 
+                        # 重置 RegexMonitor 的偏移和缓冲，避免与自动清屏冲突
+                        self.regex_monitor.global_offset = 0
+                        self.regex_monitor.match_buffer = ""
+
                         # 更新 last_saved_index
                         last_saved_index_line = int(self.last_saved_index.split('.')[0])
                         last_saved_index_colume = int(self.last_saved_index.split('.')[1])
@@ -4386,6 +4810,11 @@ GUI 控件状态:
             config['Setup'][f'history_{i+1}'] = p
         for i, s in enumerate(self.history_strike):
             config['Setup'][f'history_{i+1}_strike'] = str(s)
+        # 保存正则匹配自动保存设置
+        p, n, m = self.regex_monitor.get_save_settings()
+        config['Setup']['regex_save_path'] = p
+        config['Setup']['regex_save_filename'] = n
+        config['Setup']['regex_save_max_mb'] = m
         # 在程序所在目录创建/覆盖 TermPlusSetup.ini
         with open("TermPlusSetup.ini", "w", encoding="utf-8") as configfile:
             config.write(configfile)
