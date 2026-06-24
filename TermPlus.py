@@ -938,7 +938,18 @@ class SerialGUI:
         self.about_menu.add_command(label="Developed by Xian.Wu", state="disabled")
         self.about_menu.add_command(label="dakongwuxian@gmail.com", state="disabled")
 
-        self.about_menu.add_command(label="Version.20260612", state="disabled")
+        def get_version():
+            # 尝试从环境变量中读取打包时注入的日期
+            build_version = os.environ.get("TERMPLUS_BUILD_VERSION")
+            
+            if build_version:
+                # 如果是运行打包后的 exe，能直接拿到这个固定的打包日期
+                return build_version
+            else:
+                # 如果你是在 VS Code 里直接跑源码开发，拿不到环境变量，就显示当前日期加上 (Dev) 标识
+                return f"Version {datetime.now().strftime('%y%m%d')} (Dev)"
+            
+        self.about_menu.add_command(label=get_version(), state="disabled")
 
         self.about_menu.add_command(label="Buy me a coffee ☕",command=self.show_about_window,state="normal")
         
