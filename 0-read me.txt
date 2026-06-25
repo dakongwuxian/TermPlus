@@ -1,7 +1,7 @@
 
-1、将TermPlus_vxxxxxx文件夹所有文件复制到需要使用的电脑
+1、将TermPlus_v26xxxx.zip复制到需要使用的电脑并解压
 
-2、进入TermPlus_vxxxxxx文件夹，双击TermPlus_v2xxxxx.exe即可启动程序。
+2、进入TermPlus_v26xxxx文件夹，双击TermPlus_v26xxxx.exe即可启动程序。exe需要保持跟internal文件夹在同一个位置才能启动。
 
 3、自动化脚本参见Example Scripts文件夹，旧版本参见History versions文件夹，使用说明参见2-User Manual for TermPlus.txt。
 

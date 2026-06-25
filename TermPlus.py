@@ -15,12 +15,11 @@ import builtins
 import configparser
 from datetime import datetime
 import io
-from io import BytesIO
+import json
 import keyword
 import os # 遍历目录
 import paramiko
 import pyvisa
-rm = pyvisa.ResourceManager('@py')
 from pyvisa.constants import AccessModes
 from PIL import Image, ImageTk
 import platform
@@ -160,6 +159,8 @@ class RegexMonitor:
         self._rules_filepath = ""
         # 监控开关
         self._monitoring = False
+        # 增量刷新：记录已显示的行数
+        self._last_displayed_row = 0
 
     def on_new_text(self, chars):
         if not self.rules or not self.window or not self._monitoring:
@@ -209,21 +210,39 @@ class RegexMonitor:
                     g_end = self.global_offset + block_start_in_buffer + m.end()
                     all_matches[rule_idx].append((g_start, g_end, m.group(1) if m.lastindex else m.group()))
 
-        # 统一写入：每轮写入前先快照当前最大行数，所有规则都对齐到这一快照值再追加
-        max_count = max((len(m) for m in all_matches), default=0)
-        for i in range(max_count):
-            # 快照本轮开始时各列的行数基准
-            row_base = max((len(r["results"]) for r in self.rules), default=0)
-            # 先将本轮有匹配的列全部补齐到 row_base
-            for rule_idx, rule in enumerate(self.rules):
-                if i < len(all_matches[rule_idx]):
-                    while len(rule["results"]) < row_base:
-                        rule["results"].append((0, 0, ""))
-            # 再追加本轮所有匹配
-            for rule_idx, rule in enumerate(self.rules):
-                if i < len(all_matches[rule_idx]):
-                    g_start, g_end, text = all_matches[rule_idx][i]
-                    self._add_result_aligned(rule, g_start, g_end, text)
+        # 统一写入：按源文本行分组，组内按列号排序，确保同一行数据的各列按列序填充
+        # 为每条匹配确定它属于哪一行源文本（用 complete_lines 的 block_start 判断）
+        # 计算每行源文本的起始偏移
+        line_starts = []
+        offset = self.global_offset
+        for cl in complete_lines:
+            line_starts.append(offset)
+            offset += len(cl) + 1
+
+        def get_source_line(g_start):
+            """确定 g_start 属于哪一行源文本"""
+            for idx in range(len(line_starts) - 1, -1, -1):
+                if g_start >= line_starts[idx]:
+                    return idx
+            return 0
+
+        # 收集所有匹配并附带列号和源行号
+        all_sorted = []
+        for rule_idx in range(len(self.rules)):
+            for g_start, g_end, text in all_matches[rule_idx]:
+                src_line = get_source_line(g_start)
+                all_sorted.append((src_line, rule_idx, g_start, g_end, text))
+        # 按源行号排序，同行内按列号排序
+        all_sorted.sort(key=lambda x: (x[0], x[1]))
+
+        has_new = False
+        for src_line, rule_idx, g_start, g_end, text in all_sorted:
+            if self._add_result_with_alignment(rule_idx, g_start, g_end, text):
+                has_new = True
+
+        # 批量写入完成后刷新显示
+        if has_new:
+            self._refresh_all_columns()
 
         overlap_count = max(max_lines - 1, 0)
         if overlap_count > 0 and len(complete_lines) > overlap_count:
@@ -243,44 +262,82 @@ class RegexMonitor:
             remaining += '\n'
         self.match_buffer = remaining + leftover
 
-    def _add_result_aligned(self, rule, g_start, g_end, text):
-        """写入一条匹配结果，调用前外部已保证各列行数对齐，直接追加即可"""
+    def _add_result_with_alignment(self, rule_idx, g_start, g_end, text):
+        """
+        按对齐规则写入一条匹配结果。
+        核心逻辑：
+        1. 如果本列末尾有空占位行，回填到最早的那个空占位行
+        2. 否则直接追加到本列末尾（下一行）
+        左侧列写入时会给右侧列补空行（通过对齐逻辑），右侧列到达时回填这些空行。
+        返回 True 表示成功写入，False 表示被去重跳过。
+        """
+        rule = self.rules[rule_idx]
         results = rule["results"]
-        # 去重
+        # 去重：新匹配被已有结果完全包含则跳过
         for rs, re_, rt in results:
             if rs <= g_start and g_end <= re_:
-                return
+                return False
+        # 去重：新匹配完全包含某些旧结果则删除旧结果
         results[:] = [(rs, re_, rt) for rs, re_, rt in results if not (g_start <= rs and re_ <= g_end)]
-        results.append((g_start, g_end, text))
-        self._check_max_rows()
-        self._refresh_all_columns()
-        self._autosave_new_rows()
 
-    def _add_result(self, rule, g_start, g_end, text):
-        results = rule["results"]
-        # 去重
-        for rs, re_, rt in results:
-            if rs <= g_start and g_end <= re_:
-                return
-        results[:] = [(rs, re_, rt) for rs, re_, rt in results if not (g_start <= rs and re_ <= g_end)]
-        # 对齐逻辑：
-        # max_row = 所有列结果数的最大值
-        # 如果本列行数 < max_row，写入第max_row行（补空占位到max_row-1，再写入）
-        # 如果本列行数 == max_row，新起一行（追加）
-        max_row = max((len(r["results"]) for r in self.rules), default=0)
-        while len(results) < max_row - 1:
+        # 策略1：回填 —— 从末尾往前找最早的连续空占位行，填入第一个
+        backfill_idx = len(results)
+        while backfill_idx > 0 and results[backfill_idx - 1] == (0, 0, ""):
+            backfill_idx -= 1
+        if backfill_idx < len(results):
+            # 有空行可以回填
+            results[backfill_idx] = (g_start, g_end, text)
+            self._check_max_rows()
+            self._autosave_new_rows()
+            return True
+
+        # 策略2：无空行可回填，直接追加
+        # 如果本列是"先导列"（右侧列在当前最大行已有真实数据），需要给右侧列补空行
+        global_max = max((len(self.rules[i]["results"]) for i in range(len(self.rules))), default=0)
+        target_row = len(results) + 1  # 默认：直接追加到本列下一行
+
+        # 但如果左侧列已经比本列高，且本列是先导列（写入后需要给右侧留位置），
+        # 则需要对齐到全局最大行+1
+        # 判断条件：本列左侧有列，且左侧列比本列高
+        if rule_idx > 0:
+            left_max = max((len(self.rules[i]["results"]) for i in range(rule_idx)), default=0)
+            # 如果左侧列比本列还高，那本列直接追加即可（不跳行）
+            # 如果本列和左侧列齐平，且右侧列在本行已有数据，才需要新起一行
+            if len(results) >= left_max:
+                # 本列已经和左侧齐平，检查右侧是否在当前行已有数据
+                right_has_data = False
+                for i in range(rule_idx + 1, len(self.rules)):
+                    r = self.rules[i]["results"]
+                    if len(r) > len(results) and len(r) > 0:
+                        # 右侧列比本列高且有数据
+                        last_entry = r[len(results)] if len(results) < len(r) else None
+                        if last_entry and last_entry != (0, 0, ""):
+                            right_has_data = True
+                            break
+                if right_has_data:
+                    target_row = len(results) + 1  # 新起一行（给右侧留空）
+        
+        # 对于最左列（rule_idx=0），写入后需要给右侧列补空行
+        # 补空行到 target_row - 1（通常不需要，因为 target_row = len+1）
+        while len(results) < target_row - 1:
             results.append((0, 0, ""))
-        if len(results) < max_row:
-            # 本列行数 < max_row，覆盖写入第max_row行（即index max_row-1）
-            results.append((g_start, g_end, text))
-        else:
-            # 本列行数 == max_row，新起一行
-            results.append((g_start, g_end, text))
-        # 检查是否超过最大行数
+        results.append((g_start, g_end, text))
+
+        # 关键：左侧列写入后，给右侧列补空行到相同高度，以便右侧后续回填
+        current_len = len(results)
+        for i in range(rule_idx + 1, len(self.rules)):
+            r = self.rules[i]["results"]
+            while len(r) < current_len:
+                r.append((0, 0, ""))
+
         self._check_max_rows()
-        self._refresh_all_columns()
-        # 自动保存：写入新增行
         self._autosave_new_rows()
+        return True
+
+    def _add_result_aligned(self, rule, g_start, g_end, text):
+        """向后兼容：供 _test_all 等旧调用使用"""
+        rule_idx = self.rules.index(rule) if rule in self.rules else 0
+        self._add_result_with_alignment(rule_idx, g_start, g_end, text)
 
     def _check_max_rows(self):
         max_row = max((len(r["results"]) for r in self.rules), default=0)
@@ -290,6 +347,9 @@ class RegexMonitor:
                 deleted = keep_from
                 rule["results"] = rule["results"][keep_from:]
                 rule["saved_count"] = max(0, rule.get("saved_count", 0) - deleted)
+            # 截断后需要全量重绘
+            self._last_displayed_row = 0
+            self._refresh_all_columns()
 
     def _autosave_new_rows(self):
         if self._save_stop or self._save_file is None:
@@ -357,6 +417,41 @@ class RegexMonitor:
                 line += cell.ljust(col_widths[i])
             self._result_text.insert(tk.END, line.rstrip() + '\n')
         self._result_text.see(tk.END)
+        # 记录已显示的行数，供增量刷新使用
+        self._last_displayed_row = max_rows
+
+    def _refresh_incremental(self):
+        """增量刷新：只追加 _last_displayed_row 之后的新行，避免全量重绘"""
+        if not self.window or not self.window.winfo_exists():
+            return
+        if not hasattr(self, '_result_text') or not self._result_text.winfo_exists():
+            return
+        max_rows = max((len(r["results"]) for r in self.rules), default=0)
+        start = getattr(self, '_last_displayed_row', 0)
+        if start >= max_rows:
+            return
+        seq_width = 5
+        # 计算各列宽度（与全量刷新一致）
+        col_widths = []
+        for rule in self.rules:
+            w = len(rule["pattern_str"])
+            for row in range(max_rows):
+                if row < len(rule["results"]):
+                    cell = rule["results"][row][2].replace('\n', ' ')
+                    w = max(w, len(cell))
+            col_widths.append(max(10, w + 2))
+        # 只追加新行
+        for row in range(start, max_rows):
+            line = str(row + 1).ljust(seq_width)
+            for i, rule in enumerate(self.rules):
+                if row < len(rule["results"]):
+                    cell = rule["results"][row][2].replace('\n', ' ')
+                else:
+                    cell = ""
+                line += cell.ljust(col_widths[i])
+            self._result_text.insert(tk.END, line.rstrip() + '\n')
+        self._result_text.see(tk.END)
+        self._last_displayed_row = max_rows
 
     def _get_cursor_col(self):
         if not self.rules:
@@ -645,7 +740,7 @@ class RegexMonitor:
         if not self.rules:
             return
         text = self.gui.text_area.get("1.0", tk.END)
-        for rule in self.rules:
+        for rule_idx, rule in enumerate(self.rules):
             compiled = rule["compiled"]
             if compiled is None:
                 continue
@@ -661,17 +756,7 @@ class RegexMonitor:
                     g_start = block_start + m.start()
                     g_end = block_start + m.end()
                     matched = m.group(1) if m.lastindex else m.group()
-                    results = rule["results"]
-                    skip = any(rs <= g_start and g_end <= re_ for rs, re_, rt in results)
-                    if skip:
-                        continue
-                    results[:] = [(rs, re_, rt) for rs, re_, rt in results
-                                  if not (g_start <= rs and re_ <= g_end)]
-                    # 对齐逻辑
-                    max_row = max((len(r["results"]) for r in self.rules), default=0)
-                    while len(results) < max_row:
-                        results.append((0, 0, ""))
-                    results.append((g_start, g_end, matched))
+                    self._add_result_with_alignment(rule_idx, g_start, g_end, matched)
         self._refresh_all_columns()
 
     def _swap_col_left(self):
@@ -1216,48 +1301,47 @@ class SerialGUI:
 
         # row 5
         # 按键控制控件行
-        self.row_5_frame = tk.Frame(self.main_frame, width=730, height=30)
-        self.row_5_frame.grid(row=5, column=0, sticky="ew", padx=(10,0), pady=(0,5))
-        self.row_5_frame.grid_propagate(False) # 固定该父容器，history按键超出730宽度时会被裁剪但不影响功能
+        self.row_5_frame = tk.Frame(self.main_frame, height=30)
+        self.row_5_frame.grid(row=5, column=0, sticky="ew", padx=(10,20), pady=(0,5))
 
-        # 脚本路径选择框：上方标签、文本框及小三角按钮
+        # 使用 pack 布局，让下拉框自动填充剩余空间
+        # 左侧固定控件
         self.script_path_label = tk.Label(self.row_5_frame, text="按键选择")
-        self.script_path_label.place(relx=0, rely=0.5, anchor="w",x=0)
+        self.script_path_label.pack(side="left")
 
-        # 文本框宽度与关闭串口按钮一致，文本右对齐
         self.script_path_entry = tk.Entry(self.row_5_frame, width=25, justify="right")
-        self.script_path_entry.place(relx=0, rely=0.5, anchor="w",x=60)
-        # 路径浏览按键
+        self.script_path_entry.pack(side="left", padx=(5,2))
+
         self.script_path_button = tk.Button(self.row_5_frame, text="…", command=self.choose_script_path)
-        self.script_path_button.place(relx=0, rely=0.5, anchor="w",x=240)
-        # 下拉选择框，用于显示脚本路径下所有 .ts 文件
-        self.script_file_combo = ttk.Combobox(self.row_5_frame, values=[], width=42, state="readonly")
-        self.script_file_combo.place(relx=0, rely=0.5, anchor="w",x=270)
+        self.script_path_button.pack(side="left", padx=(0,5))
 
-        # 加载按钮
-        self.load_script_button = tk.Button(self.row_5_frame, width = 5, text="加载", command=self.load_script)
-        self.load_script_button.place(relx=0, rely=0.5, anchor="w",x=585)
-        # 保存按钮
-        self.save_script_button = tk.Button(self.row_5_frame,width = 5, text="保存", command=self.save_script)
-        self.save_script_button.place(relx=0, rely=0.5, anchor="w",x=635)
-        # 另存按钮
-        self.save_as_script_button = tk.Button(self.row_5_frame, width = 5,text="另存", command=self.save_as_new_script)
-        self.save_as_script_button.place(relx=0, rely=0.5, anchor="w",x=685)
-
-        # history 按键区域
-        self.history_label = tk.Label(self.row_5_frame, text="历史...")
-        self.history_label.place(relx=0, rely=0.5, anchor="w", x=740)
+        # 右侧固定控件（从右往左 pack）
         self.history_paths = [""] * 5
         self.history_buttons = []
         self.history_strike = [False] * 5
         self.history_btn_frame = tk.Frame(self.row_5_frame)
-        self.history_btn_frame.place(relx=0, rely=0.5, anchor="w", x=795)
+        self.history_btn_frame.pack(side="right", padx=(2,0))
         for i in range(5):
             btn = tk.Button(self.history_btn_frame, text=str(i+1),
                             command=lambda idx=i: self._load_from_history(idx))
             btn.pack(side="left", padx=1)
             self.history_buttons.append(btn)
 
+        self.history_label = tk.Label(self.row_5_frame, text="历史...")
+        self.history_label.pack(side="right", padx=(5,2))
+
+        self.save_as_script_button = tk.Button(self.row_5_frame, width=5, text="另存", command=self.save_as_new_script)
+        self.save_as_script_button.pack(side="right", padx=2)
+
+        self.save_script_button = tk.Button(self.row_5_frame, width=5, text="保存", command=self.save_script)
+        self.save_script_button.pack(side="right", padx=2)
+
+        self.load_script_button = tk.Button(self.row_5_frame, width=5, text="加载", command=self.load_script)
+        self.load_script_button.pack(side="right", padx=2)
+
+        # 中间下拉框，填充剩余空间
+        self.script_file_combo = ttk.Combobox(self.row_5_frame, values=[], state="readonly")
+        self.script_file_combo.pack(side="left", fill="x", expand=True, padx=(0,5))
         # Row 6: Notebook区域（标签页区域），创建一个一行两列的区域，让notebook占据第一行一列，第一行第二列固定宽度。
         self.row_6_frame = tk.Frame(self.main_frame, height=186)#width=730, 
         self.row_6_frame.grid(row=6, column=0, sticky="nsew", padx=(0,20), pady=(0,10))
@@ -1436,34 +1520,33 @@ class SerialGUI:
  
         # row 9
         # 脚本控制区域
-        self.row_9_frame = tk.Frame(self.main_frame,width=730, height=30)
-        self.row_9_frame.grid(row=9, column=0, sticky="ew", padx=(10,0), pady=(2,0))
-        self.row_9_frame.grid_propagate(False) # 固定该父容器
+        self.row_9_frame = tk.Frame(self.main_frame, height=30)
+        self.row_9_frame.grid(row=9, column=0, sticky="ew", padx=(10,20), pady=(2,0))
 
-        # 脚本相关配置控件
-        # multi_script_path_label
+        # 使用 pack 布局
+        # 左侧固定控件
         self.multi_script_path_label = tk.Label(self.row_9_frame, text="脚本选择")
-        self.multi_script_path_label.place(relx=0, rely=0.5, anchor="w",x=0)
+        self.multi_script_path_label.pack(side="left")
 
-        # 路径选择文本框
         self.multi_script_path_entry = tk.Entry(self.row_9_frame, width=25, justify="right")
-        self.multi_script_path_entry.place(relx=0, rely=0.5, anchor="w",x=60)
+        self.multi_script_path_entry.pack(side="left", padx=(5,2))
 
-        # 路径按钮
         self.multi_script_path_button = tk.Button(self.row_9_frame, text="…", command=self.multi_choose_script_path)
-        self.multi_script_path_button.place(relx=0, rely=0.5, anchor="w",x=240)
-        
-        # 文件选择下拉框
-        self.multi_script_file_combo = ttk.Combobox(self.row_9_frame, values=[], width=42, state="readonly")
-        self.multi_script_file_combo.place(relx=0, rely=0.5, anchor="w",x=270)
+        self.multi_script_path_button.pack(side="left", padx=(0,5))
 
-        # 三个按键
-        self.open_multi_loop_btn = tk.Button(self.row_9_frame, text="打开", width=5, command=self.open_multi_loop_file)
-        self.open_multi_loop_btn.place(relx=0, rely=0.5, anchor="w",x=585)
-        self.save_multi_loop_btn = tk.Button(self.row_9_frame, text="保存", width=5, command=self.save_multi_loop_file)
-        self.save_multi_loop_btn.place(relx=0, rely=0.5, anchor="w",x=635)
+        # 右侧固定控件（从右往左 pack）
         self.save_as_multi_loop_btn = tk.Button(self.row_9_frame, text="另存", width=5, command=self.save_multi_loop_file_as)
-        self.save_as_multi_loop_btn.place(relx=0, rely=0.5, anchor="w",x=685)
+        self.save_as_multi_loop_btn.pack(side="right", padx=2)
+
+        self.save_multi_loop_btn = tk.Button(self.row_9_frame, text="保存", width=5, command=self.save_multi_loop_file)
+        self.save_multi_loop_btn.pack(side="right", padx=2)
+
+        self.open_multi_loop_btn = tk.Button(self.row_9_frame, text="打开", width=5, command=self.open_multi_loop_file)
+        self.open_multi_loop_btn.pack(side="right", padx=2)
+
+        # 中间下拉框，填充剩余空间
+        self.multi_script_file_combo = ttk.Combobox(self.row_9_frame, values=[], state="readonly")
+        self.multi_script_file_combo.pack(side="left", fill="x", expand=True, padx=(0,5))
 
         # right_frame 右侧功能区，使用grid放置在右下角
         self.right_frame = tk.Frame(self.main_frame) # , borderwidth=1, relief="raised" 边框可选项 flat raised sunken groove ridge
@@ -1629,18 +1712,18 @@ class SerialGUI:
         # 不抛出异常，让 Tkinter 事件循环继续
 
     def show_about_window(self):
-        top = tk.Toplevel(root)
+        top = tk.Toplevel(self.root)
         top.title("Coffee!")
         # 设置固定窗口大小
         win_width = 300
         win_height = 300
 
         # 获取主窗口的位置和尺寸
-        root.update_idletasks()
-        root_x = root.winfo_x()
-        root_y = root.winfo_y()
-        root_width = root.winfo_width()
-        root_height = root.winfo_height()
+        self.root.update_idletasks()
+        root_x = self.root.winfo_x()
+        root_y = self.root.winfo_y()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
 
         # 计算居中位置
         pos_x = root_x + (root_width - win_width) // 2
@@ -1653,7 +1736,7 @@ class SerialGUI:
         try:
             # 解码 base64 数据
             img_data = base64.b64decode(img_base64)
-            img_pil = Image.open(BytesIO(img_data))
+            img_pil = Image.open(io.BytesIO(img_data))
             img_resized = img_pil.resize((200, 200), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(img_resized)
 
@@ -1752,7 +1835,7 @@ class SerialGUI:
         #     self.text_area.delete("1.0", "end"),
         #     self.last_saved_index = self.text_area.index("end-1c")
         #     ))
-        self.text_area.delete("1.0", "end"),
+        self.text_area.delete("1.0", "end")
         self.last_saved_index = "1.0"
         self.regex_monitor.global_offset = 0
         self.regex_monitor.match_buffer = ""
@@ -1867,11 +1950,11 @@ class SerialGUI:
 
         def wait_for(target_string, over_time):
             if target_string == '':
-                self.tk_safe(lambda: messagebox.showwarning("Warning", "wait for must have a target string."), parent=self.root)
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "wait for must have a target string.", parent=self.root))
 
                 return False
             if over_time <= 0:
-                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."), parent=self.root)
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive.", parent=self.root))
 
                 return False
 
@@ -1905,8 +1988,15 @@ class SerialGUI:
                         self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for get function find last index bigger than current index. wait for function skipped", parent=self.root))
                         return False
                     if status == "new":
-                        script_wait_for_new_text = val
-                        last_index = new_index
+                        script_wait_for_new_text += val
+                        # 保留冗余：last_index 回退 target_string 长度，防止目标被截断
+                        retain_chars = len(target_string) - 1
+                        def _calc_retain_index(ni=new_index, rc=retain_chars, si=start_index):
+                            candidate = self.text_area.index(f"{ni} - {rc}c")
+                            if self.text_area.compare(candidate, "<", si):
+                                return si
+                            return candidate
+                        last_index = self.tk_safe(_calc_retain_index)
                     if target_string in script_wait_for_new_text:
                         return True
                     time.sleep(0.1)
@@ -1931,11 +2021,11 @@ class SerialGUI:
 
         def wait_for_any(target_list, timeout):
             if not target_list:
-                self.tk_safe(lambda: messagebox.showwarning("Warning", "wait_for_any must have a non-empty target list."), parent=self.root)
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "wait_for_any must have a non-empty target list.", parent=self.root))
 
                 return None
             if timeout <= 0:
-                self.tk_safe(lambda: messagebox.showwarning("Warning", "Timeout must be positive."), parent=self.root)
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "Timeout must be positive.", parent=self.root))
 
                 return None
 
@@ -1975,11 +2065,21 @@ class SerialGUI:
                         return "same", "", ci
                     status, val, new_index = self.tk_safe(_wait_for_any_check)
                     if status == "error":
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait for any index error, last index bigger than current index. wait for any skipped."), parent=self.root)
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait for any index error, last index bigger than current index. wait for any skipped.", parent=self.root))
                         return None
                     if status == "new":
-                        self.script_wait_for_any_new_text = val
-                        last_index = new_index  # ci already consumed in _wait_for_any_check
+                        self.script_wait_for_any_new_text += val
+                        # 保留冗余：last_index 回退最长目标字符串长度，防止目标被截断
+                        retain_chars = length_of_longest_string - 1 if length_of_longest_string > 0 else 0
+                        if retain_chars > 0:
+                            def _calc_retain_index_any(ni=new_index, rc=retain_chars, si=start_index):
+                                candidate = self.text_area.index(f"{ni} - {rc}c")
+                                if self.text_area.compare(candidate, "<", si):
+                                    return si
+                                return candidate
+                            last_index = self.tk_safe(_calc_retain_index_any)
+                        else:
+                            last_index = new_index
                     for target in target_list:
                         if target in self.script_wait_for_any_new_text:
                             return target
@@ -2004,7 +2104,7 @@ class SerialGUI:
 
         def show_str(string_to_show):
             if string_to_show == "":
-                self.tk_safe(lambda: messagebox.showerror("函数错误", "show_str函数的输入值不能为空."), parent=self.root)
+                self.tk_safe(lambda: messagebox.showerror("函数错误", "show_str函数的输入值不能为空.", parent=self.root))
 
                 return
             self.tk_safe(lambda:self.text_area.insert(tk.END, string_to_show))
@@ -2051,7 +2151,17 @@ class SerialGUI:
                     current_index, new_text = self.tk_safe(_send_and_get_check)
                     if new_text:
                         collected_text += new_text
-                        last_index = current_index
+                        # 保留冗余：last_index 回退 wait_str 长度，防止目标被截断
+                        if wait_str:
+                            retain_chars = len(wait_str) - 1
+                            def _calc_retain_index_sag(ci=current_index, rc=retain_chars, si=start_index):
+                                candidate = self.text_area.index(f"{ci} - {rc}c")
+                                if self.text_area.compare(candidate, "<", si):
+                                    return si
+                                return candidate
+                            last_index = self.tk_safe(_calc_retain_index_sag)
+                        else:
+                            last_index = current_index
                     # 检查停止条件：wait_str
                     if wait_str and wait_str in collected_text:
                         break
@@ -2108,7 +2218,7 @@ class SerialGUI:
             if line_amount<1:
                 return None
             if over_time <= 0:
-                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."), parent=self.root)
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive.", parent=self.root))
 
                 return None
 
@@ -2125,7 +2235,7 @@ class SerialGUI:
                     current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
                     if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
                         #print(f"get_future_lines function failed due to last index bigger than current index.\n")
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index."), parent=self.root)
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index.", parent=self.root))
 
                         return None
                     if self.tk_safe(lambda:self.text_area.compare(last_index, "==", current_index)):
@@ -2151,11 +2261,11 @@ class SerialGUI:
 
         def get_future_lines_till_str_or_overtime(end_str,over_time):
             if end_str == '':
-                self.tk_safe(lambda: messagebox.showwarning("Warning", "end_str must not be empty."), parent=self.root)
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "end_str must not be empty.", parent=self.root))
 
                 return None
             if over_time <= 0:
-                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive."), parent=self.root)
+                self.tk_safe(lambda: messagebox.showwarning("Warning", "Over time must be positive.", parent=self.root))
 
                 return None
 
@@ -2172,7 +2282,7 @@ class SerialGUI:
                     current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
                     if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
                         #print(f"get_future_lines function failed due to last index bigger than current index.\n")
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index."), parent=self.root)
+                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index.", parent=self.root))
 
                         return None
                     if self.tk_safe(lambda:self.text_area.compare(last_index, "==", current_index)):
@@ -2200,7 +2310,7 @@ class SerialGUI:
             try:
                 self.tk_safe(lambda: self.port_menu.set(port_str))
             except Exception as e:
-                self.tk_safe(lambda: messagebox.showerror("错误", f"设置端口失败: {e}"), parent=self.root)
+                self.tk_safe(lambda: messagebox.showerror("错误", f"设置端口失败: {e}", parent=self.root))
 
 
         def set_baudrate(baud):
@@ -2208,7 +2318,7 @@ class SerialGUI:
             try:
                 self.tk_safe(lambda: self.baud_var.set(baud_str))
             except Exception as e:
-                self.tk_safe(lambda: messagebox.showerror("错误", f"设置波特率失败: {e}"), parent=self.root)
+                self.tk_safe(lambda: messagebox.showerror("错误", f"设置波特率失败: {e}", parent=self.root))
 
 
         # This function will be injected into the user's script
@@ -2715,10 +2825,10 @@ GUI 控件状态:
                 self.ps_proc.stdin.write(cmd_text + "\n")
                 self.ps_proc.stdin.flush()
             except Exception as e:
-                self.tk_safe(lambda: messagebox.showerror("错误", f"PowerShell 发送失败: {e}"), parent=self.root)
+                self.tk_safe(lambda: messagebox.showerror("错误", f"PowerShell 发送失败: {e}", parent=self.root))
 
         else:
-            self.tk_safe(lambda: messagebox.showwarning("警告", "请先执行 open power shell"), parent=self.root)
+            self.tk_safe(lambda: messagebox.showwarning("警告", "请先执行 open power shell", parent=self.root))
 
     
 
@@ -3146,16 +3256,6 @@ GUI 控件状态:
         path_entry.insert(0, default_path)
     
         tk.Button(new_win, text="选择", command=lambda: self.choose_folder_in_win(path_entry)).grid(row=0, column=2, padx=5, pady=5)
-    
-        def choose_folder():
-            try:
-                folder = self.root.tk.call('tk_chooseDirectory')
-            except Exception:
-                folder = filedialog.askdirectory(title="选择文件夹")
-            if folder:
-                path_entry.delete(0, tk.END)
-                path_entry.insert(0, folder)
-        tk.Button(new_win, text="选择", command=choose_folder).grid(row=0, column=2, padx=5, pady=5)
 
         tk.Label(new_win, text="文件名 (.ts):").grid(row=1, column=0, padx=5, pady=5, sticky="w")
         file_entry = tk.Entry(new_win, width=40)
@@ -3953,7 +4053,7 @@ GUI 控件状态:
                 if self.tk_safe(lambda: self.text_area.compare(self.wait_for_initial_index, ">", current_index)):
                     print("wait for x for t error, initial index bigger than current index, wait for skipped.")
                     self.auto_delete_lock_count -= 1
-                    self.tk_safe(lambda: messagebox.showerror("commands running error","wait for x for t error, initial index bigger than current index, wait for skipped."), parent=self.root)
+                    self.tk_safe(lambda: messagebox.showerror("commands running error","wait for x for t error, initial index bigger than current index, wait for skipped.", parent=self.root))
 
                     return
                         
@@ -4007,7 +4107,7 @@ GUI 控件状态:
                     current_index = self.text_area.index("end-1c")
                     if self.text_area.compare(self.last_send_index, ">", current_index):
                         #print("wait terminal symbol error, last index bigger than current index, wait for skipped.")
-                        self.tk_safe(lambda: messagebox.showerror("wait terminal symbol error","wait terminal symbol error, last index bigger than current index, wait for skipped."), parent=self.root)
+                        self.tk_safe(lambda: messagebox.showerror("wait terminal symbol error","wait terminal symbol error, last index bigger than current index, wait for skipped.", parent=self.root))
 
                         return
                         
@@ -4082,7 +4182,7 @@ GUI 控件状态:
         ):
             # 将SSH状态色块置为灰色
             self.tk_safe(lambda: self.ssh_status_canvas.config(bg="gray"))
-            self.tk_safe(lambda: messagebox.showwarning("警告", "串口或 SSH 未连接"), parent=self.root)
+            self.tk_safe(lambda: messagebox.showwarning("警告", "串口或 SSH 未连接", parent=self.root))
 
             return
         key = data.strip().lower()
@@ -4125,7 +4225,7 @@ GUI 控件状态:
             try:
                 self.ssh_channel.send(raw)
             except Exception as e:
-                self.tk_safe(lambda: messagebox.showerror("SSH 发送失败", str(e)), parent=self.root)
+                self.tk_safe(lambda: messagebox.showerror("SSH 发送失败", str(e), parent=self.root))
 
                 return
         else:
@@ -4328,7 +4428,7 @@ GUI 控件状态:
         path = self.auto_save_path_entry.get().strip()
         fname = self.file_name_entry.get().strip()
         if not path or not fname:
-            self.tk_safe(lambda: messagebox.showwarning("警告", "未指定路径和文件名"), parent=self.root)
+            self.tk_safe(lambda: messagebox.showwarning("警告", "未指定路径和文件名", parent=self.root))
 
             return None
         # 构造文件名：保存文件名_YYYY-MM-DD_HH_MM_SS.txt
@@ -4338,7 +4438,7 @@ GUI 控件状态:
             new_file = open(full_path, "w", encoding="utf-8")
             return new_file
         except Exception as e:
-            self.tk_safe(lambda: messagebox.showerror("错误", f"无法创建自动保存文件：{e}"), parent=self.root)
+            self.tk_safe(lambda: messagebox.showerror("错误", f"无法创建自动保存文件：{e}", parent=self.root))
 
             return None
 
@@ -4479,41 +4579,57 @@ GUI 控件状态:
 
     # --- 新增的 Alt 组合键处理函数 ---
     def on_alt_c_press(self, event):
+        if not self.serial_conn:
+            return "break"
         self.serial_conn.send_byte_data(b'\x03') # Alt+C -> Ctrl+C (ETX)
         print("发送 Alt+C (0x03) 信号到串口。")
         return "break"
 
     def on_alt_d_press(self, event):
+        if not self.serial_conn:
+            return "break"
         self.serial_conn.send_byte_data(b'\x04') # Alt+D -> Ctrl+D (EOT)
         print("发送 Alt+D (0x04) 信号到串口。")
         return "break"
 
     def on_alt_z_press(self, event):
+        if not self.serial_conn:
+            return "break"
         self.serial_conn.send_byte_data(b'\x1A') # Alt+Z -> Ctrl+Z (SUB)
         print("发送 Alt+Z (0x1A) 信号到串口。")
         return "break"
 
     def on_alt_l_press(self, event):
+        if not self.serial_conn:
+            return "break"
         self.serial_conn.send_byte_data(b'\x0C') # Alt+L -> Ctrl+L (FF - Form Feed, Clear Screen)
         print("发送 Alt+L (0x0C) 信号到串口。")
         return "break"
 
     def on_alt_a_press(self, event):
+        if not self.serial_conn:
+            return "break"
         self.serial_conn.send_byte_data(b'\x01') # Alt+A -> Ctrl+A (SOH - Start of Header, Go to Beginning of Line)
         print("发送 Alt+A (0x01) 信号到串口。")
         return "break"
 
     def on_alt_e_press(self, event):
+        if not self.serial_conn:
+            return "break"
         self.serial_conn.send_byte_data(b'\x05') # Alt+E -> Ctrl+E (ENQ - Enquiry, Go to End of Line)
         print("发送 Alt+E (0x05) 信号到串口。")
         return "break"
 
     def on_alt_k_press(self, event):
+        if not self.serial_conn:
+            return "break"
         self.serial_conn.send_byte_data(b'\x0B') # Alt+K -> Ctrl+K (VT - Vertical Tab, Cut to End of Line)
         print("发送 Alt+K (0x0B) 信号到串口。")
         return "break"
 
     def on_alt_u_press(self, event):
+        if not self.serial_conn:
+            return "break"
         self.serial_conn.send_byte_data(b'\x15') # Alt+U -> Ctrl+U (NAK - Negative Acknowledge, Cut to Beginning of Line)
         print("发送 Alt+U (0x15) 信号到串口。")
         return "break"
@@ -4746,8 +4862,9 @@ GUI 控件状态:
         if self.auto_clear_onoff.get():
             # 如果wait for /wait for any函数将该标志位关闭，则不进行自动删除，避免引起index变化导致的问题
             if self.auto_delete_lock_count == 0:
-                auto_clear_all_content = self.tk_safe(lambda: self.text_area.get("1.0", "end-1c"))
-                lenth_total_chars = len(auto_clear_all_content)
+                lenth_total_chars = self.tk_safe(lambda: self.text_area.count("1.0", "end-1c", "chars"))
+                # count 返回元组如 (12345,)，取第一个元素；如果为空则视为0
+                lenth_total_chars = lenth_total_chars[0] if lenth_total_chars else 0
                 if lenth_total_chars > 1000000:
                     print("auto delete triggered")
                     # 获取当前总行数
@@ -4774,7 +4891,8 @@ GUI 控件状态:
                         # 更新 last_saved_index
                         last_saved_index_line = int(self.last_saved_index.split('.')[0])
                         last_saved_index_colume = int(self.last_saved_index.split('.')[1])
-                        self.last_saved_index = f"{last_saved_index_line - delete_end_line + 1}.{last_saved_index_colume}"
+                        new_line = max(1, last_saved_index_line - delete_end_line + 1)
+                        self.last_saved_index = f"{new_line}.{last_saved_index_colume}"
 
                         print(f"[delete] after last_saved_index={self.last_saved_index}")
 
@@ -4815,7 +4933,7 @@ GUI 控件状态:
             'loop_count': self.loop_count_entry.get(),
             'terminal_symbol': self.send_all_terminal_entry.get(),
             'terminal_wait_over_time': self.send_all_over_time_entry.get(),
-            'sent_commands': self.sent_commands
+            'sent_commands': json.dumps(self.sent_commands, ensure_ascii=False)
         }
         for i, p in enumerate(self.history_paths):
             config['Setup'][f'history_{i+1}'] = p
@@ -5127,7 +5245,11 @@ GUI 控件状态:
 
             # 已发送命令
             if 'sent_commands' in setup:
-                self.sent_commands = ast.literal_eval(setup['sent_commands'])
+                try:
+                    self.sent_commands = json.loads(setup['sent_commands'])
+                except (json.JSONDecodeError, ValueError):
+                    # 兼容旧版 INI 文件（用 Python repr 格式存储的）
+                    self.sent_commands = ast.literal_eval(setup['sent_commands'])
                 # 更新下拉框的可选值
                 self.send_entry['values'] = self.sent_commands
 
@@ -5158,7 +5280,7 @@ except Exception:
     with open("TermPlus_crash.log", "a", encoding="utf-8") as f:
         f.write("\n\n==== Crash on {} ====\n".format(datetime.now()))
         f.write(traceback.format_exc())
-    self.tk_safe(lambda: messagebox.showerror("程序异常", "发生未捕获异常，程序已记录日志，参见TermPlus_crash.log。"), parent=self.root)
+    self.tk_safe(lambda: messagebox.showerror("程序异常", "发生未捕获异常，程序已记录日志，参见TermPlus_crash.log。", parent=self.root))
 
 
 
