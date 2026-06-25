@@ -18,7 +18,6 @@ a = Analysis(
     binaries=[],
     datas=[
         ('version_info.py', '.'),
-        ('my_image.jpg', '.')
     ],
     hiddenimports=[
         'pyvisa_py',
