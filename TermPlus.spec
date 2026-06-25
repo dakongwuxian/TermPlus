@@ -16,9 +16,7 @@ a = Analysis(
     ['TermPlus.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('version_info.py', '.'),
-    ],
+    datas=[],
     hiddenimports=[
         'pyvisa_py',
         'pyvisa_py.usb',
