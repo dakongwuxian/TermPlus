@@ -1,3 +1,26 @@
+2026.6.25
+1、[修复] 删除了模块顶层无用的 rm = pyvisa.ResourceManager('@py') 初始化，该行从未被使用且可能导致启动时崩溃。
+2、[修复] 修正了约18处 messagebox 弹窗的 parent=self.root 参数传递错误，之前错误地传给了 tk_safe 而非 messagebox，导致弹窗无法正确关联父窗口置顶。
+3、[修复] show_about_window 中引用全局变量 root 改为 self.root，修复多窗口实例化时的潜在报错。
+4、[修复] 自动清屏后 last_saved_index 计算可能产生负数行号的问题，增加了 max(1, ...) 保护。
+5、[修复] wait_for / wait_for_any / send_and_get 函数中目标字符串可能被分批接收截断的问题。
+	- 修改 script_wait_for_new_text 为追加模式（+= 而非 =）
+	- last_index 更新时回退 len(target_string)-1 个字符的冗余，确保目标字符串不会被分割在两次读取的边界
+	- 回退后的 last_index 不会小于 start_index（使用 text_area.compare 做安全比较）
+6、[优化] 删除了 RegexMonitor._add_result 死代码方法。
+7、[优化] 删除了 save_as_new_script 中重复创建的"选择"按钮和 choose_folder 函数。
+8、[优化] 统一 import：删除 from io import BytesIO，改用 io.BytesIO。
+9、[优化] 自动清屏检测改用 text_area.count("1.0", "end-1c", "chars") 获取字符数，避免每10秒拷贝整个文本内容到Python层。
+10、[优化] sent_commands 的 INI 存取改用 JSON 格式（json.dumps/loads），兼容旧版 ast.literal_eval 格式读取。
+11、[优化] 正则匹配监控的对齐逻辑重写：
+	- 左侧列写入时主动给右侧所有列补空占位行
+	- 右侧列写入时优先回填末尾连续空占位行
+	- 匹配结果按源文本行号+列号排序后统一写入
+	- 解决了分批接收导致的对齐错位和结果丢失问题
+12、[优化] 按键选择和脚本选择两行控件改用 pack 布局，下拉框自动填充剩余空间，随窗口宽度变化自适应，其余控件固定宽度。
+13、[修复] spec 文件中删除了不再使用的 ('my_image.jpg', '.') 打包项。
+
+
 2026.6.24
 1、尝试了新的打包方式，现在是一个exe文件和一个internal文件夹，双击exe即可启动。
 	之前为了规避杀毒软件误报，使用的pyw和bat的启动方式停止使用。
