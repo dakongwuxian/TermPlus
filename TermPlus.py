@@ -1,4 +1,4 @@
-"""
+﻿"""
 版权所有 (c) 2025 [吴宪]
 
 本软件TermPlus（以下简称“软件”）为个人非商业用途开源发布。任何人均可免费使用、复制、修改和分发本软件，但仅限于个人非商业用途。
@@ -1105,6 +1105,7 @@ class SerialGUI:
 
         self.text_area.bind("<Button-3>", self._show_text_popup)  # Windows右键
         self.text_area.bind("<Control-a>", lambda e: self.text_area.event_generate("<<SelectAll>>"))  # Ctrl+A 全选
+        self.text_area.bind("<<Copy>>", self._on_text_area_copy)  # 复制时处理控制字符
 
         # 2. 用 <KeyRelease> + after_idle 来插入分隔符：
         def _text_area_keyrelease(event):
@@ -1252,12 +1253,12 @@ class SerialGUI:
         self.time_label = tk.Label(self.row_3_frame, text="")
         self.time_label.place(relx=0, rely=0.5, anchor="w",x=330)
 
-        # 时间戳label和check box
-        self.time_stamp_title = tk.Label(self.row_3_frame, text="时间戳")
-        self.time_stamp_title.place(relx=0, rely=0.5, anchor="w",x=400)
+        # 时间戳 check box
         self.timestamp_onoff = tk.BooleanVar(value=False)
-        self.timestamp_check = ttk.Checkbutton(self.row_3_frame, variable=self.timestamp_onoff, style='Custom.TCheckbutton')
-        self.timestamp_check.place(relx=0, rely=0.5, anchor="w",x=450)  
+        self.timestamp_check = ttk.Checkbutton(self.row_3_frame, text="时间戳",
+                                               variable=self.timestamp_onoff,
+                                               style='Custom.TCheckbutton')
+        self.timestamp_check.place(relx=0, rely=0.5, anchor="w", x=420)  
 
         self.update_time()  # 启动时间更新
         #循环间隔（s)标签
@@ -1298,6 +1299,13 @@ class SerialGUI:
         self.send_all_over_time_entry = tk.Entry(self.row_4_frame, width=5)
         self.send_all_over_time_entry.place(relx=0, rely=0.5, anchor="w",x=240)
         self.send_all_over_time_entry.insert(0, "5")
+
+        # 自动滚动复选框
+        self.auto_scroll_var = tk.BooleanVar(value=True)
+        self.auto_scroll_check = ttk.Checkbutton(self.row_4_frame, text="自动滚动",
+                                                  variable=self.auto_scroll_var,
+                                                  style='Custom.TCheckbutton')
+        self.auto_scroll_check.place(relx=0, rely=0.5, anchor="w", x=460)
 
         # row 5
         # 按键控制控件行
@@ -1857,7 +1865,47 @@ class SerialGUI:
             self.text_area.delete(tk.SEL_FIRST, tk.SEL_LAST)
         except tk.TclError:
             pass  # 没有选中内容时不报错
-        
+
+    def _on_text_area_copy(self, event=None):
+        """
+        拦截text_area的复制操作，将控制字符转为可见形式后放入剪贴板。
+        例如：ESC -> <ESC>, NUL -> <NUL>, BEL -> <BEL> 等。
+        保留常见的换行符(\n)和制表符(\t)不转换。
+        """
+        try:
+            sel_text = self.text_area.get(tk.SEL_FIRST, tk.SEL_LAST)
+        except tk.TclError:
+            return  # 没有选中内容
+
+        # 控制字符名称映射 (ASCII 0-31 及 127)
+        ctrl_names = {
+            0x00: "<NUL>", 0x01: "<SOH>", 0x02: "<STX>", 0x03: "<ETX>",
+            0x04: "<EOT>", 0x05: "<ENQ>", 0x06: "<ACK>", 0x07: "<BEL>",
+            0x08: "<BS>",  0x0B: "<VT>",  0x0C: "<FF>",  0x0D: "<CR>",
+            0x0E: "<SO>",  0x0F: "<SI>",  0x10: "<DLE>", 0x11: "<DC1>",
+            0x12: "<DC2>", 0x13: "<DC3>", 0x14: "<DC4>", 0x15: "<NAK>",
+            0x16: "<SYN>", 0x17: "<ETB>", 0x18: "<CAN>", 0x19: "<EM>",
+            0x1A: "<SUB>", 0x1B: "<ESC>", 0x1C: "<FS>",  0x1D: "<GS>",
+            0x1E: "<RS>",  0x1F: "<US>",  0x7F: "<DEL>"
+        }
+        # 不转换 \n(0x0A) 和 \t(0x09)，保持原样
+
+        cleaned = []
+        for ch in sel_text:
+            code = ord(ch)
+            if code in ctrl_names:
+                cleaned.append(ctrl_names[code])
+            else:
+                cleaned.append(ch)
+
+        result = ''.join(cleaned)
+
+        # 放入剪贴板
+        self.root.clipboard_clear()
+        self.root.clipboard_append(result)
+
+        return "break"  # 阻止默认的复制行为
+
     def start_multi_loop_send(self):
         #if not self.loop_sending:
         self.loop_sending = True
@@ -2108,7 +2156,7 @@ class SerialGUI:
 
                 return
             self.tk_safe(lambda:self.text_area.insert(tk.END, string_to_show))
-            self.tk_safe(lambda:self.text_area.see(tk.END))
+            self.tk_safe(lambda:self._auto_scroll())
 
         def send_and_get(str_2_send, regex_pattern, over_time, wait_str="", line_count=0):
             """
@@ -2204,7 +2252,7 @@ class SerialGUI:
 
         def show_date_time():
             self.tk_safe(lambda:self.text_area.insert(tk.END, str(datetime.now()) + "\n"))
-            self.tk_safe(lambda:self.text_area.see(tk.END))
+            self.tk_safe(lambda:self._auto_scroll())
 
         def get_last_n_lines(line_amount):
             if line_amount<1:
@@ -2814,8 +2862,13 @@ GUI 控件状态:
         """在 text_area 末尾插入文本，并自动滚动。"""
         # 使用after lambda的形式是为了让子进程不会冲突
         self.tk_safe(lambda:self.text_area.insert(tk.END, text))
-        self.tk_safe(lambda:self.text_area.see(tk.END))
+        self.tk_safe(lambda:self._auto_scroll())
         # 可选：也更新发送/接收统计等
+
+    def _auto_scroll(self):
+        """如果自动滚动复选框勾选，则滚动到底部"""
+        if self.auto_scroll_var.get():
+            self.text_area.yview(tk.END)
 
     def powershell_send(self, cmd_text):
         """类方法：向已打开的 PowerShell 窗口发送命令"""
@@ -3735,48 +3788,48 @@ GUI 控件状态:
             self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA 初始化成功: {address}\n"))
         except Exception as e:
             self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA 初始化失败: {e}\n"))
-        self.tk_safe(lambda: self.text_area.see(tk.END))
+        self.tk_safe(lambda: self._auto_scroll())
 
     def _script_visa_query(self, cmd):
         if not self.psu:
             self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
             return None
         try:
             resp = self.psu.query(cmd)
             self.tk_safe(lambda: self.text_area.insert(tk.END, f">>> VISA QUERY: {cmd}\n{resp}\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
             return resp
         except Exception as e:
             self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA QUERY 错误: {e}\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
             return None
 
     def _script_visa_write(self, cmd):
         if not self.psu:
             self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
             return
         try:
             self.psu.write(cmd)
             self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA WRITE: {cmd}\n"))
         except Exception as e:
             self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA WRITE 错误: {e}\n"))
-        self.tk_safe(lambda: self.text_area.see(tk.END))
+        self.tk_safe(lambda: self._auto_scroll())
 
     def _script_visa_read(self):
         if not self.psu:
             self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
             return None
         try:
             resp = self.psu.read()
             self.tk_safe(lambda: self.text_area.insert(tk.END, f">>> VISA READ:\n{resp}\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
             return resp
         except Exception as e:
             self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA READ 错误: {e}\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
             return None
 
     def _try_execute_cell_command(self, command):
@@ -3788,13 +3841,13 @@ GUI 控件状态:
         if m:
             arg = m.group(1).strip().strip('"').strip("'")
             self.tk_safe(lambda: self.text_area.insert(tk.END, arg))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
             return True
         
         # show_date_time()
         if low == "show_date_time()":
             self.tk_safe(lambda: self.text_area.insert(tk.END, str(datetime.now()) + "\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
             return True
         
         # set_port("COMx")
@@ -3855,7 +3908,7 @@ GUI 控件状态:
                     self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA 初始化失败: {e}\n"))
             else:
                 self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_init 格式错误，应为 visa_init(ADDRESS)\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
             return True
         
         # visa_query(command)
@@ -3873,7 +3926,7 @@ GUI 控件状态:
                         self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA QUERY 错误: {e}\n"))
                 else:
                     self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_query 格式错误，应为 visa_query(COMMAND)\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
             return True
         
         # visa_write(command)
@@ -3891,7 +3944,7 @@ GUI 控件状态:
                         self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA WRITE 错误: {e}\n"))
                 else:
                     self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_write 格式错误，应为 visa_write(COMMAND)\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
             return True
         
         # visa_read()
@@ -3904,7 +3957,7 @@ GUI 控件状态:
                     self.tk_safe(lambda: self.text_area.insert(tk.END, f">>> VISA READ:\n{resp}\n"))
                 except Exception as e:
                     self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA READ 错误: {e}\n"))
-            self.tk_safe(lambda: self.text_area.see(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
             return True
         
         return False
@@ -4008,7 +4061,7 @@ GUI 控件状态:
                         self._send_next_command_with_stop(all_lines, index + 1, on_complete)
                     elif time.time() - start_time >= timeout:
                         self.text_area.insert(tk.END, "串口未收到设置的等待符号，发送终止，请设置或去掉等待符号。", "red")
-                        self.text_area.yview(tk.END)
+                        self._auto_scroll()
                         on_complete()
                     else:
                         self.text_area.after(100, check_terminal)
@@ -4122,7 +4175,7 @@ GUI 控件状态:
                     elif time.time() - start_time >= timeout:
                         # 超时未检测到终止符，在主窗口中显示超时，直接终止函数执行
                         self.text_area.insert(tk.END, "串口未收到设置的等待符号，发送终止，请设置或去掉等待符号。", "red")
-                        self.text_area.yview(tk.END)
+                        self._auto_scroll()
                         return
                     else:
                         self.text_area.after(100, check_terminal)
@@ -4204,7 +4257,7 @@ GUI 控件状态:
                     if insert_display:
                         self.text_area.after(0, lambda: (
                             self.text_area.insert(tk.END, f"[HEX SEND] {data}\n"),
-                            self.text_area.yview(tk.END)
+                            self._auto_scroll()
                         ))
                     return
             except Exception as e:
@@ -4235,7 +4288,7 @@ GUI 控件状态:
         if insert_display:
             # 安全地在主线程插入并滚动
             self.tk_safe(lambda: self.text_area.insert(tk.END, raw))
-            self.tk_safe(lambda: self.text_area.yview(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
         # 在此处更新发送后的窗口的最后的位置
         self.last_send_index = self.tk_safe(lambda: self.text_area.index("end-1c"))
 
@@ -4298,17 +4351,17 @@ GUI 控件状态:
                 self.refresh_btn.config(state="disabled")
                 self.status_canvas.config(bg="green")
                 self.tk_safe(lambda: self.text_area.insert(tk.END, f"串口已打开: {port} @ {baudrate}bps\n"))
-                self.tk_safe(lambda: self.text_area.yview(tk.END))
+                self.tk_safe(lambda: self._auto_scroll())
                 self.stop_reading = False
                 self.reading_thread = threading.Thread(target=self.read_from_serial, daemon=True)
                 self.reading_thread.start()
             else:
                 # 串口未打开成功，给出错误提示
                 self.tk_safe(lambda: self.text_area.insert(tk.END, f"错误: 无法连接到 {port}\n"))
-                self.tk_safe(lambda: self.text_area.yview(tk.END))
+                self.tk_safe(lambda: self._auto_scroll())
         except Exception as e:
             self.tk_safe(lambda: self.text_area.insert(tk.END, f"错误: 无法连接到 {port}\n"))
-            self.tk_safe(lambda: self.text_area.yview(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
 
     def close_serial(self):
         if self.serial_conn:
@@ -4325,7 +4378,7 @@ GUI 控件状态:
             self.refresh_btn.config(state="normal")
             self.status_canvas.config(bg="gray")
             self.tk_safe(lambda: self.text_area.insert(tk.END, "串口已关闭\n"))
-            self.tk_safe(lambda: self.text_area.yview(tk.END))
+            self.tk_safe(lambda: self._auto_scroll())
 
             #if self.loop_sending:
                 #self.loop_sending = False
@@ -4496,7 +4549,7 @@ GUI 控件状态:
                 # 使用 after(0, lambda: ( 将要执行的语句包住，可以让子进程不会跟其他进程冲突
 
                 self.tk_safe(lambda: self.text_area.insert(tk.END, f"{data_to_send}"))
-                self.tk_safe(lambda: self.text_area.yview(tk.END))
+                self.tk_safe(lambda: self._auto_scroll())
                 
 
 
@@ -4547,7 +4600,7 @@ GUI 控件状态:
                             self.recv_buffer = ""
                         chunk = chunk.replace('\r\n', '\n').replace('\r', '\n')
                         self.tk_safe(lambda: self.text_area.insert(tk.END, chunk))
-                        self.tk_safe(lambda: self.text_area.yview(tk.END))
+                        self.tk_safe(lambda: self._auto_scroll())
                         self.last_serial_receive_update_time = self.current_read_time
                         self.received_bytes += len(data_bytes)
                         self.update_data_stats()
@@ -4662,7 +4715,7 @@ GUI 控件状态:
                 # 缓冲区为空时，仅发送一个回车
                 self.send_via_serial("",
                                      add_newline=True,insert_display=False)
-            self.text_area.yview(tk.END)
+            self._auto_scroll()
             self.update_data_stats()
             # 只要按下回车，就在文本框中进行换行
             #self.append_to_text_area(f"\n")
@@ -4909,7 +4962,7 @@ GUI 控件状态:
     def code_show_date_time(self):
         
         self.tk_safe(lambda: self.text_area.insert(tk.END, str(datetime.now()) + "\n"))
-        self.tk_safe(lambda: self.text_area.see(tk.END))
+        self.tk_safe(lambda: self._auto_scroll())
         
     def save_setup(self):
         """
@@ -5081,7 +5134,7 @@ GUI 控件状态:
 
         # 设置所有Label的颜色
         for widget in [self.label_send, self.stats_label, self.date_label_title, self.date_label,
-                        self.time_label_title, self.time_label, self.time_label_title, self.time_stamp_title, self.loop_interval_label,
+                        self.time_label_title, self.time_label, self.time_label_title, self.loop_interval_label,
                         self.send_all_terminal_label, self.send_all_over_time_label,
                         self.multi_loop_label, self.current_loop_count_label,
                         self.default_delay_time_label, self.loop_count_label, self.window_name_label, self.choose_port_label, 
