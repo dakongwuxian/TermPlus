@@ -12,6 +12,7 @@
 import ast
 import base64
 import builtins
+import codecs
 import configparser
 from datetime import datetime
 import io
@@ -139,6 +140,724 @@ def format_bytes(size):
 # 在 SerialGUI 类外或内部定义自定义异常类
 class StopLoopException(Exception):
     pass
+
+
+# ============================================================================
+# 控制字符 / ANSI 转义序列渲染
+# ============================================================================
+
+# C0 控制字符与 DEL 的可读名称（0x09 TAB 与 0x0A LF 不在表内，保持原样）
+CTRL_CHAR_NAMES = {
+    0x00: "<NUL>", 0x01: "<SOH>", 0x02: "<STX>", 0x03: "<ETX>",
+    0x04: "<EOT>", 0x05: "<ENQ>", 0x06: "<ACK>", 0x07: "<BEL>",
+    0x08: "<BS>",  0x0B: "<VT>",  0x0C: "<FF>",  0x0D: "<CR>",
+    0x0E: "<SO>",  0x0F: "<SI>",  0x10: "<DLE>", 0x11: "<DC1>",
+    0x12: "<DC2>", 0x13: "<DC3>", 0x14: "<DC4>", 0x15: "<NAK>",
+    0x16: "<SYN>", 0x17: "<ETB>", 0x18: "<CAN>", 0x19: "<EM>",
+    0x1A: "<SUB>", 0x1B: "<Esc>", 0x1C: "<FS>",  0x1D: "<GS>",
+    0x1E: "<RS>",  0x1F: "<US>",  0x7F: "<DEL>"
+}
+
+
+def escape_ctrl_chars(s):
+    """把控制字符转换成 <Esc> / <CR> / <BEL> 这样的可读文字。"""
+    out = []
+    for ch in s:
+        name = CTRL_CHAR_NAMES.get(ord(ch))
+        out.append(name if name else ch)
+    return ''.join(out)
+
+
+class AnsiTextRenderer:
+    """
+    负责把写入主窗口的文本中的控制字符做处理，共三种显示方式：
+
+    terminal（终端效果）：能实现的直接生效——SGR 颜色/粗体/下划线、\\r 行首覆盖、
+        \\b 退格、\\t 制表位、ESC[K 清行、ESC[C/D/G 行内移动；纯噪声（NUL、光标显隐、
+        窗口标题 OSC、字符集选择）静默丢弃；其余无法实现的（ESC[2J 清屏、ESC[A/B
+        上下移动等）转成 <Esc>[2J 这样的可读文字。
+    escape（显示为文字）：什么效果都不应用，所有控制字符一律转成可读文字
+        （\\n 与 \\t 除外，保持原样，与复制时的行为一致）。
+    raw（原样）：旧版行为，原样写入，仅把 \\r\\n 与 \\r 折叠成 \\n。
+    """
+
+    MODE_TERMINAL = "terminal"
+    MODE_ESCAPE = "escape"
+    MODE_RAW = "raw"
+
+    # 残留（可能被切开的转义序列）最大长度，超过则判定为垃圾数据按字面输出
+    MAX_PENDING = 64
+    # 残留超过该时间（毫秒）仍未补全，则按字面输出，避免内容永久不显示
+    PENDING_FLUSH_MS = 300
+    # 按需创建的颜色 tag 上限，避免 tag_names() 无限增长拖慢自动清屏
+    MAX_DYNAMIC_TAGS = 300
+
+    # 分词正则：完整的转义序列 + 其他 C0 控制字符（不含 \t \n，也不含裸 \x1b）
+    _TOKEN_RE = re.compile(
+        "(\x1b\\[[0-?]*[ -/]*[@-~])"                 # 1 CSI
+        "|(\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\))"    # 2 OSC
+        "|(\x1b[PX^_][\\s\\S]*?\x1b\\\\)"            # 3 DCS/SOS/PM/APC
+        "|(\x1b[ -/][0-~])"                          # 4 ESC + 中间字符 + 终止符
+        "|(\x1b(?![\\[\\]PX^_])[0-~])"               # 5 ESC + 终止符（排除 CSI/OSC/DCS 引导符）
+        "|([\x00-\x08\x0b-\x1a\x1c-\x1f\x7f])"       # 6 其他 C0 / DEL
+        "|(\x1b)"                                    # 7 落单的 ESC（无法构成序列）
+    )
+    _SPLIT_RE = re.compile("([\n\t])")
+
+    # ---- 16 色前景调色板（分别针对浅色/深色背景做了可读性调整）----
+    FG_LIGHT = [
+        "#000000", "#cc0000", "#007f00", "#8a6d00",
+        "#0000cc", "#a800a8", "#007f7f", "#7f7f7f",
+        "#6a6a6a", "#e02020", "#00a000", "#b07800",
+        "#3333e0", "#c800c8", "#00a0a0", "#000000",
+    ]
+    FG_DARK = [
+        "#5a5a5a", "#ff6b6b", "#6bd96b", "#e8d16b",
+        "#7fa8ff", "#e08ae0", "#6bd9d9", "#c8c8c8",
+        "#8a8a8a", "#ff8f8f", "#95e895", "#f2e08a",
+        "#a3bfff", "#eaa8ea", "#8ae8e8", "#ffffff",
+    ]
+    # ---- 16 色背景调色板（浅深主题共用标准配色）----
+    BG_BASE = [
+        "#000000", "#b02020", "#1f9020", "#b09020",
+        "#2040b0", "#a030a0", "#209090", "#d8d8d8",
+        "#707070", "#e04040", "#40c040", "#e0d040",
+        "#4060e0", "#d050d0", "#40c0c0", "#ffffff",
+    ]
+
+    def __init__(self, gui, text_widget):
+        self.gui = gui
+        self.text = text_widget
+        # 真正的插入/删除方法（绕开 SerialGUI 对 insert 的 monkey patch，避免递归）
+        self._insert = text_widget.insert
+        self._delete = text_widget.delete
+        # 字体（粗体/斜体 tag 需要）
+        self.font_family = "Courier New"
+        self.font_size = 10
+        # 显示方式，默认终端效果
+        self.mode = self.MODE_TERMINAL
+        # 主题（影响调色板）
+        self.light_theme = True
+        # 动态创建的颜色 tag 记录：颜色键 -> tag 名
+        self._dyn_fg = {}
+        self._dyn_bg = {}
+        self._dyn_count = 0
+        # 属性组合 -> tag 元组 的缓存
+        self._tag_cache = {}
+        self._pending_timer = None
+        self.reset()
+
+    # ------------------------------------------------------------------ 状态
+    def reset(self):
+        """清屏或重新连接时重置解析状态。"""
+        self.pending = ""          # 被切开的、等待补全的序列
+        self.col = 0               # 当前行的光标列（字符数，非像素）
+        self._last_end = None      # 上次写入后的末尾索引，用于发现外部改动
+        self._monitor_parts = []   # 本次 feed 中实际写入的可见文本（喂给正则监控）
+        self._cr_pending = None    # 已收到但还没落地的 CR，见 _resolve_pending_cr
+        self._reset_sgr()
+        self._cancel_pending_timer()
+
+    def _reset_sgr(self):
+        self.fg = None
+        self.bg = None
+        self.bold = False
+        self.dim = False
+        self.italic = False
+        self.underline = False
+        self.reverse = False
+        self.strike = False
+
+    def set_mode(self, mode):
+        if mode == self.mode:
+            return
+        # 切换方式时先把残留按字面吐出来，避免丢内容
+        if self.pending:
+            data, self.pending = self.pending, ""
+            try:
+                self.feed(data, literal=True)
+            except Exception:
+                pass
+        self.mode = mode
+        self._reset_sgr()
+
+    def bind_widget_methods(self, insert_func, delete_func):
+        """绑定未被 monkey patch 的原始 insert/delete，避免递归调用。"""
+        self._insert = insert_func
+        self._delete = delete_func
+
+    def set_font(self, family, size):
+        self.font_family = family
+        self.font_size = size
+        self._setup_tags()
+
+    @staticmethod
+    def _normalize_tags(tags):
+        """把 insert(..., "green") / insert(..., ("a","b")) 统一成扁平元组。"""
+        if not tags:
+            return ()
+        flat = []
+        for t in tags:
+            if isinstance(t, (tuple, list)):
+                flat.extend(str(x) for x in t)
+            elif t:
+                flat.append(str(t))
+        return tuple(flat)
+
+    def set_theme(self, light):
+        self.light_theme = bool(light)
+        self._setup_tags()
+
+    # ------------------------------------------------------------------ tag
+    def _setup_tags(self):
+        """（重新）配置所有固定 tag。主题或字体变化时会再调用一次。"""
+        t = self.text
+        fg_pal = self.FG_LIGHT if self.light_theme else self.FG_DARK
+        # 背景色 tag 先建（前景色 tag 后建，优先级更高，避免互相覆盖 foreground）
+        for i, color in enumerate(self.BG_BASE):
+            t.tag_config(f"ansi_bg_{i}", background=color)
+        for i, color in enumerate(fg_pal):
+            t.tag_config(f"ansi_fg_{i}", foreground=color)
+        # 反显时用到的“默认色互换”
+        widget_bg = t.cget("background") or ("#FFFFFF" if self.light_theme else "#171b26")
+        widget_fg = t.cget("foreground") or ("#000000" if self.light_theme else "#d9dce4")
+        t.tag_config("ansi_fg_defbg", foreground=widget_bg)
+        t.tag_config("ansi_bg_deffg", background=widget_fg)
+        # 设置了背景色但没设前景色时，按背景明暗自动挑一个可读的前景色
+        t.tag_config("ansi_fg_auto_light", foreground="#000000")
+        t.tag_config("ansi_fg_auto_dark", foreground="#ffffff")
+        # 字形
+        t.tag_config("ansi_bold", font=(self.font_family, self.font_size, "bold"))
+        t.tag_config("ansi_italic", font=(self.font_family, self.font_size, "italic"))
+        t.tag_config("ansi_underline", underline=True)
+        t.tag_config("ansi_strike", overstrike=True)
+        # 被转成文字的控制字符，用独立颜色标出来，方便和真实内容区分
+        t.tag_config("ansi_ctrl", foreground="#b06fb0" if self.light_theme else "#d18fd1")
+        # 已按需创建的颜色 tag 不需要重配（256/真彩色不随主题变化）
+        self._tag_cache.clear()
+
+    @staticmethod
+    def _xterm256(idx):
+        """标准 xterm 256 色表：0-15 基础色 / 16-231 6x6x6 立方 / 232-255 灰阶。"""
+        base = [
+            (0, 0, 0), (205, 0, 0), (0, 205, 0), (205, 205, 0),
+            (0, 0, 238), (205, 0, 205), (0, 205, 205), (229, 229, 229),
+            (127, 127, 127), (255, 0, 0), (0, 255, 0), (255, 255, 0),
+            (92, 92, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255),
+        ]
+        if idx < 16:
+            return base[idx]
+        if idx < 232:
+            n = idx - 16
+            levels = (0, 95, 135, 175, 215, 255)
+            return (levels[n // 36], levels[(n // 6) % 6], levels[n % 6])
+        v = 8 + (idx - 232) * 10
+        return (v, v, v)
+
+    @staticmethod
+    def _luminance(rgb):
+        r, g, b = rgb
+        return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+
+    def _color_rgb(self, color):
+        """把内部颜色表示转换成 (r,g,b)，无法确定时返回 None。"""
+        if isinstance(color, int):
+            if color < 16:
+                pal = self.FG_LIGHT if self.light_theme else self.FG_DARK
+                h = pal[color].lstrip('#')
+                return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+            return self._xterm256(color)
+        if isinstance(color, tuple) and len(color) == 3:
+            return color
+        return None
+
+    def _dyn_tag(self, color, is_fg):
+        """为 256 色 / 真彩色按需创建 tag，超过上限则退化到 16 色。"""
+        store = self._dyn_fg if is_fg else self._dyn_bg
+        key = color
+        name = store.get(key)
+        if name:
+            return name
+        rgb = self._color_rgb(color)
+        if rgb is None:
+            return None
+        if self._dyn_count >= self.MAX_DYNAMIC_TAGS:
+            # 退化：按明暗映射到 16 色里最近的一个
+            lum = self._luminance(rgb)
+            idx = 7 if lum > 0.5 else 8
+            return f"ansi_fg_{idx}" if is_fg else f"ansi_bg_{idx}"
+        prefix = "ansi_dfg_" if is_fg else "ansi_dbg_"
+        name = f"{prefix}{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+        hexcolor = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+        if is_fg:
+            self.text.tag_config(name, foreground=hexcolor)
+        else:
+            self.text.tag_config(name, background=hexcolor)
+        store[key] = name
+        self._dyn_count += 1
+        return name
+
+    def _current_tags(self):
+        """把当前 SGR 状态翻译成 tag 元组。"""
+        key = (self.fg, self.bg, self.bold, self.dim, self.italic,
+               self.underline, self.reverse, self.strike)
+        cached = self._tag_cache.get(key)
+        if cached is not None:
+            return cached
+
+        fg, bg = self.fg, self.bg
+        if self.reverse:
+            # 反显：前后景互换，未设置的一方用控件默认色
+            fg, bg = (bg if bg is not None else 'defbg'), (fg if fg is not None else 'deffg')
+        if self.dim:
+            if fg is None:
+                fg = 8
+            elif isinstance(fg, int) and 8 <= fg <= 15:
+                fg -= 8
+
+        tags = []
+        # 背景
+        if bg == 'deffg':
+            tags.append("ansi_bg_deffg")
+        elif isinstance(bg, int) and bg < 16:
+            tags.append(f"ansi_bg_{bg}")
+        elif bg is not None:
+            name = self._dyn_tag(bg, False)
+            if name:
+                tags.append(name)
+        # 前景
+        if fg == 'defbg':
+            tags.append("ansi_fg_defbg")
+        elif isinstance(fg, int) and fg < 16:
+            tags.append(f"ansi_fg_{fg}")
+        elif fg is not None:
+            name = self._dyn_tag(fg, True)
+            if name:
+                tags.append(name)
+        elif bg is not None and bg != 'deffg':
+            # 只设了背景色：按背景明暗挑一个能看清的前景色
+            rgb = self._color_rgb(bg)
+            if rgb is not None:
+                tags.append("ansi_fg_auto_light" if self._luminance(rgb) > 0.5
+                            else "ansi_fg_auto_dark")
+        # 字形
+        if self.bold:
+            tags.append("ansi_bold")
+        if self.italic:
+            tags.append("ansi_italic")
+        if self.underline:
+            tags.append("ansi_underline")
+        if self.strike:
+            tags.append("ansi_strike")
+
+        result = tuple(tags)
+        self._tag_cache[key] = result
+        return result
+
+    # ------------------------------------------------------------------ 入口
+    def handles(self, index):
+        """判断该 insert 是否是“追加到末尾”，只有末尾追加才交给本渲染器。"""
+        try:
+            resolved = self.text.index(index)
+            return resolved == self.text.index("end-1c") or resolved == self.text.index("end")
+        except Exception:
+            return False
+
+    def feed(self, chars, base_tags=(), literal=False):
+        """
+        主入口。base_tags 是调用方显式指定的 tag（例如时间戳的 "green"），
+        有显式 tag 时以调用方为准，不叠加流里的 SGR 颜色。
+        literal=True 表示内容已确认完整，不再做“跨块残留”判断。
+        必须在主线程调用。
+        """
+        monitor_text = ""
+        base_tags = self._normalize_tags(base_tags)
+        try:
+            self._cancel_pending_timer()
+            self._sync_cursor()
+            if self.mode == self.MODE_RAW:
+                text = chars.replace('\r\n', '\n').replace('\r', '\n')
+                self._cr_pending = None
+                self._raw_insert("end", text, base_tags)
+                self.col = self._line_len()
+                monitor_text = text
+            else:
+                data = self.pending + chars
+                self.pending = ""
+                if not literal:
+                    data, self.pending = self._split_incomplete_tail(data)
+                if data:
+                    self._monitor_parts = []
+                    if self.mode == self.MODE_ESCAPE:
+                        self._render_escape(data, base_tags)
+                    else:
+                        self._render_terminal(data, base_tags)
+                    monitor_text = ''.join(self._monitor_parts)
+                if self.pending:
+                    self._schedule_pending_flush()
+            self._last_end = self.text.index("end-1c")
+        except Exception as e:
+            # 渲染失败不能影响串口收数，退化成原样插入
+            print(f"AnsiTextRenderer 渲染异常，已按原样插入: {e}")
+            try:
+                self._insert("end", chars)
+                monitor_text = chars
+                self.pending = ""
+                self._cr_pending = None
+                self._last_end = self.text.index("end-1c")
+            except Exception:
+                pass
+        if monitor_text:
+            try:
+                self.gui.regex_monitor.on_new_text(monitor_text)
+            except Exception as e:
+                print(f"regex_monitor.on_new_text 异常: {e}")
+
+    # ------------------------------------------------- 残留（跨块序列）处理
+    def _split_incomplete_tail(self, s):
+        """把结尾可能被切开的序列拆出来，返回 (本次可处理部分, 留到下次的残留)。"""
+        if not s:
+            return '', ''
+        idx = s.rfind('\x1b')
+        if idx >= 0:
+            m = self._TOKEN_RE.match(s, idx)
+            # 匹配到第 7 组（落单 ESC）说明序列还没收完
+            if (m is None) or (m.lastindex is not None and m.lastindex >= 6):
+                if len(s) - idx <= self.MAX_PENDING:
+                    return s[:idx], s[idx:]
+                # 太长了，判定为垃圾数据，按字面处理
+        # 末尾孤立的 \r：\r\n 可能被切成两块，留到下次一起判断
+        if s.endswith('\r'):
+            return s[:-1], '\r'
+        return s, ''
+
+    def _schedule_pending_flush(self):
+        try:
+            self._pending_timer = self.text.after(self.PENDING_FLUSH_MS, self._flush_pending)
+        except Exception:
+            self._pending_timer = None
+
+    def _cancel_pending_timer(self):
+        if self._pending_timer is not None:
+            try:
+                self.text.after_cancel(self._pending_timer)
+            except Exception:
+                pass
+            self._pending_timer = None
+
+    def _flush_pending(self):
+        """残留迟迟没有补全，按字面输出，避免内容一直不显示。"""
+        self._pending_timer = None
+        if not self.pending:
+            return
+        data, self.pending = self.pending, ""
+        self.feed(data, literal=True)
+
+    # ------------------------------------------------------------ 渲染实现
+    def _render_escape(self, data, base_tags):
+        """显示为文字：一律转文字，只保留 \\n 与 \\t。"""
+        for part in self._SPLIT_RE.split(data):
+            if not part:
+                continue
+            if part == '\n':
+                self._newline(base_tags)
+            elif part == '\t':
+                self._put(part, base_tags)
+            elif escape_ctrl_chars(part) == part:
+                self._put(part, base_tags)
+            else:
+                # 混合内容：逐段写入，控制字符用 ansi_ctrl 标出来
+                buf = ""
+                for ch in part:
+                    name = CTRL_CHAR_NAMES.get(ord(ch))
+                    if name is None:
+                        buf += ch
+                    else:
+                        if buf:
+                            self._put(buf, base_tags)
+                            buf = ""
+                        self._put(name, base_tags or ("ansi_ctrl",))
+                if buf:
+                    self._put(buf, base_tags)
+
+    def _render_terminal(self, data, base_tags):
+        """终端效果：能实现的应用，不能实现的转文字。"""
+        pos = 0
+        for m in self._TOKEN_RE.finditer(data):
+            if m.start() > pos:
+                self._write_run(data[pos:m.start()], base_tags)
+            pos = m.end()
+            seq = m.group(0)
+            if m.lastindex >= 6:
+                self._handle_c0(seq, base_tags)
+            else:
+                if not self._handle_escape(seq, m.lastindex):
+                    self._put(escape_ctrl_chars(seq), base_tags or ("ansi_ctrl",))
+        if pos < len(data):
+            self._write_run(data[pos:], base_tags)
+
+    def _handle_c0(self, ch, base_tags):
+        code = ord(ch)
+        if code == 0x00:                    # NUL：常见填充字节，丢弃
+            return
+        if code == 0x0d:                    # CR
+            # CR 的效果一律延后到下一次输出时才落地（见 _resolve_pending_cr），
+            # 这样 \r\n 才不会被当成两个换行，跨块被切开也一样正确。
+            if getattr(self.gui, "auto_delete_lock_count", 0) > 0:
+                # 脚本正盯着 text_area 的索引，退化成换行，保持旧版行为
+                self._cr_pending = 'degrade'
+            else:
+                self._cr_pending = 'overwrite'
+                self.col = 0
+            return
+        if code == 0x08:                    # BS：左移一格
+            if self.col > 0:
+                self.col -= 1
+            return
+        # 其余（BEL/VT/FF/SO/SI/DEL 等）转文字
+        self._put(CTRL_CHAR_NAMES.get(code, ch), base_tags or ("ansi_ctrl",))
+
+    def _handle_escape(self, seq, group):
+        """处理完整转义序列。返回 True 表示已消化（应用效果或静默丢弃）。"""
+        if group == 1:                                  # CSI
+            return self._handle_csi(seq)
+        if group == 2:                                  # OSC
+            body = seq[2:]
+            ps = body.split(';', 1)[0]
+            if ps in ('0', '1', '2', '7'):              # 窗口标题 / 工作目录，噪声
+                return True
+            return False
+        if group == 4:                                  # ESC ( B 之类的字符集选择
+            return seq[1] in '()*+'
+        return False                                    # DCS 与其他 ESC 序列 -> 转文字
+
+    def _handle_csi(self, seq):
+        final = seq[-1]
+        body = seq[2:-1]
+        # 带中间字符（如 ESC[?25h 的 '?' 属于参数字节，这里指 0x20-0x2F）的一律转文字
+        if body and body[-1] in ' !"#$%&\'()*+,-./':
+            return False
+        if final == 'm':
+            self._apply_sgr(body)
+            return True
+        if final in ('h', 'l'):
+            # 私有模式：只静默丢弃光标显隐/闪烁，其余（如备用屏幕）转文字
+            return body in ('?25', '?12')
+        if final == 'K':
+            self._erase_in_line(body)
+            return True
+        if final in ('C', 'D', 'G', '`'):
+            self._move_cursor(final, body)
+            return True
+        return False
+
+    # ------------------------------------------------------------ SGR 解析
+    def _apply_sgr(self, body):
+        if body == '':
+            params = [0]
+        else:
+            params = []
+            for p in body.replace(':', ';').split(';'):
+                params.append(int(p) if p.isdigit() else 0)
+        i = 0
+        n = len(params)
+        while i < n:
+            p = params[i]
+            if p == 0:
+                self._reset_sgr()
+            elif p == 1:
+                self.bold = True
+            elif p == 2:
+                self.dim = True
+            elif p == 3:
+                self.italic = True
+            elif p == 4:
+                self.underline = True
+            elif p == 7:
+                self.reverse = True
+            elif p == 9:
+                self.strike = True
+            elif p in (21, 22):
+                self.bold = False
+                self.dim = False
+            elif p == 23:
+                self.italic = False
+            elif p == 24:
+                self.underline = False
+            elif p == 27:
+                self.reverse = False
+            elif p == 29:
+                self.strike = False
+            elif 30 <= p <= 37:
+                self.fg = p - 30
+            elif p == 39:
+                self.fg = None
+            elif 40 <= p <= 47:
+                self.bg = p - 40
+            elif p == 49:
+                self.bg = None
+            elif 90 <= p <= 97:
+                self.fg = p - 90 + 8
+            elif 100 <= p <= 107:
+                self.bg = p - 100 + 8
+            elif p in (38, 48):
+                color, consumed = self._parse_extended_color(params, i + 1)
+                if consumed:
+                    if p == 38:
+                        self.fg = color
+                    else:
+                        self.bg = color
+                    i += consumed
+            # 5/6（闪烁）、8（隐藏）等忽略
+            i += 1
+
+    @staticmethod
+    def _parse_extended_color(params, i):
+        """解析 38;5;n / 38;2;r;g;b，返回 (颜色, 消耗的参数个数)。"""
+        if i >= len(params):
+            return None, 0
+        mode = params[i]
+        if mode == 5 and i + 1 < len(params):
+            return max(0, min(255, params[i + 1])), 2
+        if mode == 2 and i + 3 < len(params):
+            r = max(0, min(255, params[i + 1]))
+            g = max(0, min(255, params[i + 2]))
+            b = max(0, min(255, params[i + 3]))
+            return (r, g, b), 4
+        return None, 0
+
+    # ------------------------------------------------------- 光标与行内编辑
+    def _move_cursor(self, final, body):
+        try:
+            n = int(body) if body else 1
+        except ValueError:
+            n = 1
+        line_len = self._line_len()
+        if final == 'C':                    # 右移，不越过行尾已有内容
+            self.col = min(self.col + max(1, n), line_len)
+        elif final == 'D':                  # 左移
+            self.col = max(0, self.col - max(1, n))
+        else:                               # G / ` 绝对列（1 起）
+            self.col = max(0, min(max(1, n) - 1, line_len))
+
+    def _erase_in_line(self, body):
+        try:
+            mode = int(body) if body else 0
+        except ValueError:
+            mode = 0
+        line_start = self.text.index("end-1c linestart")
+        line_len = self._line_len(line_start)
+        if mode == 0:                       # 光标到行尾
+            if self.col < line_len:
+                self._delete(f"{line_start}+{self.col}c", "end-1c")
+        elif mode == 1:                     # 行首到光标（用空格填充，保持列位）
+            keep = min(self.col, line_len)
+            if keep > 0:
+                self._delete(line_start, f"{line_start}+{keep}c")
+                self._insert(line_start, ' ' * keep)
+        else:                               # 整行
+            if line_len > 0:
+                self._delete(line_start, "end-1c")
+
+    def _line_len(self, line_start=None):
+        if line_start is None:
+            line_start = self.text.index("end-1c linestart")
+        return len(self.text.get(line_start, "end-1c"))
+
+    def _sync_cursor(self):
+        """
+        末尾内容可能被别处改动过（本地回显、自动清屏删除前半部分），
+        此时把光标重新对齐到行尾，避免覆盖位置错乱。
+        """
+        try:
+            cur_end = self.text.index("end-1c")
+        except Exception:
+            return
+        if self._last_end is None or cur_end != self._last_end:
+            # 末尾被别处改过，挂着的 CR 已经失去意义，丢掉避免莫名多出换行
+            self._cr_pending = None
+            self.col = self._line_len()
+        else:
+            line_len = self._line_len()
+            if self.col > line_len or self.col < 0:
+                self.col = line_len
+
+    # ------------------------------------------------------------ 文本写入
+    def _write_run(self, run, base_tags):
+        """写入一段普通文本，其中的 \\n 与 \\t 需要特殊处理。"""
+        for part in self._SPLIT_RE.split(run):
+            if not part:
+                continue
+            if part == '\n':
+                self._newline(base_tags)
+            elif part == '\t':
+                self._put(' ' * (8 - (self.col % 8)), base_tags)
+            else:
+                self._put(part, base_tags)
+
+    def _resolve_pending_cr(self, base_tags, followed_by_nl):
+        """
+        把挂着的 CR 落地。延后处理是为了区分 \\r\\n 和裸 \\r：
+          - 紧跟 \\n：CR 本身什么都不做，换行由那个 \\n 负责（等价于旧版
+            replace('\\r\\n','\\n')），否则每行都会多出一个空行。
+          - 退化模式（脚本盯索引）：真的插一个换行，等价于旧版 replace('\\r','\\n')。
+          - 覆盖模式：窗口里不换行（后续文本原地覆盖），但给正则监控补一个换行，
+            这样按行匹配的规则看到的还是一行一条。
+        """
+        kind = self._cr_pending
+        if not kind:
+            return
+        self._cr_pending = None
+        if followed_by_nl:
+            return
+        if kind == 'degrade':
+            self._emit_newline(base_tags)
+        else:
+            self._monitor_parts.append('\n')
+
+    def _newline(self, base_tags):
+        """收到 \\n：先消化挂着的 CR，再换行。"""
+        self._resolve_pending_cr(base_tags, followed_by_nl=True)
+        self._emit_newline(base_tags)
+
+    def _emit_newline(self, base_tags):
+        """真正写入换行：始终追加到文本末尾，光标回到新行行首。"""
+        self._raw_insert("end", '\n', base_tags)
+        self.col = 0
+        self._monitor_parts.append('\n')
+
+    def _put(self, text, base_tags):
+        """按当前列写入文本：在行尾则追加，在行内则覆盖。"""
+        if not text:
+            return
+        # 有挂着的 CR 就先落地（可能会插入换行，所以必须在算 line_start 之前）
+        self._resolve_pending_cr(base_tags, followed_by_nl=False)
+        tags = base_tags if base_tags else self._current_tags()
+        line_start = self.text.index("end-1c linestart")
+        line_len = self._line_len(line_start)
+        if self.col > line_len:
+            # 光标被移到了行尾之外，用空格补齐
+            pad = ' ' * (self.col - line_len)
+            self._raw_insert("end", pad, ())
+            self._monitor_parts.append(pad)
+            line_len = self.col
+        if self.col >= line_len:
+            self._raw_insert("end", text, tags)
+            self.col = line_len + len(text)
+        else:
+            start = f"{line_start}+{self.col}c"
+            overwrite = min(len(text), line_len - self.col)
+            self._delete(start, f"{line_start}+{self.col + overwrite}c")
+            self._raw_insert(start, text, tags)
+            self.col += len(text)
+        self._monitor_parts.append(text)
+
+    def _raw_insert(self, index, text, tags):
+        if tags:
+            self._insert(index, text, tags)
+        else:
+            self._insert(index, text)
+
 
 class RegexMonitor:
     MAX_ROWS = 5000  # 最大行数，超过后删除前一半，避免内存无限增长
@@ -930,6 +1649,27 @@ class RegexMonitor:
 
 
 class SerialGUI:
+
+    # 显示方式下拉框：界面文字 <-> 渲染器模式 <-> ini 里保存的值
+    DISPLAY_MODE_LABELS = ("终端效果", "显示为文字", "原样(方块)")
+    DISPLAY_MODE_BY_LABEL = {
+        "终端效果": AnsiTextRenderer.MODE_TERMINAL,
+        "显示为文字": AnsiTextRenderer.MODE_ESCAPE,
+        "原样(方块)": AnsiTextRenderer.MODE_RAW,
+    }
+    DISPLAY_LABEL_BY_MODE = {v: k for k, v in DISPLAY_MODE_BY_LABEL.items()}
+    DISPLAY_MODE_TIP = (
+        "主窗口收到的内容里，有些字符是设备发来的“隐藏指令”，本身看不见。\n"
+        "\n"
+        "终端效果：隐藏指令直接生效——该上色的上色，进度条能在原地刷新。\n"
+        "　　　　　少数无法还原的（清屏、光标上移等）会写成 <Esc>[2J 这样的文字。\n"
+        "\n"
+        "显示为文字：所有隐藏指令一个不漏地写成文字，如 <Esc>[1m、<CR>、<BEL>，\n"
+        "　　　　　　什么效果都不应用。想看清设备到底发了什么时用这档。\n"
+        "\n"
+        "原样(方块)：旧版行为，隐藏指令原样写进窗口，会显示成方块或直接消失。"
+    )
+
     def __init__(self, root, center=True):
         self.root = root
         self.root.report_callback_exception = self.report_callback_exception
@@ -1135,6 +1875,15 @@ class SerialGUI:
         self.text_area.tag_config("blue", foreground="blue")
         self.text_area.tag_config("green", foreground="green")
 
+        # 主窗口改用等宽字体：\r 覆盖、制表位对齐、表格类输出才能对得整齐
+        self.mono_font_family = self._pick_mono_font()
+        self.mono_font_size = 10
+        self.text_area.configure(font=(self.mono_font_family, self.mono_font_size))
+
+        # 控制字符渲染器（终端效果 / 显示为文字 / 原样）
+        self.ansi_renderer = AnsiTextRenderer(self, self.text_area)
+        self.ansi_renderer.set_font(self.mono_font_family, self.mono_font_size)
+
         # 在接受文本框中输入内容的处理
         self.text_area.bind("<Key>", self.on_key_press)
 
@@ -1299,6 +2048,17 @@ class SerialGUI:
         self.send_all_over_time_entry = tk.Entry(self.row_4_frame, width=5)
         self.send_all_over_time_entry.place(relx=0, rely=0.5, anchor="w",x=240)
         self.send_all_over_time_entry.insert(0, "5")
+
+        # 显示方式下拉框：控制字符怎么显示
+        self.display_mode_label = tk.Label(self.row_4_frame, text="显示方式:")
+        self.display_mode_label.place(relx=0, rely=0.5, anchor="w", x=290)
+        self.display_mode_combo = ttk.Combobox(self.row_4_frame, width=10, state="readonly",
+                                               values=list(self.DISPLAY_MODE_LABELS))
+        self.display_mode_combo.place(relx=0, rely=0.5, anchor="w", x=350)
+        self.display_mode_combo.set(self.DISPLAY_MODE_LABELS[0])   # 默认“终端效果”
+        self.display_mode_combo.bind("<<ComboboxSelected>>", self._on_display_mode_change)
+        self._bind_tooltip(self.display_mode_combo, self.DISPLAY_MODE_TIP)
+        self._bind_tooltip(self.display_mode_label, self.DISPLAY_MODE_TIP)
 
         # 自动滚动复选框
         self.auto_scroll_var = tk.BooleanVar(value=True)
@@ -1679,16 +2439,99 @@ class SerialGUI:
         # 初始化正则匹配监控
         self.regex_monitor = RegexMonitor(self)
         self._hook_text_area_insert()
+        # 应用（可能是从 ini 读回来的）显示方式
+        self._on_display_mode_change()
 
         # 启动定时检查任务，每10秒检测一次 text_area 内容是否过大需要删除
         self.auto_save_and_auto_delete()
 
+    def _pick_mono_font(self):
+        """
+        挑一个系统里可用的等宽字体。
+        首选 Cascadia Code，检测不到则退回 Consolas（Vista 起 Windows 都自带），
+        最后兜底 Courier New。
+        注：Cascadia Code 的连字在 Tk 上不会被渲染（Tk 走 GDI，不执行 OpenType
+        的 calt 特性），实测与 Cascadia Mono 逐像素一致，不会影响列位计算。
+        """
+        try:
+            families = set(tkFont.families())
+        except Exception:
+            families = set()
+        for name in ("Cascadia Code", "Consolas", "Courier New"):
+            if name in families:
+                return name
+        return "Courier New"
+
+    def _bind_tooltip(self, widget, text):
+        """给控件加一个鼠标悬停提示。"""
+        state = {"win": None, "timer": None}
+
+        def show():
+            state["timer"] = None
+            if state["win"] is not None:
+                return
+            try:
+                x = widget.winfo_rootx()
+                y = widget.winfo_rooty() + widget.winfo_height() + 4
+                tip = tk.Toplevel(widget)
+                tip.wm_overrideredirect(True)
+                tip.wm_geometry(f"+{x}+{y}")
+                tk.Label(tip, text=text, justify="left", relief="solid", borderwidth=1,
+                         background="#FFFFE1", foreground="#000000",
+                         padx=6, pady=4).pack()
+                state["win"] = tip
+            except Exception:
+                state["win"] = None
+
+        def on_enter(_event=None):
+            if state["timer"] is None:
+                state["timer"] = widget.after(400, show)
+
+        def on_leave(_event=None):
+            if state["timer"] is not None:
+                try:
+                    widget.after_cancel(state["timer"])
+                except Exception:
+                    pass
+                state["timer"] = None
+            if state["win"] is not None:
+                try:
+                    state["win"].destroy()
+                except Exception:
+                    pass
+                state["win"] = None
+
+        widget.bind("<Enter>", on_enter, add="+")
+        widget.bind("<Leave>", on_leave, add="+")
+        widget.bind("<ButtonPress>", on_leave, add="+")
+
+    def _on_display_mode_change(self, event=None):
+        """显示方式下拉框变化时切换渲染器模式。"""
+        label = self.display_mode_combo.get()
+        mode = self.DISPLAY_MODE_BY_LABEL.get(label, AnsiTextRenderer.MODE_TERMINAL)
+        self.ansi_renderer.set_mode(mode)
+        # 让焦点回到接收窗口，避免下拉框吞掉后续按键
+        try:
+            self.text_area.focus_set()
+        except Exception:
+            pass
+
     def _hook_text_area_insert(self):
         original_insert = self.text_area.insert
+        # 渲染器直接持有未被 hook 的原始方法，避免递归
+        self.ansi_renderer.bind_widget_methods(original_insert, self.text_area.delete)
+
         def hooked_insert(index, chars, *args):
+            if not chars:
+                return
+            # 只有“追加到末尾”的写入才交给控制字符渲染器；
+            # 本地行编辑那类在 "insert" 光标处的写入保持原样。
+            if self.ansi_renderer.handles(index):
+                self.ansi_renderer.feed(chars, args)
+                return
             original_insert(index, chars, *args)
-            if chars:
-                self.regex_monitor.on_new_text(chars)
+            self.regex_monitor.on_new_text(chars)
+
         self.text_area.insert = hooked_insert
 
     def toggle_regex_monitor(self):
@@ -1847,6 +2690,8 @@ class SerialGUI:
         self.last_saved_index = "1.0"
         self.regex_monitor.global_offset = 0
         self.regex_monitor.match_buffer = ""
+        # 重置控制字符渲染器的解析状态（光标列、颜色、跨块残留）
+        self.ansi_renderer.reset()
         self.sent_bytes = 0
         self.received_bytes = 0
         self.update_data_stats()
@@ -1869,7 +2714,7 @@ class SerialGUI:
     def _on_text_area_copy(self, event=None):
         """
         拦截text_area的复制操作，将控制字符转为可见形式后放入剪贴板。
-        例如：ESC -> <ESC>, NUL -> <NUL>, BEL -> <BEL> 等。
+        例如：ESC -> <Esc>, NUL -> <NUL>, BEL -> <BEL> 等。
         保留常见的换行符(\n)和制表符(\t)不转换。
         """
         try:
@@ -1877,28 +2722,10 @@ class SerialGUI:
         except tk.TclError:
             return  # 没有选中内容
 
-        # 控制字符名称映射 (ASCII 0-31 及 127)
-        ctrl_names = {
-            0x00: "<NUL>", 0x01: "<SOH>", 0x02: "<STX>", 0x03: "<ETX>",
-            0x04: "<EOT>", 0x05: "<ENQ>", 0x06: "<ACK>", 0x07: "<BEL>",
-            0x08: "<BS>",  0x0B: "<VT>",  0x0C: "<FF>",  0x0D: "<CR>",
-            0x0E: "<SO>",  0x0F: "<SI>",  0x10: "<DLE>", 0x11: "<DC1>",
-            0x12: "<DC2>", 0x13: "<DC3>", 0x14: "<DC4>", 0x15: "<NAK>",
-            0x16: "<SYN>", 0x17: "<ETB>", 0x18: "<CAN>", 0x19: "<EM>",
-            0x1A: "<SUB>", 0x1B: "<ESC>", 0x1C: "<FS>",  0x1D: "<GS>",
-            0x1E: "<RS>",  0x1F: "<US>",  0x7F: "<DEL>"
-        }
-        # 不转换 \n(0x0A) 和 \t(0x09)，保持原样
-
-        cleaned = []
-        for ch in sel_text:
-            code = ord(ch)
-            if code in ctrl_names:
-                cleaned.append(ctrl_names[code])
-            else:
-                cleaned.append(ch)
-
-        result = ''.join(cleaned)
+        # 复用模块级的控制字符名称表（不转换 \n 和 \t，保持原样）。
+        # 注：显示方式为“终端效果”或“显示为文字”时控制字符基本不会再进到窗口里，
+        # 这里主要是给“原样(方块)”模式和历史内容兜底。
+        result = escape_ctrl_chars(sel_text)
 
         # 放入剪贴板
         self.root.clipboard_clear()
@@ -2857,7 +3684,8 @@ GUI 控件状态:
                 buffer = ""
 
     def _append_text(self, text):
-        if not isinstance(text, str) or text.strip() == "":
+        # 不能用 strip() 判空：纯 \r 或纯转义序列的小块也要交给渲染器处理
+        if not isinstance(text, str) or text == "":
             return
         """在 text_area 末尾插入文本，并自动滚动。"""
         # 使用after lambda的形式是为了让子进程不会冲突
@@ -4562,6 +5390,8 @@ GUI 控件状态:
 
     def read_from_serial(self):
         self.recv_buffer = ""
+        # UTF-8 增量解码器：多字节字符跨读取边界时不再变成 U+FFFD
+        self._rx_decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
         self.last_serial_receive_update_time = time.time()
         while not self.stop_reading:
             if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
@@ -4579,7 +5409,8 @@ GUI 控件状态:
                             timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                             self.tk_safe(lambda: self.text_area.insert(tk.END, f"\nReceive at {timestamp_str}\n", "green"))
                             self.allow_new_timestamp = False  # 插入一次时间戳后禁止后续插入
-                        received_str = data_bytes.decode(errors='replace')
+                        # 用增量解码器，避免一个多字节字符被 read_all() 切开后变成乱码方块
+                        received_str = self._rx_decoder.decode(data_bytes)
                         self.recv_buffer += received_str
 
                     else:
@@ -4591,15 +5422,10 @@ GUI 控件状态:
 
                     # 定期批量刷新UI（每200ms或缓存>2KB）
                     if len(self.recv_buffer) > 2048 or ((self.current_read_time - self.last_serial_receive_update_time) > 0.1 and len(self.recv_buffer)>0):
-                        # 如果缓冲区末尾是孤立的 \r，保留到下次刷新，避免 \r\n 被拆分导致多出换行
-                        if self.recv_buffer.endswith('\r'):
-                            chunk = self.recv_buffer[:-1]
-                            self.recv_buffer = '\r'
-                        else:
-                            chunk = self.recv_buffer
-                            self.recv_buffer = ""
-                        chunk = chunk.replace('\r\n', '\n').replace('\r', '\n')
-                        self.tk_safe(lambda: self.text_area.insert(tk.END, chunk))
+                        # 孤立的 \r 与被切开的转义序列都由 AnsiTextRenderer 负责跨块拼接
+                        chunk = self.recv_buffer
+                        self.recv_buffer = ""
+                        self.tk_safe(lambda c=chunk: self.text_area.insert(tk.END, c))
                         self.tk_safe(lambda: self._auto_scroll())
                         self.last_serial_receive_update_time = self.current_read_time
                         self.received_bytes += len(data_bytes)
@@ -4986,6 +5812,8 @@ GUI 控件状态:
             'loop_count': self.loop_count_entry.get(),
             'terminal_symbol': self.send_all_terminal_entry.get(),
             'terminal_wait_over_time': self.send_all_over_time_entry.get(),
+            'display_mode': self.DISPLAY_MODE_BY_LABEL.get(
+                self.display_mode_combo.get(), AnsiTextRenderer.MODE_TERMINAL),
             'sent_commands': json.dumps(self.sent_commands, ensure_ascii=False)
         }
         for i, p in enumerate(self.history_paths):
@@ -5097,6 +5925,8 @@ GUI 控件状态:
             
         # 设置输入文字的控件的颜色，ttk.Combox
         self.text_area.configure(background=text_bg_color, foreground=text_fg_color, insertbackground=cursor_color)
+        # ANSI 颜色调色板要跟随主题，否则深色背景下黑字、浅色背景下白字都看不见
+        self.ansi_renderer.set_theme(self.current_color_theme_light)
         self.multi_loop_text.configure(background=text_bg_color, foreground=text_fg_color, insertbackground=cursor_color)
         self.auto_save_path_entry.configure(background=text_bg_color, foreground=text_fg_color, insertbackground=cursor_color)
 
@@ -5136,6 +5966,7 @@ GUI 控件状态:
         for widget in [self.label_send, self.stats_label, self.date_label_title, self.date_label,
                         self.time_label_title, self.time_label, self.time_label_title, self.loop_interval_label,
                         self.send_all_terminal_label, self.send_all_over_time_label,
+                        self.display_mode_label,
                         self.multi_loop_label, self.current_loop_count_label,
                         self.default_delay_time_label, self.loop_count_label, self.window_name_label, self.choose_port_label, 
                         self.baud_label, self.auto_save_label,self.auto_save_path_label,self.save_file_name_label,self.file_max_volume_label,
@@ -5295,6 +6126,12 @@ GUI 控件状态:
             if 'terminal_wait_over_time' in setup:
                 self.send_all_over_time_entry.delete(0, 'end')
                 self.send_all_over_time_entry.insert(0, setup['terminal_wait_over_time'])
+
+            # 显示方式（控制字符怎么显示）
+            if 'display_mode' in setup:
+                label = self.DISPLAY_LABEL_BY_MODE.get(setup['display_mode'].strip())
+                if label:
+                    self.display_mode_combo.set(label)
 
             # 已发送命令
             if 'sent_commands' in setup:
