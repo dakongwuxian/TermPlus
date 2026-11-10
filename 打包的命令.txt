@@ -1,0 +1,9 @@
+py -3.13 -m PyInstaller --noconfirm TermPlus.spec
+
+# 必须用 Python 3.13（自带 Tk 8.6）打包，不要用 3.14（自带 Tk 9.0）。
+# 3.14 打包的 v261021 在脚本区域持续输出、开启自动保存时，提交内存（private）会涨到 500MB 以上；
+# 同一份源码用 3.13 打包的 v261109 只有约 60MB。
+# 打包后检查 dist\TermPlus_vXXXXXX\_internal 里应为 python313.dll 和 tcl86t.dll，不应出现 tcl90.dll。
+# 首次在新电脑上打包前先安装依赖：
+# py -3.13 -m pip install --user pyinstaller paramiko pyvisa pyvisa-py pyserial pillow openpyxl
+# 打包前先关掉正在运行的 TermPlus；如果 dist 下已有同名文件夹，先改名，避免 OneDrive 锁文件导致"拒绝访问"。

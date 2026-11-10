@@ -37,6 +37,45 @@ import time
 import traceback
 from urllib.parse import urljoin,quote
 
+
+def _parse_visa_call(name, line):
+    """解析 visa_init / visa_query / visa_write 的参数，返回参数文本；格式不对返回 None。
+
+    支持：
+      visa_query(CHAM:WAVE_TEXT?)            括号形式，取第一个 "(" 到最后一个 ")" 之间的全部内容，
+                                              内部的括号、引号不会截断；最后一个 ")" 之后的内容（注释等）忽略
+      visa_query（CHAM:IP?）                 全角括号
+      visa_query CHAM:IP?                    空格简写形式
+    """
+    s = line.strip()
+    if not s.lower().startswith(name):
+        return None
+    rest = s[len(name):]
+    if rest.lstrip()[:1] in ("(", "（"):
+        m = re.match(r'^\s*[\(（]\s*(.*\S)\s*[\)）]', rest)
+        return m.group(1) if m else None
+    if rest[:1].isspace() and rest.strip():
+        return rest.strip()
+    return None
+
+
+def _visa_arg_to_py(arg):
+    """把脚本里 visa_init/visa_query/visa_write 的参数转成可执行的 Python 表达式。
+
+    - 以引号开头且本身是合法 Python 表达式（如 "OUTP ON"、"VOLT " + str(v)）时原样保留，
+      兼容已有写法；
+    - 否则视为原始命令文本，用 repr() 生成字符串字面量，内部的引号、反斜杠、括号都会被正确转义，
+      例如 CHAM:WAVE_TEXT "(start temp 25C)-(loop count 10)"。
+    """
+    if arg[:1] in ('"', "'"):
+        try:
+            ast.parse(arg, mode='eval')
+            return arg
+        except SyntaxError:
+            pass
+    return repr(arg)
+
+
 # 嵌入的二维码 base64 字符串（PNG 格式）
 img_base64 = (
 "iVBORw0KGgoAAAANSUhEUgAAANgAAADZAQAAAABqB8PlAAAAGmVYSWZNTQAqAAAACAABARIAAwAA"
@@ -1651,11 +1690,14 @@ class RegexMonitor:
 class SerialGUI:
 
     # 显示方式下拉框：界面文字 <-> 渲染器模式 <-> ini 里保存的值
-    DISPLAY_MODE_LABELS = ("终端效果", "显示为文字", "原样(方块)")
+    # HEX显示 不是 AnsiTextRenderer 的模式，它只改串口接收内容的呈现方式，见 _on_display_mode_change
+    HEX_RX_MODE = "hex"
+    DISPLAY_MODE_LABELS = ("终端效果", "显示为文字", "原样(方块)", "HEX显示")
     DISPLAY_MODE_BY_LABEL = {
         "终端效果": AnsiTextRenderer.MODE_TERMINAL,
         "显示为文字": AnsiTextRenderer.MODE_ESCAPE,
         "原样(方块)": AnsiTextRenderer.MODE_RAW,
+        "HEX显示": HEX_RX_MODE,
     }
     DISPLAY_LABEL_BY_MODE = {v: k for k, v in DISPLAY_MODE_BY_LABEL.items()}
     DISPLAY_MODE_TIP = (
@@ -1667,8 +1709,17 @@ class SerialGUI:
         "显示为文字：所有隐藏指令一个不漏地写成文字，如 <Esc>[1m、<CR>、<BEL>，\n"
         "　　　　　　什么效果都不应用。想看清设备到底发了什么时用这档。\n"
         "\n"
-        "原样(方块)：旧版行为，隐藏指令原样写进窗口，会显示成方块或直接消失。"
+        "原样(方块)：旧版行为，隐藏指令原样写进窗口，会显示成方块或直接消失。\n"
+        "\n"
+        "HEX显示：串口收到的每个字节都按两位十六进制显示、字节之间空一格，\n"
+        "　　　　　如 A0 01 01 A2。不做任何文本解码，适合调试继电器、Modbus 这类\n"
+        "　　　　　二进制协议——非 ASCII 字节不会再变成“�”而丢掉原值。\n"
+        "　　　　　只转换串口收到的内容，时间戳、[HEX SEND] 回显、脚本输出照旧。\n"
+        "　　　　　切回其他三档即退出十六进制显示。"
     )
+
+    # 串口接收是否按十六进制显示（对应下拉框的“HEX显示”），供接收线程读取
+    hex_rx_display = False
 
     def __init__(self, root, center=True):
         self.root = root
@@ -2275,7 +2326,9 @@ class SerialGUI:
             "show_date_time",
             "get_last_n_lines",
             "get_future_n_lines_or_till_overtime",
-            "get_future_lines_till_str_or_overtime"
+            "get_future_lines_till_str_or_overtime",
+            "run_button",
+            "send_commands_from_file"
         ]
         
         # 合并所有词，转义后拼成一个大正则
@@ -2509,7 +2562,11 @@ class SerialGUI:
         """显示方式下拉框变化时切换渲染器模式。"""
         label = self.display_mode_combo.get()
         mode = self.DISPLAY_MODE_BY_LABEL.get(label, AnsiTextRenderer.MODE_TERMINAL)
-        self.ansi_renderer.set_mode(mode)
+        # HEX显示只作用于串口接收内容（在 read_from_serial 里转成十六进制文本），
+        # 其他写进主窗口的内容仍按终端效果渲染；切到别的档位即自动退出十六进制显示。
+        self.hex_rx_display = (mode == self.HEX_RX_MODE)
+        self.ansi_renderer.set_mode(
+            AnsiTextRenderer.MODE_TERMINAL if self.hex_rx_display else mode)
         # 让焦点回到接收窗口，避免下拉框吞掉后续按键
         try:
             self.text_area.focus_set()
@@ -2833,21 +2890,25 @@ class SerialGUI:
 
                 return False
 
-            self.auto_delete_lock_count += 1
-            script_wait_for_new_text = ""
-            start_time = time.time()
-            last_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
-            start_index = last_index
-
+            # finally 里要用到的变量先给好默认值，避免异常发生在赋值之前导致 NameError
             line_num = getattr(self, '_current_script_line', None)
-            show_countdown = over_time >= 2 and line_num is not None
+            show_countdown = False
             countdown_suffix = ""
-            last_shown = int(over_time)
-            if show_countdown:
-                countdown_suffix = f" ({last_shown})"
-                self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.insert(f"{ln}.end", cs))
-
+            # 锁计数的自增必须紧贴 try，否则中间任何一句抛异常（例如 over_time
+            # 被误传成字符串）都会让 finally 不执行，锁永久泄漏、自动清屏失效
+            self.auto_delete_lock_count += 1
             try:
+                script_wait_for_new_text = ""
+                start_time = time.time()
+                last_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
+                start_index = last_index
+
+                show_countdown = over_time >= 2 and line_num is not None
+                last_shown = int(over_time)
+                if show_countdown:
+                    countdown_suffix = f" ({last_shown})"
+                    self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.insert(f"{ln}.end", cs))
+
                 while time.time() - start_time < over_time:
                     if self.loop_stop:
                         raise StopLoopException("循环已停止")
@@ -2904,18 +2965,22 @@ class SerialGUI:
 
                 return None
 
-            self.auto_delete_lock_count += 1
-            self.script_wait_for_any_new_text = ""
-
+            # finally 里要用到的变量先给好默认值，避免异常发生在赋值之前导致 NameError
             line_num = getattr(self, '_current_script_line', None)
-            show_countdown = timeout >= 2 and line_num is not None
+            show_countdown = False
             countdown_suffix = ""
-            last_shown = int(timeout)
-            if show_countdown:
-                countdown_suffix = f" ({last_shown})"
-                self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.insert(f"{ln}.end", cs))
-
+            # 锁计数的自增必须紧贴 try，否则中间任何一句抛异常（例如 timeout
+            # 被误传成字符串）都会让 finally 不执行，锁永久泄漏、自动清屏失效
+            self.auto_delete_lock_count += 1
             try:
+                self.script_wait_for_any_new_text = ""
+
+                show_countdown = timeout >= 2 and line_num is not None
+                last_shown = int(timeout)
+                if show_countdown:
+                    countdown_suffix = f" ({last_shown})"
+                    self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.insert(f"{ln}.end", cs))
+
                 start_time = time.time()
                 last_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
                 start_index = last_index
@@ -2994,23 +3059,27 @@ class SerialGUI:
                 return None
             # 发送
             send_line(str_2_send)
-            # 记录发送后的位置
-            self.auto_delete_lock_count += 1
-            start_index = self.tk_safe(lambda: self.text_area.index("end-1c"))
-            last_index = start_index
-            collected_text = ""
-            start_time = time.time()
             last_match = None
-
+            # finally 里要用到的变量先给好默认值，避免异常发生在赋值之前导致 NameError
             line_num = getattr(self, '_current_script_line', None)
-            show_countdown = over_time >= 2 and line_num is not None
+            show_countdown = False
             countdown_suffix = ""
-            last_shown = int(over_time)
-            if show_countdown:
-                countdown_suffix = f" ({last_shown})"
-                self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.insert(f"{ln}.end", cs))
-
+            # 锁计数的自增必须紧贴 try，否则中间任何一句抛异常（例如 over_time
+            # 被误传成字符串）都会让 finally 不执行，锁永久泄漏、自动清屏失效
+            self.auto_delete_lock_count += 1
             try:
+                # 记录发送后的位置
+                start_index = self.tk_safe(lambda: self.text_area.index("end-1c"))
+                last_index = start_index
+                collected_text = ""
+                start_time = time.time()
+
+                show_countdown = over_time >= 2 and line_num is not None
+                last_shown = int(over_time)
+                if show_countdown:
+                    countdown_suffix = f" ({last_shown})"
+                    self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.insert(f"{ln}.end", cs))
+
                 while True:
                     if self.loop_stop:
                         raise StopLoopException("循环已停止")
@@ -3056,9 +3125,21 @@ class SerialGUI:
                             ))
                             last_shown = remaining
                     time.sleep(0.1)
-                # 执行正则匹配
-                if collected_text and regex_pattern:
-                    results = re.findall(regex_pattern, collected_text)
+                # 执行正则匹配。
+                # 注意不能直接用 collected_text：为了防止 wait_str 被两次读取切开，
+                # 上面每轮都把 last_index 回退了 len(wait_str)-1 个字符，那部分文本
+                # 会被重复追加，拿它做匹配会多出重复结果。这里从 start_index 到当前
+                # 末尾重新完整取一次，保证不重不漏。
+                match_text = ""
+                if regex_pattern:
+                    def _get_match_text(si=start_index):
+                        ci = self.text_area.index("end-1c")
+                        if self.text_area.compare(si, "<", ci):
+                            return self.text_area.get(si, ci)
+                        return ""
+                    match_text = self.tk_safe(_get_match_text)
+                if match_text and regex_pattern:
+                    results = re.findall(regex_pattern, match_text)
                     if results:
                         if len(results) == 1:
                             # 只有一个匹配结果
@@ -3076,6 +3157,306 @@ class SerialGUI:
                 if show_countdown and countdown_suffix:
                     self.tk_safe(lambda cs=countdown_suffix, ln=line_num: self.multi_loop_text.delete(f"{ln}.end - {len(cs)}c", f"{ln}.end"))
             return last_match
+
+        # run_button / send_commands_from_file 里用来识别 wait 语句的正则，
+        # 与按键发送引擎 _send_next_command 保持一致（那里只认整数秒，这里放宽到小数）
+        _RE_WAIT_SECONDS = re.compile(r'^wait\s+(\d+(?:\.\d+)?)\s*$', re.IGNORECASE)
+        _RE_WAIT_FOR = re.compile(r'^wait\s+for\s+(.+?)\s+for\s+(\d+(?:\.\d+)?)\s*$', re.IGNORECASE)
+
+        def _write_script_alert(msg):
+            """在主窗口用红色写一段告警，前后各空一行。"""
+            text = f"\n{msg}\n\n"
+            self.tk_safe(lambda: self.text_area.insert(tk.END, text, "red"))
+            self.tk_safe(lambda: self._auto_scroll())
+
+        def _check_run_lines_args(func_name, wait_str, over_time):
+            """run_button / send_commands_from_file 的公共参数校验。"""
+            if not wait_str or not str(wait_str).strip():
+                self.tk_safe(lambda: messagebox.showwarning(
+                    "Warning",
+                    f"{func_name} 必须指定等待符号。\n\n"
+                    "例如设备提示符 $ 或 #。逐行发送时要靠它判断上一条命令是否执行完，\n"
+                    "留空会导致命令被连续灌进设备。",
+                    parent=self.root))
+                return False
+            try:
+                if float(over_time) <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                self.tk_safe(lambda: messagebox.showwarning(
+                    "Warning", f"{func_name} 的超时时间必须是大于 0 的数字。", parent=self.root))
+                return False
+            return True
+
+        def _run_command_lines(source_desc, raw_lines, wait_str, over_time, interpret=True):
+            """
+            逐行执行 raw_lines 里的内容，行为与"点击按键发送"保持一致。
+            interpret=True（默认）时，每一行按下面的顺序判断：
+              1. 空行、以 # 开头的注释行            -> 跳过
+              2. wait <秒>                          -> 真的等待，不发送
+              3. wait for <字符串> for <秒>         -> 真的等待，不发送
+              4. 自定义函数命令（show_str / set_port / connect_serial /
+                 open power shell / visa_xxx 等，与按键区域支持的完全相同）
+                                                    -> 执行，不发送
+              5. 其余                               -> 发送到串口，然后等 wait_str
+            interpret=False 时只做第 1 条，其余一律原样发送到串口。
+            发送后如果下一行是 wait 语句，则跳过本行对 wait_str 的等待
+            （与按键发送引擎的行为一致，避免重复等待）。
+
+            某一行没等到就绪信号不会中断整段，而是在主窗口写一条红色告警后继续下一行。
+            每行的行尾空白会被去掉。
+            返回 1（每一次等待都成功）或 0（有任何一次等待超时）。
+            source_desc 只用于告警文字，例如【按键 初始化】或【文件 init.txt】。
+            """
+            # 保留原始行号（告警要报【第几行】，必须是文件/按键里的行号，不是过滤后的序号）
+            cmds = []
+            for idx, raw in enumerate(raw_lines, start=1):
+                text = raw.rstrip()
+                if not text.strip() or text.lstrip().startswith("#"):
+                    continue
+                cmds.append((idx, text))
+            total = len(cmds)
+            if total == 0:
+                _write_script_alert(f"*** {source_desc} 里没有可发送的命令，已跳过 ***")
+                return 0
+
+            all_hit = True
+            # finally 里要用到的变量先给好默认值
+            line_num = getattr(self, '_current_script_line', None)
+            show_progress = line_num is not None
+            suffix = ""
+
+            def _set_suffix(new_suffix):
+                """更新脚本行尾的【进度 + 倒计时】后缀，写法与现有倒计时保持一致。"""
+                nonlocal suffix
+                old = suffix
+                suffix = new_suffix
+                if old and new_suffix:
+                    self.tk_safe(lambda o=old, n=new_suffix, ln=line_num: (
+                        self.multi_loop_text.delete(f"{ln}.end - {len(o)}c", f"{ln}.end"),
+                        self.multi_loop_text.insert(f"{ln}.end", n)
+                    ))
+                elif new_suffix:
+                    self.tk_safe(lambda n=new_suffix, ln=line_num:
+                                 self.multi_loop_text.insert(f"{ln}.end", n))
+                elif old:
+                    self.tk_safe(lambda o=old, ln=line_num:
+                                 self.multi_loop_text.delete(f"{ln}.end - {len(o)}c", f"{ln}.end"))
+
+            over_time = float(over_time)
+            wait_str = str(wait_str)
+            retain_chars = max(0, len(wait_str) - 1)
+
+            # 锁计数的自增必须紧贴 try，否则异常时 finally 不执行会导致锁泄漏
+            self.auto_delete_lock_count += 1
+            try:
+                for seq, (src_line_no, cmd) in enumerate(cmds, start=1):
+                    # 响应暂停和停止
+                    self.pause_event.wait()
+                    if self.loop_stop:
+                        raise StopLoopException("循环已停止")
+
+                    def _alert(reason):
+                        _write_script_alert(
+                            f"*** 等待超时 ***  来源：{source_desc}  第 {src_line_no} 行"
+                            f"（进度 {seq}/{total}）\n"
+                            f"    命令：{cmd}\n"
+                            f"{reason}\n"
+                            f"    已跳过该行的等待，继续执行下一行"
+                        )
+
+                    if interpret:
+                        # ---- wait <秒> ----
+                        m = _RE_WAIT_SECONDS.match(cmd)
+                        if m:
+                            if show_progress:
+                                _set_suffix(f" ({seq}/{total})")
+                            # 交给脚本自带的 wait()，它有自己的倒计时并响应暂停/停止
+                            wait(float(m.group(1)))
+                            continue
+                        # ---- wait for <字符串> for <秒> ----
+                        m = _RE_WAIT_FOR.match(cmd)
+                        if m:
+                            if show_progress:
+                                _set_suffix(f" ({seq}/{total})")
+                            target, secs = m.group(1), float(m.group(2))
+                            if not wait_for(target, secs):
+                                all_hit = False
+                                _alert(f"    该行是 wait for 语句，未在 {secs:g} 秒内等到：{target}")
+                            continue
+                        # ---- 自定义函数命令（与按键区域支持的完全相同）----
+                        if self.tk_safe(lambda c=cmd: self._try_execute_cell_command(c)):
+                            if show_progress:
+                                _set_suffix(f" ({seq}/{total})")
+                            continue
+
+                    send_line(cmd)
+
+                    # 与按键发送引擎一致：下一行是 wait 语句时，跳过本行对 wait_str 的等待
+                    if interpret and seq < total:
+                        next_cmd = cmds[seq][1]
+                        if next_cmd.strip().lower().startswith("wait"):
+                            if show_progress:
+                                _set_suffix(f" ({seq}/{total})")
+                            continue
+
+                    start_index = self.tk_safe(lambda: self.text_area.index("end-1c"))
+                    last_index = start_index
+                    collected_text = ""
+                    start_time = time.time()
+                    last_shown = int(over_time)
+                    if show_progress:
+                        _set_suffix(f" ({seq}/{total} {last_shown})")
+
+                    hit = False
+                    while True:
+                        self.pause_event.wait()
+                        if self.loop_stop:
+                            raise StopLoopException("循环已停止")
+                        if time.time() - start_time >= over_time:
+                            break
+                        def _check(li=last_index):
+                            ci = self.text_area.index("end-1c")
+                            if self.text_area.compare(li, "<", ci):
+                                return ci, self.text_area.get(li, ci)
+                            return ci, ""
+                        current_index, new_text = self.tk_safe(_check)
+                        if new_text:
+                            collected_text += new_text
+                            # 保留冗余：回退 len(wait_str)-1 个字符，防止等待符号被两次读取切开
+                            if retain_chars:
+                                def _retain(ci=current_index, rc=retain_chars, si=start_index):
+                                    candidate = self.text_area.index(f"{ci} - {rc}c")
+                                    if self.text_area.compare(candidate, "<", si):
+                                        return si
+                                    return candidate
+                                last_index = self.tk_safe(_retain)
+                            else:
+                                last_index = current_index
+                        if wait_str in collected_text:
+                            hit = True
+                            break
+                        if show_progress:
+                            remaining = max(0, int(over_time - (time.time() - start_time)))
+                            if remaining != last_shown:
+                                last_shown = remaining
+                                _set_suffix(f" ({seq}/{total} {remaining})")
+                        time.sleep(0.1)
+
+                    if not hit:
+                        all_hit = False
+                        _alert(f"    未等到等待符号：{wait_str}    超时时间：{over_time:g} 秒")
+            finally:
+                self.auto_delete_lock_count -= 1
+                if show_progress and suffix:
+                    _set_suffix("")
+            return 1 if all_hit else 0
+
+        def run_button(button_name, wait_str, over_time, tab_name=None, interpret=True):
+            """
+            运行【按键发送】区域里某个已有按键保存的多行内容，行为与点击该按键一致。
+            button_name : 按键上显示的名字
+            wait_str    : 普通命令发送后等待的字符串（设备提示符，如 $ 或 #）
+            over_time   : 普通命令的等待超时秒数
+            tab_name    : 可选，指定标签页，用于区分重名按键
+            interpret   : 可选，默认 True。True 时按键里的 wait / wait for /
+                          show_str / set_port / visa_xxx 等会像点按键那样被执行；
+                          False 时所有行一律原样发送到串口。
+            返回 1（每次等待都成功）或 0（有等待超时 / 参数错误 / 找不到按键）。
+            """
+            if not button_name or not str(button_name).strip():
+                self.tk_safe(lambda: messagebox.showwarning(
+                    "Warning", "run_button 必须指定按键名。", parent=self.root))
+                return 0
+            if not _check_run_lines_args("run_button", wait_str, over_time):
+                return 0
+
+            def _find_buttons():
+                found = []
+                for tab_id in self.notebook.tabs():
+                    t_name = self.notebook.tab(tab_id, "text")
+                    if tab_name is not None and t_name != tab_name:
+                        continue
+                    frame = self.notebook.nametowidget(tab_id)
+                    for child in frame.winfo_children():
+                        if isinstance(child, tk.Button) and child.cget("text") == button_name:
+                            found.append((t_name, getattr(child, "custom_data", "") or ""))
+                return found
+
+            matches = self.tk_safe(_find_buttons)
+            if not matches:
+                where = f"标签页 {tab_name}" if tab_name else "所有标签页"
+                self.tk_safe(lambda: messagebox.showwarning(
+                    "Warning",
+                    f"在{where}里找不到名为 {button_name} 的按键。\n\n"
+                    "请确认按键发送区域已经加载了对应的按键文件，且按键名完全一致。",
+                    parent=self.root))
+                return 0
+            if len(matches) > 1:
+                tabs_str = "、".join(m[0] for m in matches)
+                self.tk_safe(lambda ts=tabs_str: messagebox.showwarning(
+                    "Warning",
+                    f"有多个按键都叫 {button_name}（分别在 {ts}）。\n\n"
+                    "请用 tab_name 参数指定标签页，例如：\n"
+                    f'run_button("{button_name}", "$", 20, tab_name="Tab 1")',
+                    parent=self.root))
+                return 0
+
+            tab_of, data = matches[0]
+            desc = f"按键 {button_name}（标签页 {tab_of}）"
+            return _run_command_lines(desc, data.splitlines(), wait_str, over_time, interpret)
+
+        def send_commands_from_file(file_name, wait_str, over_time, interpret=True):
+            """
+            从一个纯文本文件里逐行读取内容并执行，规则与按键发送完全相同。
+            file_name  : 绝对路径，或相对【脚本路径】输入框的文件名
+            wait_str   : 普通命令发送后等待的字符串（设备提示符，如 $ 或 #）
+            over_time  : 普通命令的等待超时秒数
+            interpret  : 可选，默认 True。True 时文件里的 wait / wait for /
+                         show_str / set_port / visa_xxx 等会被执行；
+                         False 时所有行一律原样发送到串口。
+            返回 1（每次等待都成功）或 0（有等待超时 / 参数错误 / 文件读不到）。
+            """
+            if not file_name or not str(file_name).strip():
+                self.tk_safe(lambda: messagebox.showwarning(
+                    "Warning", "send_commands_from_file 必须指定文件名。", parent=self.root))
+                return 0
+            if not _check_run_lines_args("send_commands_from_file", wait_str, over_time):
+                return 0
+
+            path = str(file_name).strip()
+            if not os.path.isabs(path):
+                base = self.tk_safe(lambda: self.multi_script_path_entry.get().strip())
+                if base:
+                    path = os.path.join(base, path)
+            path = os.path.abspath(path)
+            if not os.path.isfile(path):
+                self.tk_safe(lambda p=path: messagebox.showwarning(
+                    "Warning",
+                    f"找不到命令文件：\n\n{p}\n\n"
+                    "相对文件名是以【脚本路径】输入框为基准解析的，也可以直接填绝对路径。",
+                    parent=self.root))
+                return 0
+
+            content = None
+            for enc in ("utf-8-sig", "gbk"):
+                try:
+                    with open(path, "r", encoding=enc) as f:
+                        content = f.read()
+                    break
+                except UnicodeDecodeError:
+                    continue
+                except Exception as e:
+                    self.tk_safe(lambda err=e, p=path: messagebox.showerror(
+                        "错误", f"读取命令文件失败：\n\n{err}\n\n{p}", parent=self.root))
+                    return 0
+            if content is None:
+                # utf-8 和 gbk 都解不开，退化成替换非法字节，至少能跑
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+
+            desc = f"文件 {os.path.basename(path)}"
+            return _run_command_lines(desc, content.splitlines(), wait_str, over_time, interpret)
 
         def show_date_time():
             self.tk_safe(lambda:self.text_area.insert(tk.END, str(datetime.now()) + "\n"))
@@ -3097,12 +3478,14 @@ class SerialGUI:
 
                 return None
 
-            self.auto_delete_lock_count += 1
-            self.script_wait_for_new_text = ""
             collected_text = ""   # 新增
-            start_time = time.time()
-            last_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
+            # 锁计数的自增必须紧贴 try，否则中间任何一句抛异常都会让 finally 不执行，
+            # 锁永久泄漏、自动清屏失效
+            self.auto_delete_lock_count += 1
             try:
+                self.script_wait_for_new_text = ""
+                start_time = time.time()
+                last_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
                 while time.time() - start_time < over_time:
                     if self.loop_stop:
                         raise StopLoopException("循环已停止")
@@ -3144,12 +3527,14 @@ class SerialGUI:
 
                 return None
 
-            self.auto_delete_lock_count += 1
-            self.script_wait_for_new_text = ""
             collected_text = ""   # 新增
-            start_time = time.time()
-            last_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
+            # 锁计数的自增必须紧贴 try，否则中间任何一句抛异常都会让 finally 不执行，
+            # 锁永久泄漏、自动清屏失效
+            self.auto_delete_lock_count += 1
             try:
+                self.script_wait_for_new_text = ""
+                start_time = time.time()
+                last_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
                 while time.time() - start_time < over_time:
                     if self.loop_stop:
                         raise StopLoopException("循环已停止")
@@ -3242,6 +3627,8 @@ class SerialGUI:
             "show_str": show_str,
             "show_date_time": show_date_time,
             "send_and_get": send_and_get,
+            "run_button": run_button,
+            "send_commands_from_file": send_commands_from_file,
             "clear_all_highlights":clear_all_highlights,
             "visa_init": self._script_visa_init,
             "visa_query": self._script_visa_query,
@@ -3329,41 +3716,37 @@ class SerialGUI:
                         processed_script_lines.append(f"{leading_whitespace}wait({T/1000})")
 
             elif low.startswith("visa_init"):
-                m = re.match(r'^visa_init\(\s*(.+?)\s*\)$', stripped_line, re.IGNORECASE)
+                m = re.match(r'^visa_init\(\s*(.*\S)\s*\)$', stripped_line, re.IGNORECASE)
                 if m:
-                    addr = m.group(1)
-                    if not (addr.startswith('"') or addr.startswith("'")):
-                        addr = f'"{addr}"'
+                    addr = _visa_arg_to_py(m.group(1))
                     processed_line = f"{leading_whitespace}visa_init({addr})"
                 else:
                     # visa_init GPIB0::5::INSTR 简写形式
                     arg = stripped_line[len("visa_init"):].strip()
                     if arg:
-                        processed_line = f'{leading_whitespace}visa_init("{arg}")'
+                        processed_line = f'{leading_whitespace}visa_init({_visa_arg_to_py(arg)})'
 
             elif low.startswith("visa_query"):
-                m = re.match(r'^visa_query\(\s*(.+?)\s*\)$', stripped_line, re.IGNORECASE)
+                # 贪婪匹配到行尾最后一个 ")"，命令内部的括号、引号不会截断
+                m = re.match(r'^visa_query\(\s*(.*\S)\s*\)$', stripped_line, re.IGNORECASE)
                 if m:
-                    cmd = m.group(1)
-                    if not (cmd.startswith('"') or cmd.startswith("'")):
-                        cmd = f'"{cmd}"'
+                    cmd = _visa_arg_to_py(m.group(1))
                     processed_line = f"{leading_whitespace}visa_query({cmd})"
                 else:
                     arg = stripped_line[len("visa_query"):].strip()
                     if arg:
-                        processed_line = f'{leading_whitespace}visa_query("{arg}")'
+                        processed_line = f'{leading_whitespace}visa_query({_visa_arg_to_py(arg)})'
 
             elif low.startswith("visa_write"):
-                m = re.match(r'^visa_write\(\s*(.+?)\s*\)$', stripped_line, re.IGNORECASE)
+                # 贪婪匹配到行尾最后一个 ")"，命令内部的括号、引号不会截断
+                m = re.match(r'^visa_write\(\s*(.*\S)\s*\)$', stripped_line, re.IGNORECASE)
                 if m:
-                    cmd = m.group(1)
-                    if not (cmd.startswith('"') or cmd.startswith("'")):
-                        cmd = f'"{cmd}"'
+                    cmd = _visa_arg_to_py(m.group(1))
                     processed_line = f"{leading_whitespace}visa_write({cmd})"
                 else:
                     arg = stripped_line[len("visa_write"):].strip()
                     if arg:
-                        processed_line = f'{leading_whitespace}visa_write("{arg}")'
+                        processed_line = f'{leading_whitespace}visa_write({_visa_arg_to_py(arg)})'
 
             elif low.startswith("visa_read"):
                 processed_line = f"{leading_whitespace}visa_read()"
@@ -4725,9 +5108,9 @@ GUI 控件状态:
         
         # visa_init(address)
         if low.startswith("visa_init"):
-            m = re.match(r'visa_init\(\s*([^\)]+?)\s*\)', command.strip(), re.IGNORECASE)
-            if m:
-                addr = m.group(1)
+            addr = _parse_visa_call("visa_init", command)
+            if addr is not None:
+                addr = addr.strip("\"'")
                 try:
                     visa_res = self.rm.open_resource(addr, access_mode=AccessModes.shared_lock, open_timeout=3000)
                     self.psu = VisaComm(visa_res)
@@ -4744,16 +5127,15 @@ GUI 控件状态:
             if not self.psu:
                 self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
             else:
-                m = re.match(r'visa_query\(\s*(.+?)\s*\)', command.strip(), re.IGNORECASE)
-                if m:
-                    cmd = m.group(1)
+                cmd = _parse_visa_call("visa_query", command)
+                if cmd is not None:
                     try:
                         resp = self.psu.query(cmd)
                         self.tk_safe(lambda: self.text_area.insert(tk.END, f">>> VISA QUERY: {cmd}\n{resp}\n"))
                     except Exception as e:
                         self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA QUERY 错误: {e}\n"))
                 else:
-                    self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_query 格式错误，应为 visa_query(COMMAND)\n"))
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"× visa_query 格式错误，应为 visa_query(COMMAND)，收到: {command!r}\n"))
             self.tk_safe(lambda: self._auto_scroll())
             return True
         
@@ -4762,16 +5144,15 @@ GUI 控件状态:
             if not self.psu:
                 self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
             else:
-                m = re.match(r'visa_write\(\s*(.+?)\s*\)', command.strip(), re.IGNORECASE)
-                if m:
-                    cmd = m.group(1)
+                cmd = _parse_visa_call("visa_write", command)
+                if cmd is not None:
                     try:
                         self.psu.write(cmd)
                         self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA WRITE: {cmd}\n"))
                     except Exception as e:
                         self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA WRITE 错误: {e}\n"))
                 else:
-                    self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_write 格式错误，应为 visa_write(COMMAND)\n"))
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"× visa_write 格式错误，应为 visa_write(COMMAND)，收到: {command!r}\n"))
             self.tk_safe(lambda: self._auto_scroll())
             return True
         
@@ -5084,7 +5465,7 @@ GUI 控件状态:
                     # 显示区域写入（不改变原有逻辑）
                     if insert_display:
                         self.text_area.after(0, lambda: (
-                            self.text_area.insert(tk.END, f"[HEX SEND] {data}\n"),
+                            self.text_area.insert(tk.END, f"[HEX SEND] {data} [SEND END]\n"),
                             self._auto_scroll()
                         ))
                     return
@@ -5304,24 +5685,140 @@ GUI 控件状态:
         except Exception:
             pass
 
+    # Windows 文件名里不允许出现的字符。半角冒号最危险：open() 不会报错，
+    # 而是把内容写进 NTFS 的备用数据流，资源管理器里只看得到一个 0 字节的空文件。
+    INVALID_NAME_CHARS = '<>:"/\\|?*'
+    # 建议的单文件容量上限（MB），超过会提示可能卡顿
+    RECOMMENDED_MAX_CAPACITY_MB = 20
+
+    @classmethod
+    def _find_invalid_name_chars(cls, text):
+        """找出文件名里不能用的字符，返回可读的列表（去重、保持出现顺序）。"""
+        bad = []
+        for ch in text:
+            if ch in cls.INVALID_NAME_CHARS:
+                item = ch
+            elif ord(ch) < 32:
+                item = f"\\x{ord(ch):02x}"
+            else:
+                continue
+            if item not in bad:
+                bad.append(item)
+        return bad
+
+    @staticmethod
+    def _is_absolute_dir_path(path):
+        """
+        判断是否是完整的绝对路径。
+        os.path.isabs 在部分 Python 版本里会把 '\\logs' 当成绝对路径，
+        所以这里用 splitdrive 自己判断：必须有盘符或 UNC 前缀，且其后紧跟分隔符。
+        """
+        drive, rest = os.path.splitdrive(path)
+        if not drive:
+            return False
+        return rest[:1] in ("\\", "/") or drive.startswith("\\\\")
+
+    def _check_auto_save_target(self, path, fname):
+        """校验自动保存的路径和文件名。合格返回空字符串，否则返回不合格的原因。"""
+        if not path:
+            return ("没有设置自动保存路径。\n\n"
+                    "请点击路径输入框右侧的 … 按钮，选择一个用来存放日志的文件夹。")
+        if not fname:
+            return ("没有设置保存文件名。\n\n"
+                    "请在“保存文件名”里填一个名字，程序会自动在后面加上日期和时间。")
+
+        bad = self._find_invalid_name_chars(fname)
+        if bad:
+            return ("保存文件名里含有 Windows 不允许用于文件名的字符：\n\n"
+                    f"        {'  '.join(bad)}\n\n"
+                    "不能使用的字符是：  < > : \" / \\ | ? *\n\n"
+                    "其中半角冒号要特别注意：用它做文件名不会报错，但日志会被写进 NTFS 的\n"
+                    "隐藏数据流，在资源管理器里只能看到一个 0 字节的空文件，看起来就像什么\n"
+                    "都没有保存。\n\n"
+                    f"当前的文件名是：{fname}")
+
+        if not self._is_absolute_dir_path(path):
+            return ("自动保存路径必须是完整的绝对路径，例如  D:\\log  或  \\\\服务器\\共享目录。\n\n"
+                    f"当前填的是：{path}\n"
+                    f"它会被解析到：{os.path.abspath(path)}\n\n"
+                    "像 logs、.、C: 这样的写法是相对路径，会以程序的当前工作目录为基准。\n"
+                    "程序被双击启动、用快捷方式启动、或由别的程序调起时，这个基准都不一样，\n"
+                    "文件会被写到意料之外的地方，而且不会有任何报错。")
+
+        if not os.path.exists(path):
+            return ("自动保存路径不存在：\n\n"
+                    f"        {path}\n\n"
+                    "程序不会自动创建这个目录，以免在打错字的情况下建出一堆无用文件夹。\n"
+                    "请先在资源管理器里手动建好这个文件夹，或者用 … 按钮重新选一个已存在的。")
+        if not os.path.isdir(path):
+            return ("自动保存路径指向的是一个文件，不是文件夹：\n\n"
+                    f"        {path}\n\n"
+                    "请改成一个文件夹的路径。")
+        return ""
+
+    def _check_auto_save_capacity(self):
+        """
+        校验“文件最大容量”。
+        返回 (是否可以继续, 是否需要用户确认, 提示文字)。
+        """
+        raw = self.max_capacity_entry.get().strip()
+        advice = (f"建议不要超过 {self.RECOMMENDED_MAX_CAPACITY_MB} MB。单个日志文件过大时，"
+                  "用文本编辑器打开会\n非常慢甚至打不开，程序在写入和轮转时也容易卡顿。")
+        if not raw:
+            return False, False, ("“文件最大容量”是空的。\n\n"
+                                  "请填写一个大于 0 的数字，单位是 MB。\n\n" + advice)
+        try:
+            value = float(raw)
+        except ValueError:
+            return False, False, (f"“文件最大容量”填的是“{raw}”，这不是一个有效的数字。\n\n"
+                                  "请只填数字，不要带单位（MB 已经标在输入框右边了），\n"
+                                  "也不要使用千位分隔符。\n\n" + advice)
+        if value <= 0:
+            return False, False, (f"“文件最大容量”是 {raw}，必须大于 0。\n\n"
+                                  "填 0 或负数会让程序每隔 10 秒就判定文件已超限，\n"
+                                  "从而不停地关闭当前文件、新建下一个，生成大量碎片文件。\n\n"
+                                  + advice)
+        if value > self.RECOMMENDED_MAX_CAPACITY_MB:
+            return True, True, (f"当前设置的单文件最大容量是 {raw} MB，偏大。\n\n" + advice
+                                + "\n\n仍然要按这个设置开启自动保存吗？")
+        return True, False, ""
+
+    def _auto_save_capacity_mb(self, default=10.0):
+        """取“文件最大容量”的有效数值；非法或 <=0 时用默认值，避免每次检查都触发轮转。"""
+        try:
+            value = float(self.max_capacity_entry.get().strip())
+        except Exception:
+            return default
+        return value if value > 0 else default
+
     # 创建自动保存文件
     def create_auto_save_file(self):
         path = self.auto_save_path_entry.get().strip()
         fname = self.file_name_entry.get().strip()
-        if not path or not fname:
-            self.tk_safe(lambda: messagebox.showwarning("警告", "未指定路径和文件名", parent=self.root))
 
+        # 先校验路径和文件名，不合格就说明原因并停止，不再去 open()
+        reason = self._check_auto_save_target(path, fname)
+        if reason:
+            self.tk_safe(lambda: messagebox.showwarning("无法开启自动保存", reason, parent=self.root))
             return None
+
         # 构造文件名：保存文件名_YYYY-MM-DD_HH_MM_SS.txt
         filename = f"{fname}_{time.strftime('%Y-%m-%d')}_{time.strftime('%H-%M-%S')}.txt"
-        full_path = os.path.join(path, filename)
+        full_path = os.path.abspath(os.path.join(path, filename))
         try:
             new_file = open(full_path, "w", encoding="utf-8")
-            return new_file
         except Exception as e:
-            self.tk_safe(lambda: messagebox.showerror("错误", f"无法创建自动保存文件：{e}", parent=self.root))
-
+            # 把完整路径和长度一并给出，方便判断是权限、路径过长还是别的原因
+            msg = (f"无法创建自动保存文件：\n\n{e}\n\n"
+                   f"完整路径（共 {len(full_path)} 个字符）：\n{full_path}")
+            self.tk_safe(lambda: messagebox.showerror("错误", msg, parent=self.root))
             return None
+
+        # 把实际写入的绝对路径显示出来，避免以后再出现“文件到底存哪了”的问题
+        self.tk_safe(lambda: self.text_area.insert(
+            tk.END, f"自动保存已开启，文件位置：{full_path}\n", "green"))
+        self.tk_safe(lambda: self._auto_scroll())
+        return new_file
 
     def send_data_btn(self, event=None):
         """
@@ -5392,6 +5889,8 @@ GUI 控件状态:
         self.recv_buffer = ""
         # UTF-8 增量解码器：多字节字符跨读取边界时不再变成 U+FFFD
         self._rx_decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+        # 记录本线程上一轮用的是不是 HEX 显示，用于发现下拉框切档
+        rx_hex_active = self.hex_rx_display
         self.last_serial_receive_update_time = time.time()
         while not self.stop_reading:
             if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
@@ -5409,8 +5908,19 @@ GUI 控件状态:
                             timestamp_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                             self.tk_safe(lambda: self.text_area.insert(tk.END, f"\nReceive at {timestamp_str}\n", "green"))
                             self.allow_new_timestamp = False  # 插入一次时间戳后禁止后续插入
-                        # 用增量解码器，避免一个多字节字符被 read_all() 切开后变成乱码方块
-                        received_str = self._rx_decoder.decode(data_bytes)
+                        # 显示方式在“HEX显示”与其他档位之间切换时，丢掉增量解码器里
+                        # 可能挂着的半个多字节字符，避免切换后第一个字符是乱码
+                        rx_hex_now = self.hex_rx_display
+                        if rx_hex_now != rx_hex_active:
+                            self._rx_decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+                            rx_hex_active = rx_hex_now
+                        if rx_hex_now:
+                            # HEX显示：不做任何文本解码，每字节两位十六进制、空格分隔。
+                            # 末尾补一个空格，保证跨 read_all() 边界的字节之间也是分开的
+                            received_str = data_bytes.hex(' ').upper() + ' '
+                        else:
+                            # 用增量解码器，避免一个多字节字符被 read_all() 切开后变成乱码方块
+                            received_str = self._rx_decoder.decode(data_bytes)
                         self.recv_buffer += received_str
 
                     else:
@@ -5641,6 +6151,16 @@ GUI 控件状态:
     def toggle_auto_save(self):
         # 当点击按钮时为 "OFF" ，则尝试开启自动保存，并更改按钮状态和文字
         if self.auto_save_btn.cget("text") == "OFF":
+            # 先校验文件最大容量：不合格就说明原因并停止，不去创建文件
+            cap_ok, cap_confirm, cap_msg = self._check_auto_save_capacity()
+            if not cap_ok:
+                self.tk_safe(lambda: messagebox.showwarning(
+                    "无法开启自动保存", cap_msg, parent=self.root))
+                return
+            if cap_confirm:
+                if not self.tk_safe(lambda: messagebox.askokcancel(
+                        "文件容量偏大", cap_msg, parent=self.root)):
+                    return
             new_file = self.create_auto_save_file()
             if new_file is None:
                 return
@@ -5725,10 +6245,8 @@ GUI 控件状态:
                     self.auto_save_file.flush()
                     # 检查当前 autosave 文件大小（单位：字节）
                     current_size = self.auto_save_file.tell()
-                    try:
-                        max_capacity_mb = float(self.max_capacity_entry.get().strip())
-                    except Exception:
-                        max_capacity_mb = 10  # 默认10 MB
+                    # 容量非法或 <=0 时用默认值，避免恒真导致每 10 秒轮转一个新文件
+                    max_capacity_mb = self._auto_save_capacity_mb()
                     if current_size >= max_capacity_mb * 1024 * 1024:
                         # 文件超过最大容量，关闭当前文件并重新创建新文件
                         self.auto_save_file.close()
