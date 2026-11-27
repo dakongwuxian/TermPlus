@@ -9,14 +9,23 @@ version_suffix = f"v{today.strftime('%y%m%d')}"
 # 定义动态文件名
 exe_name = f'TermPlus_{version_suffix}'
 
-# 3. 【核心修改】不写文件，直接把日期塞进环境变量，传给 PyInstaller
-os.environ["TERMPLUS_BUILD_VERSION"] = f"Version {today.strftime('%y%m%d')}"
+# 3. 【核心修改】将版本号写入 runtime hook 文件，让 exe 启动时能读到打包日期
+_build_version_str = f"Version {today.strftime('%y%m%d')}"
+os.environ["TERMPLUS_BUILD_VERSION"] = _build_version_str
+
+# 动态生成 runtime hook 内容
+_hook_content = f'''import os
+os.environ["TERMPLUS_BUILD_VERSION"] = "{_build_version_str}"
+'''
+with open("_runtime_hook_version.py", "w", encoding="utf-8") as _hf:
+    _hf.write(_hook_content)
 
 a = Analysis(
     ['TermPlus.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    # 语言文件：打包后位于 _internal\language\*.txt
+    datas=[('language/*.txt', 'language')],
     hiddenimports=[
         'pyvisa_py',
         'pyvisa_py.usb',
@@ -27,7 +36,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['_runtime_hook_version.py'],
     excludes=[],
     noarchive=False,
     optimize=0,
