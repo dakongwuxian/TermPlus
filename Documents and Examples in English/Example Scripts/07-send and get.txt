@@ -1,0 +1,155 @@
+# This example shows how to send a command, get the content from the main window, and check whether the matched value is greater than 17. If it is greater than 17, the script stops and a pop-up message is shown
+# this example search for the respond of command "dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2"
+# respond is like "Value 0x0000000A(10) read from address 0x06C00330 with offset 0B."
+# below scripts get the "10" value and monitor it
+
+# example 1
+
+delay_value = 0
+send dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2
+wait for $ for 2
+text_to_search = get_last_n_lines(2)
+pattern = r"^Value\s+0x[0-9A-Fa-f]+\((\d+)\)\s+read from address"
+match = re.search(pattern, text_to_search, re.MULTILINE)
+if match:
+    delay_value = int(match.group(1))
+    show_str("delay_value get as %d\n"%delay_value)
+if delay_value > 17:
+    show_str("delay value > 17 detected\n")
+    messagebox.showinfo("Info", "delay value > 17 detected")# pop out message
+    raise StopLoopException("stop")# stop running
+    
+# example 2
+
+# send_and_get function: sends the command dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2 and tries to capture the number "10" in "Value 0x0000000A(10)". Timeout 2 seconds, wait character $, at most 3 lines received
+
+match = send_and_get("dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2", r"Value\s+0x[0-9A-Fa-f]+\((\d+)\)\s+read from address", 2, "$",3)
+if match:
+    delay_value = int(match)
+    show_str("Reg value get as %d\n"%delay_value)
+    if delay_value > 17:
+        show_str("delay value > 17 detected\n")
+        messagebox.showinfo("Info", "delay value > 17 detected")# pop out message
+        raise StopLoopException("stop")# stop running
+
+
+
+
+
+# ============================================================
+# send_and_get() function usage
+# ============================================================
+#
+# Function: sends a command to the serial port, waits for the response, and extracts data from the response with a regular expression
+#
+# Parameters:
+#   send_and_get(str_2_send, regex_pattern, over_time, wait_str="", line_count=0)
+#
+#   str_2_send      - command string to send
+#   regex_pattern   - regular expression used to match and capture data from the response
+#   over_time       - timeout (seconds); waiting stops after the timeout
+#   wait_str        - optional, terminating string to wait for (e.g. "#" "$"); waiting stops when it is detected
+#   line_count      - optional, number of lines to wait for; waiting stops after that many lines are received
+#
+# Stop conditions (stops when any one is met):
+#   1. wait_str is detected (if set)
+#   2. line_count lines are received (if set)
+#   3. Timeout
+#
+# Return value:
+#   - 1 match, 1 capture group: returns a string                 e.g. "2"
+#   - 1 match, multiple capture groups: returns a list           e.g. ["2", "100"]
+#   - multiple matches, 1 capture group: returns a list          e.g. ["2", "5", "8"]
+#   - multiple matches, multiple capture groups: returns a list  e.g. [("2","100"), ("5","200")]
+#   - No match: returns None
+#
+# ============================================================
+
+
+# ============================================================
+# Example 1: Basic usage - wait for a terminator
+# Send a command, stop after # appears, and extract the number after Value
+# ============================================================
+
+result = send_and_get("dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2", r"Value\s+0x[0-9A-Fa-f]+\((\d+)\)", 5, "#")
+if result:
+    show_str("Captured value: " + result + "\n")
+
+
+# ============================================================
+# Example 2: Wait for a specified number of lines
+# Send a command and stop matching after 3 lines are received
+# ============================================================
+
+result = send_and_get("cat /proc/version", r"Linux version (\S+)", 5, "", 3)
+if result:
+    show_str("Linux version: " + result + "\n")
+
+
+# ============================================================
+# Example 3: Set both a terminator and a line count (stops at whichever is met first)
+# ============================================================
+
+result = send_and_get("ifconfig eth0", r"inet (\d+\.\d+\.\d+\.\d+)", 5, "$", 10)
+if result:
+    show_str("IP address: " + result + "\n")
+
+
+# ============================================================
+# Example 4: Stop on timeout only
+# wait_str and line_count are not set; relies only on the timeout
+# ============================================================
+
+result = send_and_get("ping 192.168.1.1 -c 3", r"time=(\d+\.?\d*) ms", 10)
+if result:
+    # Returns a list when there are multiple matches
+    show_str("All ping latencies: " + str(result) + "\n")
+
+
+# ============================================================
+# Example 5: Multiple capture groups
+# Extract multiple fields at once
+# ============================================================
+
+result = send_and_get("show interface status", r"(\S+)\s+(up|down)\s+(\d+)", 5, "#")
+if result:
+    # With 1 match and multiple capture groups, returns a list ["eth0", "up", "1000"]
+    show_str("Interface: " + result[0] + " Status: " + result[1] + " Speed: " + result[2] + "\n")
+
+
+# ============================================================
+# Example 6: Multiple matches + multiple capture groups
+# ============================================================
+
+result = send_and_get("show vlan brief", r"(\d+)\s+(\S+)\s+(active)", 5, "#")
+if result:
+    # Returns [("10","VLAN10","active"), ("20","VLAN20","active")]
+    for item in result:
+        show_str("VLAN " + item[0] + ": " + item[1] + " - " + item[2] + "\n")
+
+
+# ============================================================
+# Example 7: Use with conditional checks
+# ============================================================
+
+result = send_and_get("dra r krypton:0 TEMP_SENSOR", r"Value\s+0x[0-9A-Fa-f]+\((\d+)\)", 3, "#")
+if result:
+    temp = int(result)
+    if temp > 80:
+        show_str("Warning: Temperature too high! Current temperature: " + str(temp) + "\n")
+    else:
+        show_str("Temperature normal: " + str(temp) + "\n")
+else:
+    show_str("Failed to get the temperature value\n")
+
+
+# ============================================================
+# Example 8: Use in a loop
+# ============================================================
+
+for i in range(5):
+    result = send_and_get("read_reg " + str(i), r"=\s*(\d+)", 2, "#")
+    if result:
+        show_str("Register " + str(i) + " = " + result + "\n")
+    wait(1)
+

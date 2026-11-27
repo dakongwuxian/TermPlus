@@ -1,0 +1,23 @@
+# This example shows how to send binary data instead of a string
+# The binary data sent can control a relay that is controlled through a USB serial port
+# If send_line("string") is written as send_line(r"\xA0\x01\x01\xA2"), the serial port does not send the string "\xA0\x01\x01\xA2"; it sends the HEX numbers 0xA0 01 01 A2.
+# this is an example of sending data in binary instead of string
+# and also this is an example of controlling a power rely connected to a USB-to-COM port, and it need to set status by sending HEX numbers.
+# if the content of sent string is in format like send_line(r"\xA0\x01\x01\xA2"), COM port will not send string "\xA0\x01\x01\xA2", instead it will send 0xA0 01 01 A2, which are HEX number.
+
+# A0 01 01 A2 turns the relay on
+send_line(r"\xA0\x01\x01\xA2")
+wait 3
+# A0 01 00 A1 turns the relay off
+send_line(r"\xA0\x01\x00\xA1")
+wait 3
+
+# Option 1: use a raw string so that \x is taken as literal characters
+send_line(r"\xa0\x01\x01\xa2")
+
+# Option 2: escape \ with \ so that Python does not treat it as a single character
+send_line("\\xa0\\x01\\x01\\xa2")
+
+note:
+In the single-line "Send:" field, \xa0\x01\x01\xa2 sends 4 HEX numbers; no r prefix or extra \ is needed.
+

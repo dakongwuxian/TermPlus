@@ -1,0 +1,329 @@
+# This example shows how to control ChamCtrl (the temperature chamber control software) running on the same computer via VISA: read the chamber status, change settings and click buttons
+# The effect is exactly the same as a person operating the ChamCtrl UI; a clicked button runs ChamCtrl's own function
+# Before use, open ChamCtrl (version 2026.10.22 or later). The ChamCtrl window title bar shows the VISA address, e.g. [VISA: TCPIP0::127.0.0.1::5025::SOCKET]
+# Keysight Connection Expert or NI-VISA does not need to be installed; the pyvisa-py bundled with TermPlus connects directly
+
+# Functions used in this example:
+# visa_init(address)   connects to ChamCtrl; only needs to run once
+# visa_query(command)  sends a query command and shows the reply in the main window; it can also be written as x = visa_query("command") to store the reply in variable x for use with if
+# visa_write(command)  sends a write command or a click command; ChamCtrl does not reply
+# show_str("xxxx")     shows text at the end of the main window; it is not sent
+
+# Notes:
+# 1. visa_query can only be used for query commands ending with ?. If you send a command without ? with it, ChamCtrl does not reply and TermPlus waits until the 5-second timeout error
+# 2. visa_write does not tell you whether it succeeded. Errors go into ChamCtrl's error queue; read them one by one with visa_query(SYST:ERR?). When all are read it returns 0,"No error"
+# 3. When used on a line by itself, the command does not need quotes, e.g. visa_query(CHAM:TEMP?)
+#    When storing the reply in a variable or using it in an if, the command must be quoted, e.g. t = visa_query("CHAM:TEMP?")
+# 4. ChamCtrl reads data from the chamber every 10 seconds, so TEMP, TARGET_TEMP and STATUS readings can be up to 10 seconds late. After changing a setting, wait more than 10 seconds before reading it back to confirm
+# 5. When connected and the chamber port is not 502, buttons that change the chamber state are rejected with error -203:
+#        RUN_BTN, STOP_BTN, PAUSE_BTN, CONST_BTN, VAR_BTN, SET_BTN, LIGHT_ON_BTN, LIGHT_OFF_BTN, WAVE_START_BTN
+#    Controls that only affect the local UI can be operated on any port:
+#        IP, PORT, CONN_BTN, SET_TEMP, WAVE_TEXT, WAVE_PREVIEW_BTN, AUTO_CENTER, AUTO_MARK
+# 6. Buttons that need a chamber connection are rejected with error -200 when not connected
+# 7. ChamCtrl pop-up messages are not shown during remote operation; their content goes into the error queue (10 for a warning, -200 for an error)
+
+# This example has three parts:
+# Part 1: lists all commands; it only reads data or changes the local UI, does not change the chamber state, and can be run directly
+# Part 2: connect to the chamber, check the status, set the temperature, run, wait for the temperature to be reached, light on/off, stop, disconnect; this really operates the chamber
+# Part 3: write a wave, preview it, start the wave, confirm it is running, stop the wave; this really operates the chamber
+# Parts 2 and 3 do not run by default. After confirming the chamber can be operated, set the matching variable below to 1 and run again
+
+do_control = 0
+do_wave = 0
+
+show_str("\nexample start\n")
+
+
+# ============================================================
+# Part 1: list of all commands
+# ============================================================
+
+# Connect to ChamCtrl. Use the address shown in the ChamCtrl title bar; when several ChamCtrl instances are open, the port becomes 5026, 5027, ...
+visa_init(TCPIP0::127.0.0.1::5025::SOCKET)
+
+# ---- Common commands ----
+
+# Read the device information, returns ChamCtrl,ChamCtrl,0,<version>
+visa_query(*IDN?)
+
+# Check whether all previous commands have completed, returns 1
+visa_query(*OPC?)
+
+# Clear the error queue. Usually sent once before a sequence of operations, to avoid reading errors left over from before
+visa_write(*CLS)
+
+# Read one error; returns 0,"No error" when there is no error
+visa_query(SYST:ERR?)
+
+# Same as SYST:ERR?
+visa_query(CHAM:ERR?)
+
+# List all control names, marked r (read-only) / rw (read/write) / click (button)
+visa_query(CHAM:LIST?)
+
+# ---- Read all controls ----
+
+# Currently selected chamber, returns name:IP, e.g. Chamber04:10.166.156.141
+visa_query(CHAM:IP?)
+
+# Currently selected chamber port, 502~506
+visa_query(CHAM:PORT?)
+
+# Text of the connect button: Connect when not connected, Disconnect when connected
+visa_query(CHAM:CONN_BTN?)
+
+# Run status: disconnected when not connected; when connected it is mode, status, e.g. Constant Mode, Run
+visa_query(CHAM:STATUS?)
+
+# Current temperature, returns only the number; returns NAN when there is no data
+visa_query(CHAM:TEMP?)
+
+# Current target temperature of the chamber, returns only the number; returns NAN when there is no data
+visa_query(CHAM:TARGET_TEMP?)
+
+# Light status, ON / OFF
+visa_query(CHAM:LIGHT_STATUS?)
+
+# Value in the temperature input box (the value not yet sent to the chamber with Set)
+visa_query(CHAM:SET_TEMP?)
+
+# Content of the wave text box; for multiple lines, \n stands for a line break
+visa_query(CHAM:WAVE_TEXT?)
+
+# Text of the wave start button: Wave Stop while a wave is running; any other text means no wave is running
+visa_query(CHAM:WAVE_START_BTN?)
+
+# Checkbox state, 1 = checked, 0 = unchecked
+visa_query(CHAM:AUTO_CENTER?)
+visa_query(CHAM:AUTO_MARK?)
+
+# Reading a button control returns the text on the button
+visa_query(CHAM:RUN_BTN?)
+visa_query(CHAM:STOP_BTN?)
+visa_query(CHAM:PAUSE_BTN?)
+visa_query(CHAM:CONST_BTN?)
+visa_query(CHAM:VAR_BTN?)
+visa_query(CHAM:SET_BTN?)
+visa_query(CHAM:LIGHT_ON_BTN?)
+visa_query(CHAM:LIGHT_OFF_BTN?)
+visa_query(CHAM:WAVE_PREVIEW_BTN?)
+
+# ---- Writes that only change the local UI and do not change the chamber state ----
+
+# Change the temperature input box. Only the input box changes; click SET_BTN afterwards to send it to the chamber
+visa_write(CHAM:SET_TEMP 25)
+visa_query(CHAM:SET_TEMP?)
+
+# Change the checkboxes; write 0/1 or OFF/ON
+visa_write(CHAM:AUTO_CENTER 0)
+visa_query(CHAM:AUTO_CENTER?)
+visa_write(CHAM:AUTO_CENTER 1)
+visa_write(CHAM:AUTO_MARK 0)
+visa_query(CHAM:AUTO_MARK?)
+visa_write(CHAM:AUTO_MARK 1)
+
+# Change the wave text. The content can contain brackets and quotes, and the whole line is sent as is; for a multi-line wave, use \n for line breaks
+visa_write(CHAM:WAVE_TEXT "(start temp 25C)-(loop count 10)-[(0,25C)-(55,80C)-(60,80C)-(120,-40C)-(60,-40C)-(65,25C)]")
+visa_query(CHAM:WAVE_TEXT?)
+
+# Click Wave Preview to draw the wave preview on the ChamCtrl chart
+visa_write(CHAM:WAVE_PREVIEW_BTN:CLICK)
+
+# Check whether the operations above caused any errors
+visa_query(SYST:ERR?)
+
+# ---- Error examples, all of the following commands fail ----
+
+# Query a control that does not exist: returns ERROR: -113,... directly, and the error is also put into the error queue
+visa_query(CHAM:FOO?)
+
+# Write a read-only control, -221
+visa_write(CHAM:TEMP 25)
+
+# Buttons must be clicked with :CLICK; a value cannot be written directly, -221
+visa_write(CHAM:RUN_BTN 1)
+
+# Chamber name that does not exist in the drop-down list, -224
+visa_write(CHAM:IP NoSuchChamber)
+
+# Unknown command, -113
+visa_write(ABC:DEF)
+
+# Read the error queue in a loop until 0,"No error" is returned
+err = visa_query("SYST:ERR?")
+while err is not None and not err.startswith("0,"):
+    err = visa_query("SYST:ERR?")
+
+
+# ============================================================
+# Part 2: control the chamber with the script, checking the status before operating
+# ============================================================
+
+if do_control == 1:
+    # Clear the error queue before starting
+    visa_write(*CLS)
+
+    # Select the chamber and port to operate. IP can be the full option Chamber04:10.166.156.141, the name Chamber04, or just the IP
+    # Only port 502 can change the chamber state; other ports can only read
+    visa_write(CHAM:IP Chamber04)
+    visa_write(CHAM:PORT 502)
+    visa_query(CHAM:IP?)
+    visa_query(CHAM:PORT?)
+
+    # Button text Connect means not connected yet, so click to connect. Connecting takes a few seconds; wait 5 seconds before continuing so that the following queries do not time out
+    conn = visa_query("CHAM:CONN_BTN?")
+    if conn == "Connect":
+        visa_write(CHAM:CONN_BTN:CLICK)
+        wait 5
+
+    # Confirm the connection succeeded: the button text changes to Disconnect. If the connection fails, the error queue contains -200,"Execution error; Error: Could not connect to ..."
+    conn = visa_query("CHAM:CONN_BTN?")
+    if conn != "Disconnect":
+        show_str("\nconnect failed, check the error below\n")
+        visa_query(SYST:ERR?)
+
+    # Confirm the connected port is 502; if it is not 502, all following operations are rejected
+    port = visa_query("CHAM:PORT?")
+    if port != "502":
+        show_str("\nnot port 502, chamber is read-only\n")
+
+    # Check the status: after connecting, ChamCtrl reads the chamber once immediately, returns e.g. Constant Mode, Stop
+    visa_query(CHAM:STATUS?)
+    visa_query(CHAM:TEMP?)
+    visa_query(CHAM:TARGET_TEMP?)
+
+    # Switch to Constant Mode; ChamCtrl's wave function and temperature setting are both based on this mode
+    visa_write(CHAM:CONST_BTN:CLICK)
+
+    # Set the target temperature: first write the temperature input box, then click Set to send it to the chamber
+    visa_write(CHAM:SET_TEMP 25)
+    visa_write(CHAM:SET_BTN:CLICK)
+
+    # Writes and clicks have no reply; read the error queue to confirm success
+    visa_query(SYST:ERR?)
+
+    # Wait for the next ChamCtrl refresh, then confirm that the chamber target temperature has changed to 25
+    wait 12
+    tt = visa_query("CHAM:TARGET_TEMP?")
+    if tt is not None and tt != "NAN" and abs(float(tt) - 25) < 0.1:
+        show_str("\ntarget temp set to 25C\n")
+    else:
+        show_str("\ntarget temp not changed, check the error below\n")
+        visa_query(SYST:ERR?)
+
+    # Click RUN to start running; after the refresh, confirm the status contains Run
+    visa_write(CHAM:RUN_BTN:CLICK)
+    wait 12
+    st = visa_query("CHAM:STATUS?")
+    if st is not None and "Run" in st:
+        show_str("\nchamber is running\n")
+
+    # Read the temperature every 10 seconds until it is within 1C of the target temperature, at most 180 times (30 minutes)
+    reach = 0
+    n = 0
+    while n < 180:
+        t = visa_query("CHAM:TEMP?")
+        if t is not None and t != "NAN" and abs(float(t) - 25) <= 1:
+            reach = 1
+            break
+        n = n + 1
+        wait 10
+    if reach == 1:
+        show_str("\ntemperature reached 25C\n")
+    else:
+        show_str("\ntemperature not reached in 30 minutes\n")
+
+    # Light on, confirm the light status is ON
+    visa_write(CHAM:LIGHT_ON_BTN:CLICK)
+    visa_query(CHAM:LIGHT_STATUS?)
+
+    # Light off, confirm the light status is OFF
+    visa_write(CHAM:LIGHT_OFF_BTN:CLICK)
+    visa_query(CHAM:LIGHT_STATUS?)
+
+    # Pause; after the refresh the status should contain Pause
+    visa_write(CHAM:PAUSE_BTN:CLICK)
+    wait 12
+    visa_query(CHAM:STATUS?)
+
+    # Stop; after the refresh the status should contain Stop
+    visa_write(CHAM:STOP_BTN:CLICK)
+    wait 12
+    visa_query(CHAM:STATUS?)
+
+    # Variable Mode button. ChamCtrl temperature control only uses Constant Mode; the command is only listed here and is not run
+    # visa_write(CHAM:VAR_BTN:CLICK)
+
+    # Read all errors from the whole sequence
+    err = visa_query("SYST:ERR?")
+    while err is not None and not err.startswith("0,"):
+        err = visa_query("SYST:ERR?")
+
+    # Disconnect, then confirm the button text is back to Connect and the status is disconnected
+    visa_write(CHAM:CONN_BTN:CLICK)
+    visa_query(CHAM:CONN_BTN?)
+    visa_query(CHAM:STATUS?)
+
+
+# ============================================================
+# Part 3: run a temperature wave with the script
+# ============================================================
+
+if do_wave == 1:
+    visa_write(*CLS)
+
+    # Connect on port 502, same as Part 2
+    visa_write(CHAM:IP Chamber04)
+    visa_write(CHAM:PORT 502)
+    conn = visa_query("CHAM:CONN_BTN?")
+    if conn == "Connect":
+        visa_write(CHAM:CONN_BTN:CLICK)
+        wait 5
+
+    # A wave can only run in Constant Mode. ChamCtrl only knows the mode has changed after the next refresh,
+    # so wait 12 seconds after switching before starting the wave; otherwise it is rejected with error -200,"Execution error; Not in Constant Mode: ..."
+    visa_write(CHAM:CONST_BTN:CLICK)
+    wait 12
+    visa_query(CHAM:STATUS?)
+
+    # Write the wave and preview it. The format is (start temp <start temperature>C)-(loop count <number of loops>)-[(<minutes>,<temperature>C)-(<minutes>,<temperature>C)-...]
+    visa_write(CHAM:WAVE_TEXT "(start temp 25C)-(loop count 1)-[(0,25C)-(10,30C)-(20,30C)-(30,25C)]")
+    visa_query(CHAM:WAVE_TEXT?)
+    visa_write(CHAM:WAVE_PREVIEW_BTN:CLICK)
+
+    # If the wave format is wrong, the error queue contains -200,"Execution error; Error: Wave format invalid"
+    visa_query(SYST:ERR?)
+
+    # Start the wave; the button text Wave Stop means the wave is running
+    visa_write(CHAM:WAVE_START_BTN:CLICK)
+    wb = visa_query("CHAM:WAVE_START_BTN?")
+    if wb == "Wave Stop":
+        show_str("\nwave is running\n")
+    else:
+        show_str("\nwave not started, check the error below\n")
+        visa_query(SYST:ERR?)
+
+    # While the wave runs, read the temperature and target temperature every minute; only 5 minutes are monitored here as an example
+    n = 0
+    while n < 5:
+        visa_query(CHAM:TEMP?)
+        visa_query(CHAM:TARGET_TEMP?)
+        n = n + 1
+        wait 60
+
+    # Stop the wave: when the button text is Wave Stop, clicking it once more stops the wave
+    # Note: after the wave ends, the button text may be Wave Start or Temp Cycle Start; both mean no wave is running.
+    # Do not click it then, or the wave starts again. So read the button text first, then decide whether to click
+    wb = visa_query("CHAM:WAVE_START_BTN?")
+    if wb == "Wave Stop":
+        visa_write(CHAM:WAVE_START_BTN:CLICK)
+    visa_query(CHAM:WAVE_START_BTN?)
+
+    # Stop the chamber and disconnect
+    visa_write(CHAM:STOP_BTN:CLICK)
+    err = visa_query("SYST:ERR?")
+    while err is not None and not err.startswith("0,"):
+        err = visa_query("SYST:ERR?")
+    visa_write(CHAM:CONN_BTN:CLICK)
+
+show_str("\nexample end\n")

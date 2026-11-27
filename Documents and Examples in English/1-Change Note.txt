@@ -1,0 +1,557 @@
+
+2026.11.27
+1. [New] Drag to swap two buttons in the key button area.
+	- Hold the left mouse button on a button, drag it onto another button in the same tab and release: the names and multi-line contents of the two buttons are swapped. Releasing on an empty button moves the button there.
+	- While dragging, a semi-transparent image of the button follows the cursor.
+	- When both buttons are empty, nothing happens.
+	- When the edit window of either button is open, the swap is not allowed and a message asks you to close the edit window first.
+	- Buttons can be swapped while sending; the content that is already being sent is not affected.
+	- Swapping works only within the same tab; a button cannot be dragged to another tab.
+	- Press Esc while dragging, or release anywhere other than a button, to cancel the drag.
+	- Releasing after a drag does not send the button. A plain click (moving less than 5 pixels) still sends as before.
+	- When the key file is saved, the buttons are saved in their new positions.
+
+2. [New] Drag tabs to change their order.
+	- Hold the left mouse button on a tab label and drag it; a semi-transparent image of the tab follows the cursor.
+	- Release on the left half of a target tab to place the tab before it, or on the right half to place it after it. For example, dragging Tab1 onto Tab4: releasing on the left half gives the order 2 3 1 4, releasing on the right half gives 2 3 4 1.
+	- Release in the empty space to the right of the last tab to move the tab to the end.
+	- Moving a tab does not change the buttons in it, and open edit windows are not affected, so there are no restrictions.
+	- Press Esc while dragging, or release outside the tab bar, to cancel the drag.
+	- When the key file is saved, the tabs are saved in the new order.
+
+3. [New] Auto sync for key files. Tick "Auto Sync" to the right of "SaveAs". When several TermPlus windows open the same ts file, they stay in sync automatically, with no need to save and load again and again.
+	- Local changes are saved automatically. When another TermPlus changes the ts file, the changes are loaded automatically, and you stay on the current tab.
+	- Changes to different buttons are merged automatically. When the same button was changed differently on both sides, a window lets you choose which version to keep.
+	- When there are many changes, you can choose to use the ts file or the local version. The discarded version is backed up first.
+	- When the ts file cannot be reached, a red message is shown in the main window every 5 minutes. Syncing resumes automatically when it is reachable again.
+
+4. [New] Ctrl+Z in the key button area undoes swap, clear, paste and tab delete.
+
+5. [New] The tab right-click menu has a new Duplicate item to copy the current tab.
+
+6. [Change] Deleting a tab: an empty tab is deleted directly; a tab with content asks for confirmation first.
+
+7. [Change] After loading a key file, you stay on the tab you were on instead of jumping back to the first tab.
+
+8. [Change] When the content in a button edit window has been changed but not saved yet, the edit window title shows a *. It disappears after Save.
+
+9. [New] The key file history buttons have a right-click menu with Clear / Clear All, to remove unused entries and free up space in the window.
+
+10. [Change] The button edit window now opens on the right side of the main window, with a height close to the main window.
+
+2026.11.10
+1. [New] Multi-language UI. English and Chinese are currently available; English is the default.
+	- New menu Language → Choose Language. The window lists all language files in the _internal\language folder. Select one and click "Load"; after you confirm, the program writes the ini and restarts automatically, then shows the new language.
+	- The Language menu and the language selection window are always shown in English, so you can get back if you pick the wrong language.
+	- New item language in [Setup] of TermPlusSetup.ini (en / zh; English / Chinese also work). Without an ini, or when language is empty, English is used.
+	  Note: after upgrading from an older version, the existing ini has no language item, so the UI becomes English. If you need Chinese, select the Chinese language (zh) in the Language menu.
+	- The translation covers the main window, all popup windows, message boxes, and the messages written into the main window.
+	- The following do not change with the language, so logs, key files and scripts work the same in every language: the timestamps Send at / Receive at, the default tab names such as Tab 1, script function names, the VISA message prefixes (√ VISA WRITE: / >>> VISA QUERY:), and the .ts key file format.
+	- Language files are UTF-8 text, one "key = text" per line; missing keys are shown in English. To add a language, copy en.txt and translate it. See User Manual 2.15.
+	- Control positions and widths are unchanged for now. Where the English text is longer it may be cut off or overlap; the layout will be adjusted later.
+
+2. [Fix] The key file history (5 recent key files) was lost after restart. It was only written to the ini on close and never read at startup. It is now restored at startup; files that were deleted or moved are shown with strikethrough.
+
+3. [Change] TermPlusSetup.ini is now always stored in the folder of the exe. Before, it followed the program's current working directory, so when started from a shortcut with a different "Start in" folder, an ini somewhere else was read and written.
+
+4. [Added] English documents: the TermPlus sharing folder\English folder contains English versions of read me, Change Note, User Manual and Example Scripts.
+
+2026.11.9
+1. [Fix] Memory usage kept growing during long runs in the 2026.10.21 version. That version was packaged with Python 3.14, and the bundled UI library was upgraded from Tk 8.6 to Tk 9.0 along with it.
+	Comparison with continuous output in the script area and auto save on, same code and same test script:
+	- 2026.10.21 version (Python 3.14 + Tk 9.0): about 558MB committed memory
+	- 2026.11.9 version (Python 3.13 + Tk 8.6): about 61MB committed memory
+	The "Memory" column that Task Manager shows by default does not reveal this difference, because most of the memory has been paged out to the page file by the system, but it still uses the system's committed memory.
+	This version is packaged with Python 3.13 again. The code is identical to the 2026.10.21 version and there are no functional changes. Please stop using the 2026.10.21 version.
+
+2026.10.21
+1. [Fix] When visa_write(...) / visa_query(...) was used outside the script area (key buttons, single-line send, etc.), the command was cut off at the first closing parenthesis. For example:
+	visa_write(CHAM:WAVE_TEXT "(start temp 25C)-(loop count 10)-[(0,25C)-(55,80C)]")
+	actually sent only CHAM:WAVE_TEXT "(start temp 25C. Now everything between the first opening parenthesis and the last closing parenthesis is taken, and parentheses and quotes in the command are sent as-is.
+
+2. [Fix] When visa_init / visa_query / visa_write in the script area were written with the command unquoted, the program simply wrapped it in double quotes, so any " or \ in the command produced invalid Python code and an error. Now the unquoted form is treated as raw text; quotes and backslashes inside are escaped automatically before sending.
+	Forms that start with a quote and are valid Python expressions are kept unchanged, so existing scripts are not affected, for example:
+		visa_write("OUTP ON")
+		visa_query("VOLT? " + str(v))
+
+3. [Improvement] More tolerant parsing of visa_init / visa_query / visa_write outside the script area:
+	- Full-width parentheses are supported, e.g. visa_query（CHAM:IP?）
+	- A space shorthand is supported, e.g. visa_query CHAM:IP?
+	- Anything after the last closing parenthesis (such as a comment) is ignored
+	- On a format error, the message shows the text actually received, to help find invisible characters or typos
+
+4. Joint testing with the VISA remote control of ChamCtrl (temperature chamber control software, version 2026.10.22) is complete. TermPlus can connect to ChamCtrl on the same PC with visa_init(TCPIP0::127.0.0.1::5025::SOCKET) and read and write every control in the chamber UI. See the ChamCtrl Change Note for the commands.
+
+5. [Packaging] The packaging environment is now Python 3.14. All dependencies (paramiko, pyvisa, pyvisa-py, pyserial, pillow, etc.) are packaged; nothing else needs to be installed. (This packaging environment causes memory to keep growing; it was changed back to Python 3.13 in the 2026.11.9 version.)
+
+2026.9.4
+1. [New] Two new functions in the script area to run a long, already written multi-line block of commands line by line from a script, without rewriting each line as send_and_get("...") (so there are no more problems with uneven command lengths or trailing spaces):
+	- run_button(button name, wait string, timeout, tab_name=None, interpret=True): runs the multi-line content saved in an existing button of the key button area directly; no command file needed. If several tabs have buttons with the same name, specify the tab with tab_name, otherwise a duplicate-name message is shown.
+	- send_commands_from_file(file name, wait string, timeout, interpret=True): reads a plain text file line by line and runs it. The file name can be an absolute path, or just a file name, which is then looked up relative to the "Script File" path field in the UI. The file encoding is tried as utf-8, then gbk.
+	Both functions process lines exactly like clicking a key button; each line is checked in this order:
+	  1. Empty lines and comment lines starting with #            skipped
+	  2. wait <seconds>                          really waits, not sent to the serial port
+	  3. wait for <string> for <seconds>         really waits, not sent to the serial port
+	  4. Custom function commands (show_str / show_date_time / set_port / set_baudrate / connect_serial / close_serial / toggle_serial / open power shell / power shell send / powershell_send / visa_init / visa_query / visa_write / visa_read)  executed, not sent to the serial port
+	  5. Everything else                            sent to the serial port, then waits for the wait string
+	Also, if a normal command is followed by a wait line, the wait for the wait string on that command is skipped to avoid waiting twice, the same as in the key button send engine. Add interpret=False to turn off this interpretation so every line is sent to the serial port as-is (e.g. when the device itself has a command called wait).
+	Other common behavior:
+	- Trailing whitespace on each line is removed automatically.
+	- If a line does not get its ready signal, the block is NOT aborted. Instead a red warning is written in the main window (with a blank line before and after) stating the source button or file, the original line number in the list, the current progress, the command, what was waited for and the timeout, and then the next line runs.
+	- While running, (current line/total lines remaining seconds) is shown at the end of the script line; the countdown looks the same as the existing wait / wait_for countdown.
+	- Returns 1 if every wait succeeded and 0 if any wait timed out, so it can be used with if.
+	- The Pause and Stop buttons are checked at the start of every line, so even a list of several hundred lines can be stopped immediately halfway.
+
+2. [Added] New file 17-run existing button or command file.txt in Example Scripts. It explains how to write the two functions above, the format of the command list txt, the processing rule for each line, what the progress display and timeout warning look like in the UI, and a pure Python loop that does not depend on the new functions (the script area can use built-in functions such as open() directly, and the os module is available too). The file also points out two common pitfalls: the script area does not support triple-quoted multi-line strings (before the script runs, a line-highlight call is inserted line by line, which breaks multi-line strings, so command lists must be kept in an external txt); and the script runs in a worker thread, so reading UI controls must be wrapped in gui.tk_safe(...).
+
+3. [Added] User Manual additions:
+	- run_button and send_commands_from_file added to the custom script function list in 2.3, together with send_and_get, which had always been missing.
+	- 1.6 Script area: a sentence pointing to the new functions.
+	- New section 2.14 Using existing buttons or command files in a script: parameter meanings, the processing rule for each line, what the timeout warning actually looks like, return values, the progress display while running, and how to write the command list txt.
+
+2026.9.2
+1. [Fix] After turning auto save ON, a file might not be created and no message was shown. Before, a warning appeared only when the path or file name was empty; in all other cases open() was called directly, and two kinds of failure were completely silent:
+	- When the file name contained a colon, open() raised no error but wrote the log into an NTFS alternate data stream. Explorer and dir show only an empty 0-byte file named after the part before the colon; only dir /r shows the real data stream. The symptom was "the button turned green but there is no file".
+	- When the auto save path was a relative path (logs, ., .., C:, C:logs, ~, %USERPROFILE%, etc.) and that folder happened to exist, the file was silently written under the program's current working directory instead of where the user expected. Note that C: is not the same as C:\; the former is a "drive-relative path" that points to the current directory of that drive, and each drive has its own current directory, so the same form gives different results on different drives. In the packaged exe the current working directory depends on the "Start in" folder at double-click, which the user cannot predict.
+
+2. [Improvement] Full validation before auto save is enabled. If any check fails, a popup explains the exact reason and auto save stops; there are no more silent failures:
+	- If the file name contains characters Windows does not allow (< > : " / \ | ? *) or control characters, the exact character is shown, with a special note that a colon causes the alternate data stream problem above.
+	- The path must be a full absolute path (drive letter plus separator, or a UNC path). Relative paths are always rejected, with an explanation of where they would resolve to.
+	- If the path does not exist, this is stated clearly, and the folder is not created automatically, to avoid creating stray folders from typos.
+	- If the path points to a file rather than a folder, this is stated clearly.
+	- If open() fails, the full absolute path and the path length are shown, to help tell whether it is a permission problem, a path that is too long, or something else.
+
+3. [Improvement] After auto save is enabled successfully, the full absolute path actually written to is shown in the main window, so there is no more doubt about "where did the file go". When the file rotates because it exceeds the size limit, the path of the new file is shown as well.
+
+4. [Improvement] "Max file size" is validated when ON is clicked. If it is empty, not a number (e.g. 1000000MB with a unit, or 1,000,000 with thousands separators), 0 or negative, a popup explains the reason and auto save stops, instead of silently falling back to 10MB. If the value is larger than 20MB, a confirmation box explains that a very large log file may not open in an editor and may make writing and rotation lag; you can continue or cancel.
+
+5. [Fix] When "Max file size" was 0 or negative, the rotation condition was always true, so every 10 seconds the current file was closed and a new one created, producing many small files. Invalid or non-positive values now fall back to the default.
+
+6. [Fix] In the script functions wait_for / wait_for_any / send_and_get / get_future_n_lines_or_till_overtime / get_future_lines_till_str_or_overtime, the increment of the auto-clear lock counter (auto_delete_lock_count) was outside the try block, with several statements in between that could raise an exception (e.g. when over_time was passed as a string by mistake, over_time >= 2 raised TypeError). If an exception was raised there, finally did not run and the lock counter stayed +1 forever, so after that run auto clear never worked again and the main window grew without limit. Now the increment is placed directly before try, and the variables used in finally are given default values in advance.
+
+7. [Fix] The regex matching of send_and_get could return duplicate results. To keep wait_str from being split across two reads, each round the function moved the read start back by len(wait_str)-1 characters, so that text was accumulated twice, and re.findall on it produced duplicate matches (a single-character wait_str moves back 0 characters and is not affected; a multi-character one like "root@" is). Now the regex reads the whole text again from the position after sending to the current end; the accumulated text is only used to check whether wait_str has arrived.
+
+
+2026.8.26
+1. [New] Control character rendering in the main window. New "Display:" drop-down (row4, between "Timeout (s):" and "Auto Scroll") with a tooltip on hover and three options:
+	- "Terminal" (default): control characters sent by the device take effect - colors are applied and progress bars refresh in place; the few that cannot be reproduced are written as text like <Esc>[2J instead of showing as boxes.
+	- "Show as text": every control character is written out as text (e.g. <Esc>[1m, <CR>, <BEL>) and no effect is applied; used to check what the device actually sent.
+	- "Raw (boxes)": old behavior, control characters are inserted into the window as-is and show up as boxes or disappear.
+	The setting is saved and restored automatically on program close/start (written to display_mode in TermPlusSetup.ini).
+	Besides serial input, everything written to the main window - SSH, PowerShell, script output (show_str etc.), VISA, system messages - uses the same rendering.
+
+2. Details of the "Terminal" option:
+	- Applied: SGR colors (16 colors/256 colors/true color), bold, italic, underline, strikethrough, reverse, dim; \r returns to line start and overwrites (progress bars no longer become a pile of new lines); \b backspace; \t expands to 8-column tab stops; ESC[K clear line; ESC[C/D/G move within the line.
+	- Silently dropped: NUL padding bytes, ESC[?25h/l cursor show/hide, window-title OSC sequences, ESC(B character set selection.
+	- Converted to text: ESC[2J clear screen (the window is not really cleared, to avoid losing history and logs), ESC[1;1H cursor positioning, ESC[A/B cursor up/down, BEL/VT/FF/DEL, etc.; this text is shown in magenta to tell it apart from real content.
+
+3. The main window font is now a monospaced font, so table output and columns overwritten with \r line up. Cascadia Code is preferred; if it is not found, Consolas is used (included in Windows since Vista), and Courier New as the last fallback.
+	- Why these three: their bold/italic faces are real separate faces (not synthesized by the system) with the same character width as the regular face, so columns do not drift right after ESC[1m; box-drawing characters (─│┌┐└┘═║ etc.) also take exactly one cell, so tables drawn by the device do not fall apart.
+	- Lucida Console, NSimSun, FangSong, MS Gothic and Terminal are also monospaced, but they lack real bold faces and the box-drawing characters above take two cells, so they are not used.
+	- Cascadia Code ligatures (-> != == etc.) are not rendered in Tk, because Tk draws with GDI and does not apply the OpenType calt feature. Tested to be pixel-identical to Cascadia Mono, so column calculation is not affected.
+
+4. [Fix] Serial input now uses an incremental UTF-8 decoder, so a multi-byte character (e.g. Chinese) split by a read boundary no longer turns into garbled boxes.
+
+5. [Fix] Escape sequences split by a read boundary are now joined across chunks and recognized correctly even when they arrive byte by byte; if the leftover exceeds 64 characters or is still incomplete after 300ms, it is output literally, so content can never stay hidden forever.
+
+6. [Improvement] The whole rendering process has exception fallback; on an error it falls back to inserting the text as-is, so one exception can no longer terminate the serial receive thread.
+
+7. [Improvement] While a script is running (when wait_for / wait_for_any / send_and_get etc. are using indexes), \r automatically falls back to a newline, the same as the old behavior, to avoid overwriting/deleting characters and disturbing the indexes.
+
+8. [Improvement] The regex match monitor receives clean text with escape codes removed, so rules no longer fail to match because something like ESC[0m sits in the middle; when \r overwrites, a newline is added for the monitor, so line-based rules keep the same meaning.
+
+9. [Improvement] Escaping of control characters when copying text_area content is now consistent with the display logic; ESC is written as <Esc> instead of <ESC>.
+
+10. [Note] The auto save txt contains what is shown in the window, so colors are not saved, and escape sequences converted to text are saved as literal text; in the "Terminal" option tabs have already been expanded to spaces.
+
+
+2026.7.24
+1. Added the "Auto Scroll" check box (row4, checked by default). When unchecked, the main window no longer jumps to the bottom automatically, which makes it easier to view earlier content.
+2. When copying text_area content, control characters are automatically converted to a readable form (e.g. ESC→<ESC>, NUL→<NUL>), fixing copies being cut off when they contained invisible characters.
+3. The timestamp control is now a single ttk.Checkbutton with text ("Timestamp"), without a separate Label, in the same style as "Auto Clear".
+
+2026.7.21
+1. Fixed the wrong version date shown in the About menu.
+
+2026.6.25
+1. [Fix] Removed the unused module-level initialization rm = pyvisa.ResourceManager('@py'). This line was never used and could cause a crash at startup.
+2. [Fix] Corrected about 18 messagebox popups where the parent=self.root argument was passed wrongly - to tk_safe instead of messagebox - so the popups were not properly attached to the parent window and kept on top.
+3. [Fix] show_about_window used the global variable root; changed to self.root, fixing a potential error when several window instances are created.
+4. [Fix] After auto clear, the calculation of last_saved_index could produce a negative line number; added max(1, ...) protection.
+5. [Fix] In the wait_for / wait_for_any / send_and_get functions, the target string could be split when received in several chunks.
+	- script_wait_for_new_text changed to append mode (+= instead of =)
+	- When last_index is updated, it moves back len(target_string)-1 characters as overlap, so the target string can never be split across the boundary of two reads
+	- After moving back, last_index is never less than start_index (safe comparison with text_area.compare)
+6. [Improvement] Removed the dead method RegexMonitor._add_result.
+7. [Improvement] Removed the duplicated "Browse" button and choose_folder function in save_as_new_script.
+8. [Improvement] Unified imports: removed from io import BytesIO, io.BytesIO is used instead.
+9. [Improvement] Auto clear detection now uses text_area.count("1.0", "end-1c", "chars") to get the character count, instead of copying the whole text content into Python every 10 seconds.
+10. [Improvement] sent_commands is now stored in the INI in JSON format (json.dumps/loads); the old ast.literal_eval format can still be read.
+11. [Improvement] Rewrote the alignment logic of the regex match monitor:
+	- When a left column is written, empty placeholder rows are actively added to all columns on its right
+	- When a right column is written, trailing consecutive empty placeholder rows are filled first
+	- Match results are sorted by source text line number + column number and then written together
+	- Fixes misalignment and lost results caused by data received in chunks
+12. [Improvement] The "Key File" and "Script File" rows now use the pack layout: the drop-down fills the remaining space automatically and adapts to the window width; the other controls have a fixed width.
+13. [Fix] Removed the no longer used packaging item ('my_image.jpg', '.') from the spec file.
+
+
+2026.6.24
+1. Tried a new packaging method: there is now one exe file and one internal folder; double-click the exe to start.
+	The pyw and bat start method that was used before to avoid antivirus false positives is no longer used.
+
+
+2026.6.12
+1. [Improvement] Regex match monitor window improvements
+- New "Start" button, gray/stopped by default. When pressed it turns green and starts real-time match monitoring; press it again to stop ("Stop"). No matching is done while stopped, which saves resources.
+- New layout of the first row: "Regex:" input, "Match lines:", "Add⏎" (hint that Enter triggers it), "Test", "Start"; the three buttons have the same width and larger spacing.
+- <, >, "Clear Column", "Clear All", "Delete Column Regex", "Delete All Regex" moved to the second row; on the right of the same row, "Regex:" "Load", "Save", "Save As" buttons were added.
+- New result area on the right of the second row: "Results:" "Copy to Clipboard", "Save to File", "Open in Excel", separated by spacing.
+  - "Copy to Clipboard": copies the whole content of the result text box to the system clipboard.
+  - "Save to File": supports .xlsx and .txt. When saving as xlsx, text is split correctly by column width into cells, with matching rows and columns (requires the openpyxl library).
+  - "Open in Excel": writes the results, split into columns by spaces, to a temporary CSV file and opens it with the system default program.
+- Fixed: the path text box did not scroll to the end after loading the default path at startup.
+- Fixed: closing the regex monitor window and then the main window cleared the path and other settings in the ini.
+- Fixed misalignment when several regexes matched at the same time: before each round of writing, a snapshot of the row count of each column is taken as the base, and in the same round all columns with matches are aligned to the same row before appending.
+
+2. [Dependency] openpyxl added to requirements.txt, for saving regex match results as xlsx. The offline installation package needs the .whl files of openpyxl and et_xmlfile added to the packages folder.
+
+
+2026.6.10
+1. [New] Regex match monitor
+- New "Regex" button that opens the regex match monitor window
+- Several regular expressions can be added at the same time; each regex has its own column showing the match results in real time
+- The first column is the index column; the title row shows the regex of each column
+- Supports "Test" (match once against the whole current content of the main window), moving columns left/right, "Clear Column"/"Clear All", "Delete Column Regex"/"Delete All Regex"
+- For a regex with a capture group (e.g. COM(\d)) only the content matched inside the parentheses is shown; without a capture group the full match is shown
+- The result window supports horizontal/vertical scrolling, and the cursor is visible
+
+For usage, see section 2.12 Regex match monitor in the User Manual.
+
+2. [New] Key file history
+- New "History..." label and 5 history buttons in the "Key File" row
+- Each time a new key file is loaded, the replaced old file is recorded in history button 1; the old 1-4 move back one place, and the old 5 is dropped
+- Clicking a history button swaps the current file with that button's file; that button moves to position 1, and buttons from 1 up to its old position move back one place
+- History buttons show the file name (max 20 characters); when empty they show the number
+- If a history file has been deleted or moved, the button name is shown with strikethrough and clicking it shows a message; if it is loaded successfully again, the strikethrough is removed automatically
+- The history is saved and restored automatically on program close/start (written to TermPlusSetup.ini)
+- Save As also pushes the original file into the history
+
+
+2026.5.28
+1. Optimized how the wait, wait for, wait for any and send and get functions call processes, reducing memory usage;
+2. Optimized how the countdown display of the wait-related functions in the script area is passed between functions, avoiding a potential bug when busy;
+3. Optimized the variable declarations for auto clear and auto save, reducing memory usage.
+
+2026.5.27
+1. All messagebox popups are now kept on top, so they are not hidden behind other always-on-top windows.
+
+2026.5.26
+1. Fixed send and send and next in the key button area not executing custom functions. Before, only send all executed them; now all three send buttons in the key button area recognize and execute custom functions.
+
+2026.5.15
+
+1. Added a custom function send_and_get() for the script area; for details see "07-search for content matches pattern.txt".
+2. Changed 07-xxxx.txt in Example Scripts.
+3. The wait for function of key buttons now blocks auto clear, avoiding the occasional error after index changes.
+4. When the wait, wait for and wait for any functions run in the script area, a value in parentheses such as "(10)" is now shown at the end of that line while running, decreasing by one every second.
+5. Added custom functions that can be used in the key button area:
+	show_date_time()
+	show_str()
+	visa_xxxx()
+	open power shell
+	power shell send xxxx
+	set_port("COM3")
+	set_baudrate(115200)
+	connect_serial()
+	close_serial()
+	toggle_serial()
+9. After send all is pressed it becomes stop; pressing stop interrupts sending. When sending is finished or stop is pressed, it changes back to send all.
+10. When visa_init, visa_query and similar functions are used in the script area, they no longer need to be written as send visa_init; remove the send and write visa_init on its own. The related Example Scripts were updated.
+
+
+2026.5.12
+1. The state of the three buttons in the script area no longer changes when the serial port is opened or closed, so a script can still be stopped while an automated script is switching serial ports. The related logic was adjusted.
+2. Example Scripts: updated 14-send HEX data to contorl USB port power relay.txt and fixed errors in it.
+3. Example Scripts: added 16-power on off radio and HWTM read JESD eyes.txt.
+4. The button edit window has 2 new features. The first is a pin/unpin button: when pressed, the window always stays in front and is not covered by other windows.
+5. The second: if the edit window is opened repeatedly via right-click - edit, opening it again only brings the already open window to the front instead of opening another one.
+
+2026.4.9
+1. Improved the serial receive logic for consecutive \r\n: if a \r happens to be the end of one read, the program checks whether the next read starts with \n, and if so, converts the \r\n together into a single \n, preventing extra line breaks.
+2. Changed how the picture in "About - buy me a coffee" is loaded: from an external image file back to converting a string to an image, so the folder no longer needs an extra image file.
+
+2026.2.6
+1. Improved the send & next button in the key button send window: after it is pressed it moves down to the next non-empty, non-comment line instead of just one line.
+2. Because of CrowdStrike, all later versions no longer include the date in the file name; the default is TermPlus_2025.exe. After opening it, the version date can be checked in the About menu.
+
+
+2026.1.9
+1. Removed the image embedded as a string; the QR code image is now packaged directly in the exe;
+2. When loading a ts file and when closing the window, the program checks whether the current script file has unsaved changes, and if so, a window asks whether to save;
+3. When loading a ts file, the program tries to decode it with 4 encodings in turn - gbk, utf-8, utf-8-sig, latin-1 - moving to the next one if there is a problem; if all of them fail, it decodes with gbk and replaces the parts that cannot be decoded with ?;
+4. After a ts file is loaded, the encoding used to parse it is remembered and the same encoding is used when saving, avoiding garbled text caused by a changed encoding;
+5. Changed the naming of the exe file: it starts with TermPlus_2025 by default and ends with v260109 style, indicating the packaging date, to match the antivirus exemption list that was applied for earlier.
+
+2025.12.22
+1. Changed some displayed text.
+2. Removed some unnecessary library dependencies.
+
+2025.12.10
+1. Reverted the changes made between 2025.10.31 and 11.19.
+
+2025.12.02
+1. Added an example file "15-change COM setup and send HEX data to USB relay.txt"
+2. Added sending of hexadecimal characters: sending "\xA1" is replaced by actually sending the hexadecimal byte "A1".
+
+The following changes were removed in an update. If you want to use the version with gitea upload in the future, use TermPlus_20251119-2_signed.exe.
+--------------------------------------------------------------------------------------------------------------------------------------------------
+2025.11.19
+1. The -2_signed version works normally on laptops and lab PCs; versions without _signed are blocked by CrowdStrike. This has been reported to the company security department, and an official exemption whitelist is being requested.
+
+2025.11.18
+1. The 1031 version could not start; this has been fixed.
+
+2025.10.31
+1. Added a script sync feature to the menu bar that uploads the ts and txt files of buttons and scripts to gitea, so script files no longer need to be copied between PCs.
+	gitea is a code repository similar to github, running as a program on the bench68 PC. Open the link below to access the repository directly for uploading, downloading, etc.
+	http://10.166.147.43:3000/dakongwuxian/termplus-scripts/
+	This feature can only be accessed from lab PCs. Work laptops cannot access lab IPs directly, so the feature cannot be used on laptops.
+--------------------------------------------------------------------------------------------------------------------------------------------------
+
+2025.10.13
+1. Changed the line breaks of received serial data: both \r\n and \r are replaced with \n. Copying directly from the text box gives \r\n by default.
+2. Changed the logic for receiving and displaying serial data: before, any received data was displayed immediately; now it is displayed every 0.1 seconds or every 2048 received characters.
+3. Changed the serial idle time from 0.01s to 0.001s, to avoid possible data loss during continuous transfer.
+
+2025.9.26
+1. Added a tk_safe function. All code in worker threads that reads or changes controls is wrapped in this function, which decides, based on whether it is running in the main thread, whether to wait for the main thread to be idle before running, improving safety between worker threads and the main thread.
+2. Other changes to support change 1.
+
+
+2025.9.25
+1. Changed the script area function send_line(text) to send_line(text,addNewline=True,insertDisplay=True). With the 2 optional parameters, send_line can be told whether to send a newline and whether to display the text in the main window.
+
+send_line("hello")
+send_line("hello",True,True)
+send_line("hello",False,False)
+
+Of the 3 lines above, the first two have the same effect; the third sends no newline and does not display in the main window, it only sends hello directly to the serial port.
+
+2. Added the 5 custom functions from the August 20 update to the auto-highlight scope.
+
+	show_str(str_to_show)
+	show_date_time()
+	get_last_n_lines(line_amount)
+	get_future_n_lines_or_till_overtime(line_amount,overtime)
+	get_future_lines_till_str_or_overtime(str_to_end,overtime)
+
+2025.9.23
+1. Changed the GUI control layout: the script and key file selection drop-downs are longer and easier to use. There are fewer controls in the right column, so all controls are visible even at low resolutions.
+2. Changed the minimum window size.
+3. Fixed a few small bugs.
+
+
+2025.9.11
+1. Changed how the auto save position is calculated after auto delete, trying to fix lost logs. Verified with 18 hours of continuous register reading: only once was a log duplicated by 4 lines; script sending, log saving and memory usage showed no problems.
+2. Changed the total character count for auto clear from 100k to 1M: half of the lines are deleted only when the total exceeds 1M characters.
+
+2025.9.10
+1. Fixed the "Clear" button causing auto save errors
+2. Removed all self.root.update_idletasks() calls. This function may cause worker thread errors; it was introduced earlier to solve thread conflicts, but had no effect
+3. Removed all attempts to repair positions related to wait for and similar functions. The position repair was for position changes caused by manual deletion and manual clearing; auto delete is temporarily disabled during wait for to prevent accidents, and wait for errors caused by manual deletion are no longer handled. That logic was too complex and was dropped.
+4. Changed the logic of auto save and auto delete, removing the queue, to try to prevent errors.
+
+2025.8.20
+1. Added 5 custom functions for the script area:
+	show_str(str_to_show)
+	show_date_time()
+	get_last_n_lines(line_amount)
+	get_future_n_lines_or_till_overtime(line_amount,overtime)
+	get_future_lines_till_str_or_overtime(str_to_end,overtime)
+They make writing custom scripts simpler.
+2. Changed the example script files to use the functions above instead of the original examples.
+
+
+2025.8.15
+1. Fixed a problem where, when one exe created several GUI windows, the text box content of several GUIs was changed at the same time.
+2. Added the SSH remote serial feature. The company radios have the SSH service enabled by default once the Ethernet port is configured; with this SSH feature you can access the radio's virtual serial port remotely, with the same effect as a direct physical serial connection.
+	Set IP - username - password in the window opened by the "SSH Setup" button, e.g. 10.166.1xx.xx - root - (empty password), click "Connect", and wait for the connection to succeed or report a failure.
+3. Added sequential-execution protection to all commands that change properties of the main window, preventing conflicts between worker threads and the main thread and reducing unexpected errors and crashes.
+4. Script errors now show the error line, and a detailed error log is recorded: you can see which line failed, plus the script, variables, main window text and other information, for possible code debugging. This feature is only for errors during script execution; the one added earlier was for GUI errors.
+
+2025.8.12
+1. Fixed the "Clear" button not working.
+2. Improved how the script path and script file are selected.
+3. Adjusted the position and text of some controls.
+4. Renamed the example script files.
+5. Fixed the error logging stopping later operation when the program had an error; errors are now logged without affecting later operation.
+
+2025.8.8
+1. Changed the wait string feature of key button sending: before, it could only wait for # or $; now it can wait for several strings at once. Enter several strings separated by commas in the "Prompt:" text box (e.g. #,$), so you no longer need to switch manually when sending several commands in a row under # or $.
+
+2025.8.7
+1. Added a right-click menu to the 3 main areas, with "Cut", "Copy", "Paste", "Delete", "Select All".
+2. Added an error log when the program fails, for reporting possible crash causes.
+3. Changed the power shell example script: adding the -v option shows how the scp command runs and its result.
+
+2025.8.5
+1. Fixed a bug in the power shell code: running open power shell and power shell send in the key button area and in the script area now calls the same function and works normally.
+2. Improved the handling of tabs and spaces in the script area: tabs and spaces can now be mixed, 4 spaces equal one tab.
+3. Improved the handling of empty lines, avoiding the requirement that empty lines in a while code block must also have aligned indentation.
+4. Fixed a script run bug: after the highlight feature was added, else could not run; now it can.
+5. Fixed the wrong version number shown in the menu bar.
+6. Updated the related content in the example scripts.
+
+2025.7.23
+1. While a custom script is running, undo in the main window is turned off; after stopping, undo is restored. This change avoids growing memory usage and most likely avoids crashes after long runs.
+2. The current version in the menu bar "About" is automatically shown as the current date. This was meant to take effect when the exe is packaged; for now it is a bug.
+3. Added a donation option to the menu bar "About"; clicking it shows a QR code for donations.
+
+2025.6.26
+1. Fixed a bug where every click on the auto save and auto clear buttons created one more independently running check triggered every 10s. This bug did not affect functionality.
+2. The pyvisa library is now packaged by default, so PCs without the py-visa library or NI-VISA installed can run the program directly.
+3. Changed the custom icon to a Paimon avatar.
+v2
+1. Changed how the alt+c/d/z/l/a/e/k/u shortcuts are implemented in the main window; tested and confirmed to work. The previous method actually did not work.
+
+2025.6.25
+1. Fixed a bug triggered when using the wait for function: it made auto save and auto clear stop working, causing the program to crash after long runs.
+This bug was introduced in the 2025.6.18 version.
+Do not use the two versions 20250618 and 20250623. Replace them with the latest version.
+2. The 20250625v2 version optimizes the code so that auto save and auto clear are first triggered not 30s after startup, but every 10s after the button is pressed.
+
+2025.6.23
+1. Added support for Linux shortcuts in the main window. To avoid conflicts with the Windows shortcuts ctrl+z undo and ctrl+y redo, the Linux shortcuts are all mapped to Alt.
+	Pressing alt+c/d/z/l/a/e/k/u in the main window now has the same effect as ctrl+c/d/z/l/a/e/k/u in Linux.
+	Technically, the ASCII code of the shortcut is sent over the serial port: c d z l a e k u correspond to 0x03 0x04 0x1A 0x0C 0x01 0x05 0x0B 0x15.
+	Linux shortcuts such as clear screen and cut do not affect the windows of this GUI.
+
+2025.6.18
+1. To fix a bug that occasionally appeared during long runs, the following optimizations were made:
+	While the wait for/wait for any functions are running, auto delete is temporarily turned off, to avoid errors when reading the main window content;
+	Improved the exception handling of the wait for/wait for any functions.
+2. The 20250618v2 version adds a highlight feature: in the multi-line loop script area, the script being executed highlights the line it is currently running.
+(This feature has too many cases to test and cannot be guaranteed bug-free. If you run into problems, use the 20250618 version.)
+
+2025.5.27
+1. Set the undo/redo history of several text editing windows to 20 steps, to avoid unlimited memory usage.
+2. Optimized the variable declarations of the wait and wait_for related functions, reducing memory usage.
+3. Auto clear now also deletes text tags, reducing memory growth.
+
+2025.5.26
+1. The "Auto Clear" check box is now checked by default, to avoid program crashes caused by too much memory usage after long runs.
+
+2025.5.23
+1. Fixed the wrong wait string logic of the key button functions: newly appearing strings in the window are now read correctly and are not affected by position changes caused by auto clear.
+2. Fixed a bug where the send function of key buttons sent comment content.
+3. Fixed the wrong logic of the wait for x for t statement in the key button area: newly appearing strings in the window are now recognized correctly and are not affected by position changes caused by auto clear.
+4. Added the "Auto Clear" check box, unchecked by default (no auto clear by default). When checked, every 10s the program checks whether the window content exceeds 100,000 characters and deletes half of the lines. (Recommended for long runs: the Python GUI uses a lot of memory, which can cause lag or freezes.)
+
+2025.5.21
+1. The window opened by right-click - edit in the key button area now also follows the theme colors.
+2. In the multi-line text box of the window opened by right-click - edit in the key button area, a line starting with # turns green and italic.
+
+2025.5.19
+1. Increased the height of the script send area from 10 to 15.
+2. Changed the encoding of power shell output from UTF-8 to GBK; Chinese text returned by power shell is now displayed correctly.
+
+2025.5.16
+1. Added the wait_for_any(["xxx","yyy","zzz",……],t) function. It searches for several strings at once, stops when any one is found and returns the found string; if none is found within t seconds, it returns None.
+2. Added an example for wait_for_any(); see "Example Scripts searching multiple strings and response accordinglly.txt".
+3. Fixed errors in some example txt files. Note in particular: strings copied directly from Term and TermPlus sometimes contain invisible characters, which may cause errors or failed matches.
+
+2025.5.15
+1. Added undo and redo to the main window, the button edit window, the single-line send box and the script edit box: typing and deleting characters can be undone and redone with ctrl+z and ctrl+y.
+
+2025.5.13
+1. Fixed a bug where, after opening the edit windows of several buttons, saving a button saved it to the wrong place.
+2. In the button edit window, when several lines are selected and the send button is pressed, lines starting with # are recognized and their content is not sent.
+3. Improved the send & next button: it now selects the next line to be sent, making it easier to see which line has been sent.
+4. Changed the tab area colors: unselected tabs are gray or dark, the selected tab is always white, making it easier to see which tab is in front.
+5. Added a global variable that stores how many lines the last auto clear deleted, so the wait_for function in the script area does not miss new content because of auto clear.
+6. Fixed file errors caused by using different encodings when opening and saving .ts files; gbk encoding is now always used.
+7. When right-clicking a tab to open the rename window, the current name is shown in the window so it can be edited.
+8. When auto save is turned off, one save is done immediately, so the latest content is not missed.
+
+2025.5.7
+1. Completed the comments and explanations in all example scripts, explaining in detail how to use every function and what to watch out for.
+
+2025.5.6
+1. Added opening/closing and configuring the COM port from scripts, with an example; see "Example Scripts changing COM setup with srcipts.txt".
+2. Changed the cursor color in the dark theme to white; before, the cursor was black in the dark theme and very hard to see.
+3. Changed the enable logic of the script run button "Start": scripts can now run even when the serial port is not open.
+
+2025.4.30
+1. Added SCPI support: by sending the following four functions to the serial port, an Agilent N5767A programmable power supply can be controlled.
+-visa_init(addr)
+-visa_query(cmd)
+-visa_write(cmd)
+-visa_read()
+These functions work with direct sending, key button sending and script sending. Send the init function before using the other statements.
+2. Added an example showing how to use these statements to query the N5767A power supply and switch its output on and off. The example is "Example Scripts check N5767A power status and power on-off it.txt".
+
+
+2025.4.29
+1. Improved the power shell features: power shell input and output can be seen directly in the text area.
+2. Improved highlighting in the multi_loop_send text box: the related custom function names are highlighted.
+3. Shortcuts for the buttons of the window opened by button edit were added earlier but not recorded in this note; recorded now. F1 F5 F9 correspond to the three send buttons.
+4. Added a function for inserting text into the window to the functions available in multi-line loop. See "Example Scripts searching specific respond and stop 2.txt".
+
+2025.4.28
+1. Added opening power shell and sending commands to it. In the main window, single-line send, key button send and script send areas, sending "open power shell" opens a power shell, and sending "power shell send XXX" sends the string "XXX".
+2. Added an example of using power shell
+3. Changed the UI font: everything now uses Microsoft YaHei, size 9. Changed the UI colors and text colors.
+4. Added highlighting in the script send area: Python's default keywords, function names and the custom function names of this GUI are highlighted in blue.
+
+2025.4.25
+1. Added the "Theme" button; pressing it switches between the light and dark themes.
+2. Changed the send button of the right-click menu in the key button area: send now sends the line at the cursor, or the selected lines.
+3. Changed the "Prompt:" input box into a box where you can type or select a value.
+4. Changed the error text about the "Prompt:" wait string when send all and send in the right-click menu of the key button area send multiple lines; it now shows "Wait symbol not received from the port. Sending stopped. Set or clear the wait symbol.".
+
+2025.4.24
+1. Added limits to backspace and the left/right keys in the main window: backspace can only delete the typed string, and the left/right keys cannot move the cursor outside the typed string.
+
+2025.4.23
+1. Removed the maximize toggle buttons of the main window and the side bar
+2. Added 3 buttons in the top-left corner ("Keys", "Script", "Config") to show and hide the key button area, the script area and the config area.
+3. Adjusted the layout of all controls to make the changes above possible.
+4. Optimized the gaps between areas, making display and adjustment more intuitive.
+
+2025.4.15
+1. Fixed the send timestamp not being shown during single-line loop sending ("Loop Send").
+2. Added maximize and minimize buttons to the main window.
+3. Split the multi-line loop send button into three buttons, "Start", "Pause" and "Stop", so a running custom script can be paused and resumed.
+
+2025.4.11
+1. Added 2 example scripts. They need the matching version to run; older versions cannot run these 2 examples.
+Example Scripts monitoring temperature and auto stop.txt
+Script 1: while sending the ts r command in a loop, reads the reply; when the number after the Board string is greater than 30, a popup is shown and the loop stops;
+Example Scripts searching specific respond and stop.txt
+Script 2: while sending any command in a loop, reads the reply and checks whether a specified string appears; if it does, a popup is shown and the loop stops.
+2. Added functions supported in the code space of "multi-line loop send" (now "Script Area"), so the 2 new scripts can run.
+
+
+2025.4.9
+1. Added the timestamp check box ("Timestamp"). When checked, "Send at xx:xx:xx.xxx" and "Receive atxx:xx:xx.xxx" are added before sent and received content, in blue and green respectively. The receive timestamp is shown when the first character is received; after that, the next receive timestamp is shown only after no characters have been received for more than 0.1 seconds.
+
+2025.4.1
+1. The single send box is now a drop-down box that shows the history of sent commands. Pressing enter in the main window and sending from the single send box share the same command history. Pressing the down and up keys in the single send box moves through the command history. Pressing up/down in the main window selects and replaces with recently sent commands.
+2. Typed commands in the main window can now be deleted with backspace, and also deleted after moving the cursor left/right. However, if the cursor is moved with the mouse while typing a command, or a received reply interrupts the typing, the characters deleted on screen in the main window may not match the characters actually deleted from the command; this does not affect editing and sending the command.
+3. More content is saved on close: the command history is also saved in the .ini file, and the history from the last close is loaded on the next start.
+
+
+2025.3.24
+1. Fixed the "Send & Next" button. The logic added earlier for skipping lines starting with # and wait was wrong; it has been corrected.
+2. Changed the auto delete logic of the receive window: content is deleted only when it exceeds 100,000 characters, keeping the second half of the lines. Before, it was deleted when exceeding 10,000 characters, keeping the last 2 screens.
+
+
+2025.3.20
+1. Added 2 text boxes for entering the "wait string" (now "Prompt:") and the "Timeout (s):". These 2 text boxes work as follows:
+	When a button in the tab area is clicked and the button contains several lines, all lines are sent one by one; after each line is sent, the program waits for the characters in the "wait string" before sending the next line.
+	If the wait takes longer than the "timeout", that send ends directly.
+2. Changed the rule for periodic screen clearing: every 10s the number of characters in the receive window is checked; if it exceeds 10,000, the earlier lines are deleted, keeping only the lines of the last 2 screens.
+3. Changed the logic of the wait for function in the multi-line loop send window, so periodic screen clearing does not affect the search position of the wait for function and it works normally.
+4. Changed the logic of clicking to send multi-line text and the send all button in the tab area, so the "wait string" feature does not conflict with the wait and wait for statements.
+5. Added an action for when the "wait string" times out: a timeout reminder is added to the window. (In the tab area and the multi-line loop send area, using the wait for statement gives no timeout reminder.)

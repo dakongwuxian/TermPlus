@@ -1,0 +1,36 @@
+# 本示例展示了获取主窗口中的内容，搜索指定字符串，获取该字符串同一行后方的数字，判断该数字是否大于30，如果大于30则弹出窗口提示并结束脚本运行，如果没有大于30则继续后续的执行。
+# 示例中使用的函数
+# send xxx
+# wait t
+# get_last_n_lines()获取主窗口指定位置的内容
+# re.search()在字符串中查找指定内容
+# messagebox.showinfo()弹出提示窗口
+# raise StopLoopException("stop") 停止脚本的运行
+
+# 定义变量
+temp = 0
+
+# 发送命令
+send ts r
+
+# 等待命令回复结束
+wait for $ for 3
+
+# 获取文本区域当前结束位置往回取 n 行的内容（n需要替换为实际需要搜寻的行数）
+text_to_search = get_last_n_lines(n)
+
+# match for words "Board" and temp number
+match_result = re.search(r'Board\s*:\s*([\d.]+)', text_to_search)
+
+# get temp number
+if match_result:
+    temp = float(m.group(1))
+if temp > 30:# decide if temp >30
+    messagebox.showinfo("提示", "board temp>30 detected")# pop out message
+    raise StopLoopException("stop")# stop running
+
+# 脚本需要遵守python的缩进规则，python通过缩进来识别哪些属于一个大括号（if/for/while等）中的内容。
+# 缩进建议全部使用4n个空格或者全部使用tab。
+# 本示例可能出现长其运行后某次运行异常的问题，因为长其运行后会触发自动删除窗口中前一半行的功能，会导致start_idx实际指向的位置错误
+
+

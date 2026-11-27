@@ -1,0 +1,21 @@
+# This example uses while loops to send commands and insert strings into the main window
+# Scripts must follow Python indentation rules. Python uses indentation to identify which lines belong to a block (if/for/while, etc.).
+# For indentation, it is recommended to use either 4n spaces everywhere or tabs everywhere.
+
+i=0
+while i<3:
+    #send command1 # Action to execute; commented out in this example
+    show_str("external loop count is %d\n"%i) # Show the current loop count in the main window
+    wait(1)
+    i=i+1
+    j=0
+    while j<3:
+        #send command2
+        show_str("internal loop count is %d\n"%j)
+        wait(1)
+        j=j+1
+
+
+# Using the form above, loop variables can also be included in the commands that are sent
+
+

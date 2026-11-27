@@ -1,0 +1,30 @@
+# This example shows how to get content from the main window, search for a specified string, get the number after that string on the same line, and check whether the number is non-zero. If it is non-zero, a pop-up message is shown and the script stops; if it is 0, execution continues.
+# LANEDATA: lane:4, errorStatus: 0, laneErrors: 0, errorCount:0
+# The line above is the line to search for; the last number is the monitored value
+
+# Send the command that reads the BER. xxxx here is an example; replace it with the actual command
+send xxxx
+
+# Wait for the # symbol to make sure the command response has appeared in the window (it may also be $ or another symbol)
+wait for # for 3
+
+# Get the last n lines of the text area, counting back from the current end (replace n with the actual number of lines to search)
+text_to_search = get_last_n_lines(n)
+ 
+# Match the LANEDATA line and extract errorCount; the line below is the regular expression
+# The part enclosed in parentheses is extracted into group(1). Modify the regular expression according to the content you need to match
+match_pattern = r'LANEDATA:\s*lane:\d+,\s*errorStatus:\s*\d+,\s*laneErrors:\s*\d+,\s*errorCount:(\d+)'
+matche_result = re.finditer(match_pattern, text_to_search)
+ 
+# Check whether there is any errorCount > 0
+for match in matche_result:
+    error_count = int(match.group(1))
+    if error_count != 0:
+        messagebox.showinfo("Info", f"errorCount > 0 detected (value {error_count}), script stopped.")
+        raise StopLoopException("stop")
+
+# Scripts must follow Python indentation rules. Python uses indentation to identify which lines belong to a block (if/for/while, etc.).
+# For indentation, it is recommended to use either 4n spaces everywhere or tabs everywhere.
+
+
+

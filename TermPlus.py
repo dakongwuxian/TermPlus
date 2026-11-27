@@ -19,6 +19,8 @@ import io
 import json
 import keyword
 import os # 遍历目录
+import queue
+import random
 import paramiko
 import pyvisa
 from pyvisa.constants import AccessModes
@@ -36,6 +38,209 @@ import threading
 import time
 import traceback
 from urllib.parse import urljoin,quote
+
+
+# ============================================================
+# 多语言支持
+# ------------------------------------------------------------
+# - 界面文字统一用 tr(键, 英文原文, **参数) 获取。英文原文直接写在代码里，作为默认值和兜底。
+# - 其他语言放在 language 文件夹下的 <语言代码>.txt（打包后位于 _internal\language），
+#   每行一条 "键 = 译文"，UTF-8 编码，# 开头为注释，译文中的 \n 表示换行。
+#   缺少的键自动显示英文，所以新增语言时没翻译完的条目也不会空白。
+# - TermPlusSetup.ini 的 [Setup] 里 language = en / zh ...，为空或没有 ini 时用英文。
+# - 程序启动时（创建任何控件之前）就加载语言，切换语言需要重启生效。
+# ============================================================
+if getattr(sys, "frozen", False):
+    # 打包后：ini 跟 exe 放在一起；语言文件在 _internal\language
+    APP_DIR = os.path.dirname(os.path.abspath(sys.executable))
+    LANG_DIR = os.path.join(getattr(sys, "_MEIPASS", APP_DIR), "language")
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+    LANG_DIR = os.path.join(APP_DIR, "language")
+INI_PATH = os.path.join(APP_DIR, "TermPlusSetup.ini")
+
+DEFAULT_LANG = "en"
+# ini 里允许写的别名，不区分大小写
+LANG_ALIASES = {
+    "en": "en", "english": "en",
+    "zh": "zh", "chinese": "zh", "zh_cn": "zh", "zh-cn": "zh", "中文": "zh",
+    "ja": "ja", "japanese": "ja", "日本語": "ja",
+    "sv": "sv", "swedish": "sv", "svenska": "sv",
+}
+
+_LANG_CODE = DEFAULT_LANG      # 当前生效的语言
+_LANG_SAVE_CODE = DEFAULT_LANG # 关闭时写入 ini 的语言（在语言窗口里选了新语言后会变）
+_LANG = {}                     # 当前语言的 键 -> 译文
+
+
+def _lang_unescape(value):
+    """处理译文里的 \\n、\\t、\\\\ 转义。"""
+    out = []
+    i = 0
+    while i < len(value):
+        c = value[i]
+        if c == "\\" and i + 1 < len(value):
+            n = value[i + 1]
+            if n == "n":
+                out.append("\n"); i += 2; continue
+            if n == "t":
+                out.append("\t"); i += 2; continue
+            if n == "\\":
+                out.append("\\"); i += 2; continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def read_lang_file(path):
+    """读取一个语言文件，返回 {键: 译文}。读不到时返回空字典。"""
+    table = {}
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            for raw in f:
+                line = raw.rstrip("\r\n")
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                # 只去掉等号后紧跟的一个空格，保留译文本身的前后空格
+                if value.startswith(" "):
+                    value = value[1:]
+                if key:
+                    table[key] = _lang_unescape(value)
+    except OSError:
+        pass
+    return table
+
+
+def list_languages():
+    """扫描 language 文件夹，返回 [(代码, 显示名称), ...]。英文始终在列表里。"""
+    langs = {}
+    try:
+        for name in os.listdir(LANG_DIR):
+            if name.lower().endswith(".txt"):
+                code = os.path.splitext(name)[0].lower()
+                table = read_lang_file(os.path.join(LANG_DIR, name))
+                langs[code] = table.get("language.name", code)
+    except OSError:
+        pass
+    langs.setdefault(DEFAULT_LANG, "English")
+    return sorted(langs.items(), key=lambda kv: (kv[0] != DEFAULT_LANG, kv[0]))
+
+
+def normalize_lang(value):
+    """把 ini 里写的语言（en / English / chinese …）转成语言代码，认不出来时用英文。"""
+    v = (value or "").strip().lower()
+    if not v:
+        return DEFAULT_LANG
+    code = LANG_ALIASES.get(v, v)
+    if code == DEFAULT_LANG or os.path.isfile(os.path.join(LANG_DIR, code + ".txt")):
+        return code
+    return DEFAULT_LANG
+
+
+def read_ini_language():
+    """在创建任何控件之前，单独从 ini 里读出 language。"""
+    try:
+        cfg = configparser.ConfigParser()
+        cfg.read(INI_PATH, encoding="utf-8")
+        return cfg.get("Setup", "language", fallback="")
+    except Exception:
+        return ""
+
+
+def load_language(code):
+    global _LANG_CODE, _LANG_SAVE_CODE, _LANG
+    _LANG_CODE = code
+    _LANG_SAVE_CODE = code
+    _LANG = read_lang_file(os.path.join(LANG_DIR, code + ".txt"))
+
+
+def tr(key, default, **kwargs):
+    """取当前语言的译文；没有时用英文原文。带参数时按 {名称} 填入。"""
+    text = _LANG.get(key, default)
+    if not kwargs:
+        return text
+    try:
+        return text.format(**kwargs)
+    except (KeyError, IndexError, ValueError):
+        # 译文里的占位符写错时，退回英文，避免界面报错
+        try:
+            return default.format(**kwargs)
+        except (KeyError, IndexError, ValueError):
+            return default
+
+
+def ui_font_family():
+    """界面字体，语言文件里可以用 font.ui 指定，默认 Microsoft YaHei UI。"""
+    return _LANG.get("font.ui", "Microsoft YaHei UI")
+
+
+def _monitor_work_area(x, y):
+    """返回包含屏幕坐标 (x, y) 的显示器的工作区 (left, top, right, bottom)，不含任务栏。
+    多屏时副屏的坐标可能是负数（副屏在主屏左边或上边）。取不到时返回 None。"""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+        user32 = ctypes.windll.user32
+        user32.MonitorFromPoint.restype = wintypes.HMONITOR
+        user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+        user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFO)]
+        MONITOR_DEFAULTTONEAREST = 2
+        hmon = user32.MonitorFromPoint(wintypes.POINT(int(x), int(y)), MONITOR_DEFAULTTONEAREST)
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not hmon or not user32.GetMonitorInfoW(hmon, ctypes.byref(info)):
+            return None
+        r = info.rcWork
+        return r.left, r.top, r.right, r.bottom
+    except Exception:
+        return None
+
+
+def place_on_parent_monitor(win, parent, y_ratio=3):
+    """把弹出窗口放到父窗口中间（垂直方向偏上 1/y_ratio），并保证整个窗口落在父窗口所在的那块屏幕里。
+    调用前窗口可以先 withdraw()，调用后再 deiconify()。"""
+    win.update_idletasks()
+    # reqwidth/reqheight 不含标题栏和边框，留出余量，保证标题栏和按键都在屏幕内
+    w = win.winfo_reqwidth() + 16
+    h = win.winfo_reqheight() + 40
+    px, py = parent.winfo_rootx(), parent.winfo_rooty()
+    pw, ph = parent.winfo_width(), parent.winfo_height()
+    x = px + (pw - w) // 2
+    y = py + (ph - h) // y_ratio
+    area = _monitor_work_area(px + pw // 2, py + ph // 2)
+    if area is None:
+        # 取不到显示器信息时，按整个虚拟桌面限制
+        left, top = parent.winfo_vrootx(), parent.winfo_vrooty()
+        right = left + parent.winfo_vrootwidth()
+        bottom = top + parent.winfo_vrootheight()
+    else:
+        left, top, right, bottom = area
+    x = max(left, min(x, right - w))
+    y = max(top, min(y, bottom - h))
+    win.geometry(f"+{x}+{y}")
+
+
+def restart_app():
+    """重新启动 TermPlus（打包后启动 exe，源码运行时用当前解释器重新运行本文件）。"""
+    if getattr(sys, "frozen", False):
+        args = [sys.executable]
+    else:
+        args = [sys.executable, os.path.abspath(__file__)]
+    subprocess.Popen(args, cwd=APP_DIR, close_fds=True)
+
+
+load_language(normalize_lang(read_ini_language()))
 
 
 def _parse_visa_call(name, line):
@@ -103,6 +308,463 @@ img_base64 = (
 "vhZIN9Bd3pmk6tLmAVitTk+Px8ZIRFFeJu9fl+9xl/c/uhP/kO1vBYeg5BFXBCUAAAAASUVORK5C"
 "YII="
 )
+
+
+# ============================================================================
+# 按键文件（.ts）自动同步：解析 / 序列化 / 标签页对应 / 三方合并 / 加锁写入 / 备份
+# 这一部分不碰界面，后台线程和主线程都可以调用。
+#   标签页数据统一表示为 [(标签页名, {格子序号: (按键名, 多行内容)}), ...]
+#   只保留按键名非空白的按键，多行内容去掉首尾空白——与保存时写出、加载时读回的结果一致，
+#   所以两份数据可以直接比较。
+# ============================================================================
+_TS_TAB_RE = re.compile(r'<tab\s*\{([^}]+)\}>(.*?)</tab>', re.DOTALL)
+_TS_BTN_RE = re.compile(r'<button\s*\{(\d+)\}\s*\{([^}]+)\}>(.*?)</button>', re.DOTALL)
+_TS_DATA_RE = re.compile(r'<data>\s*(.*?)\s*</data>', re.DOTALL)
+TS_ENCODINGS = ('gbk', 'utf-8', 'utf-8-sig', 'latin-1')
+TS_LOCK_STALE_SECONDS = 10      # 锁文件 10 秒没变化，当作程序崩溃留下的
+TS_LOCK_WAIT_SECONDS = 12       # 最多等这么久拿锁
+
+
+class TsLockBusy(Exception):
+    """别的 TermPlus 正在保存，等不到锁。"""
+
+
+def ts_parse(content):
+    tabs = []
+    for tab_name, tab_content in _TS_TAB_RE.findall(content or ""):
+        buttons = {}
+        for idx, name, body in _TS_BTN_RE.findall(tab_content):
+            m = _TS_DATA_RE.search(body)
+            buttons[int(idx)] = (name, m.group(1).strip() if m else "")
+        tabs.append((tab_name, {i: v for i, v in buttons.items() if v[0].strip()}))
+    return tabs
+
+
+def ts_serialize(tabs):
+    """与 save_script 写出的格式完全相同。"""
+    out = []
+    for tab_name, buttons in tabs:
+        out.append(f"<tab {{{tab_name}}}>\n")
+        for idx in sorted(buttons):
+            name, data = buttons[idx]
+            if not name.strip():
+                continue
+            out.append(f"<button {{{idx}}} {{{name}}}>\n<data>\n{data}\n</data>\n"
+                       "<icon>\n\n</icon>\n<desc>\n\n</desc>\n</button>\n")
+        out.append("</tab>\n\n")
+    return "".join(out)
+
+
+def ts_read(path):
+    """读取 ts 文件，返回 (内容, 编码)。读不到时抛 OSError。"""
+    for enc in TS_ENCODINGS:
+        try:
+            with open(path, "r", encoding=enc) as f:
+                return f.read(), enc
+        except UnicodeDecodeError:
+            continue
+    with open(path, "r", encoding="gbk", errors="replace") as f:
+        return f.read(), "gbk"
+
+
+def ts_fingerprint(path):
+    st = os.stat(path)
+    return (st.st_mtime_ns, st.st_size)
+
+
+def ts_read_stable(path):
+    """读取并确认读的过程中文件没有变化（防止读到别的程序写了一半的文件）。返回 (内容, 编码, 指纹)。"""
+    for _ in range(3):
+        fp1 = ts_fingerprint(path)
+        text, enc = ts_read(path)
+        fp2 = ts_fingerprint(path)
+        if fp1 == fp2:
+            return text, enc, fp2
+        time.sleep(0.3)
+    return text, enc, fp2
+
+
+def _ts_tab_similarity(a, b):
+    keys = set(a) | set(b)
+    if not keys:
+        return 0.0
+    return sum(1 for k in keys if a.get(k) == b.get(k)) / len(keys)
+
+
+def ts_match_tabs(base, disk):
+    """ts 文件里的每个标签页对应基准里的第几个，对不上为 None。
+    先按名称（重名时按第几次出现），再按按键内容相似度（≥50%，同位置优先）。"""
+    disk_map = [None] * len(disk)
+    used = set()
+    by_name = {}
+    for i, (name, _) in enumerate(base):
+        by_name.setdefault(name, []).append(i)
+    seen = {}
+    for j, (name, _) in enumerate(disk):
+        k = seen.get(name, 0)
+        seen[name] = k + 1
+        lst = by_name.get(name, [])
+        if k < len(lst):
+            disk_map[j] = lst[k]
+            used.add(lst[k])
+    for j, (_, db) in enumerate(disk):
+        if disk_map[j] is not None:
+            continue
+        best, best_score = None, 0.0
+        for i, (_, bb) in enumerate(base):
+            if i in used:
+                continue
+            score = _ts_tab_similarity(bb, db) + (0.01 if i == j else 0.0)
+            if score > best_score:
+                best, best_score = i, score
+        if best is not None and best_score >= 0.5:
+            disk_map[j] = best
+            used.add(best)
+    return disk_map
+
+
+def _ts_entry(name, buttons, ref, new_base):
+    # ref：界面上对应的标签页 frame（没有则新建）；new_base：在 ts 文件里的序号（本地新增为 None）
+    # ui：只在界面上保留、不写进文件的按键值（冲突时点了“取消”）；pending：这些按键的序号
+    return {"name": name, "buttons": dict(buttons), "ref": ref, "new_base": new_base,
+            "ui": {}, "pending": set()}
+
+
+def ts_merge(base, local, disk, disk_map):
+    """三方合并。
+    base / disk：[(名称, 按键)]；local：[{name, buttons, base, editors, pending, ref}]
+    返回 (entries, local_keys, disk_keys, conflicts)。
+    键：("b", 基准序号) / ("l", 本地序号) / ("d", ts 序号)。"""
+    entries, conflicts = {}, []
+    l_by_base, local_keys = {}, []
+    for k, e in enumerate(local):
+        b = e.get("base")
+        if b is not None and 0 <= b < len(base) and b not in l_by_base:
+            l_by_base[b] = e
+            local_keys.append(("b", b))
+        else:
+            local_keys.append(("l", k))
+            entries[("l", k)] = _ts_entry(e["name"], e["buttons"], e["ref"], None)
+    d_by_base, disk_keys = {}, []
+    for j, b in enumerate(disk_map):
+        if b is not None:
+            d_by_base[b] = j
+            disk_keys.append(("b", b))
+        else:
+            disk_keys.append(("d", j))
+            entries[("d", j)] = _ts_entry(disk[j][0], disk[j][1], None, j)
+
+    for i, (bn, bb) in enumerate(base):
+        key = ("b", i)
+        le, j = l_by_base.get(i), d_by_base.get(i)
+        if le is not None and j is not None:
+            dn, db = disk[j]
+            ln, lb, pend = le["name"], le["buttons"], set(le.get("pending") or ())
+            ent = _ts_entry(ln, {}, le["ref"], j)
+            if ln == dn or dn == bn:
+                ent["name"] = ln
+            elif ln == bn:
+                ent["name"] = dn
+            else:
+                ent["name"] = dn
+                conflicts.append({"kind": "name", "key": key, "local": ln, "ts": dn})
+            for idx in sorted(set(bb) | set(lb) | set(db) | pend):
+                b, l, d = bb.get(idx), lb.get(idx), db.get(idx)
+                if idx in pend:
+                    # 上次冲突时点了“取消”：两边还不一样就继续算冲突
+                    val, conflict = l, l != d
+                elif l == d or l == b:
+                    val, conflict = (l if l == d else d), False
+                elif d == b:
+                    val, conflict = l, False
+                else:
+                    val, conflict = d, True
+                if conflict:
+                    val = d
+                    conflicts.append({"kind": "button", "key": key, "idx": idx,
+                                      "tab": ln, "local": l, "ts": d})
+                if val is not None:
+                    ent["buttons"][idx] = val
+            entries[key] = ent
+        elif le is not None:            # ts 里删了这个标签页
+            if le["name"] != bn or le["buttons"] != bb or le.get("editors"):
+                conflicts.append({"kind": "delete", "key": key, "deleted_by": "ts", "tab": le["name"],
+                                  "keep": _ts_entry(le["name"], le["buttons"], le["ref"], None)})
+        elif j is not None:             # 本地删了这个标签页
+            dn, db = disk[j]
+            if dn != bn or db != bb:
+                conflicts.append({"kind": "delete", "key": key, "deleted_by": "local", "tab": dn,
+                                  "keep": _ts_entry(dn, db, None, j)})
+    return entries, local_keys, disk_keys, conflicts
+
+
+def ts_apply_choice(entries, conflict, side):
+    """side：button → local / ts / cancel；name → local / ts；delete → delete / keep。
+    button 选 local 时用 conflict["local"]（弹窗里改过的话调用前已经替换成改过的值）。"""
+    kind, key = conflict["kind"], conflict["key"]
+    if kind == "delete":
+        if side == "keep":
+            entries[key] = conflict["keep"]
+        return
+    ent = entries[key]
+    if kind == "name":
+        ent["name"] = conflict["local"] if side == "local" else conflict["ts"]
+        return
+    idx = conflict["idx"]
+    val = conflict["local"] if side == "local" else conflict["ts"]
+    if side == "cancel":
+        # 文件里先保留 ts 的值（不覆盖别人的修改），界面上保留本地的值，下次保存再提示
+        ent["ui"][idx] = conflict["local"]
+        ent["pending"].add(idx)
+    if val is None:
+        ent["buttons"].pop(idx, None)
+    else:
+        ent["buttons"][idx] = val
+
+
+def _ts_order_changed(keys):
+    b = [k[1] for k in keys if k[0] == "b"]
+    return b != sorted(b)
+
+
+def ts_merge_order(local_keys, disk_keys):
+    """只有一边调整了顺序就用那一边；两边都调整了以 ts 为准。
+    另一边新增的标签页插在它在自己那边的前一个标签页后面。"""
+    if _ts_order_changed(disk_keys):
+        skeleton, extra = disk_keys, local_keys
+    else:
+        skeleton, extra = local_keys, disk_keys
+    order = list(skeleton)
+    present = set(order)
+    for n, k in enumerate(extra):
+        if k in present:
+            continue
+        at = 0
+        for q in reversed(extra[:n]):
+            if q in present:
+                at = order.index(q) + 1
+                break
+        order.insert(at, k)
+        present.add(k)
+    return order
+
+
+def _ts_lock_path(path):
+    return path + ".lock"
+
+
+def ts_lock(path):
+    """在 ts 旁边独占创建 .lock 文件；别人持有时等待。返回锁文件路径。"""
+    lock = _ts_lock_path(path)
+    deadline = time.time() + TS_LOCK_WAIT_SECONDS
+    first_seen = {}
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(fd, f"{platform.node()} {os.getpid()} {time.time():.0f}\n".encode())
+            finally:
+                os.close(fd)
+            return lock
+        except FileExistsError:
+            try:
+                mtime = os.stat(lock).st_mtime
+            except FileNotFoundError:
+                continue
+            # 共享盘上文件的时间用的是那台电脑的时钟，不能和本机时间直接比：
+            # 改为在本机观察同一个锁文件超过 10 秒没有变化，才当作程序崩溃留下的残留
+            seen = first_seen.setdefault(mtime, time.time())
+            if time.time() - seen > TS_LOCK_STALE_SECONDS:
+                try:
+                    os.remove(lock)
+                except OSError:
+                    pass
+                continue
+            if time.time() > deadline:
+                raise TsLockBusy(lock)
+            time.sleep(0.2)
+
+
+def ts_unlock(lock):
+    try:
+        os.remove(lock)
+    except OSError:
+        pass
+
+
+def ts_write_atomic(path, content, encoding):
+    """先写临时文件，再整体替换，别的程序不会读到写了一半的文件。"""
+    folder, name = os.path.split(path)
+    tmp = os.path.join(folder, f".{name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with open(tmp, "w", encoding=encoding) as f:
+            f.write(content)
+        for attempt in range(30):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                # 别的程序正好在读这个文件，Windows 不允许替换，稍等重试
+                if attempt == 29:
+                    raise
+                time.sleep(0.1)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def ts_backup(path, content, encoding, label):
+    """把 content 备份到 ts 同一个文件夹；写不进去时放到本机 %LOCALAPPDATA%\\TermPlus\\backup。返回备份路径。"""
+    folder, name = os.path.split(path)
+    stem = name[:-3] if name.lower().endswith(".ts") else name
+    backup_name = f"{stem}_backup_{label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.ts"
+    local_dir = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "TermPlus", "backup")
+    last_error = None
+    for target_dir in (folder, local_dir):
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            target = os.path.join(target_dir, backup_name)
+            try:
+                with open(target, "w", encoding=encoding) as f:
+                    f.write(content)
+            except UnicodeEncodeError:
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(content)
+            return target
+        except OSError as e:
+            last_error = e
+    raise last_error
+
+
+def ts_locked_write(path, content, encoding, expected_canon, backup_label=None):
+    """加锁 → 重新读文件 → 和预期不一样就返回 ("changed", 当前内容, 指纹)，不写；
+    一样就（需要时先备份当前文件）写入，返回 ("written", 备份路径或 None, 指纹)。"""
+    if not os.path.exists(path):
+        # 文件不见了（被删、被改名或共享盘异常）：不能当成“空文件”去合并，否则会删光所有标签页
+        raise FileNotFoundError(path)
+    lock = ts_lock(path)
+    try:
+        cur_text, cur_enc = ts_read(path)
+        if ts_serialize(ts_parse(cur_text)) != expected_canon:
+            return ("changed", cur_text, ts_fingerprint(path))
+        backup_path = ts_backup(path, cur_text, cur_enc, backup_label) if backup_label else None
+        ts_write_atomic(path, content, encoding)
+        return ("written", backup_path, ts_fingerprint(path))
+    finally:
+        ts_unlock(lock)
+
+
+class KeyFileSyncWorker(threading.Thread):
+    """自动同步的后台线程：定时查 ts 文件有没有变化，以及执行读、写、备份。
+    共享盘卡住时只卡这个线程，不会卡界面。结果用 root.after 交回主线程处理。"""
+    POLL_SECONDS = 2.0
+    POLL_JITTER = 0.5          # 每个窗口错开一点，避免很多窗口同时查
+    OFFLINE_POLL_SECONDS = 10.0
+
+    def __init__(self, gui):
+        super().__init__(daemon=True)
+        self.gui = gui
+        self.jobs = queue.Queue()
+        self.offline = False
+        self.stopped = False
+
+    def post(self, job):
+        self.jobs.put(job)
+
+    def stop(self):
+        self.stopped = True
+        self.jobs.put(None)
+
+    def _emit(self, *args):
+        try:
+            self.gui.root.after(0, self.gui._sync_on_result, *args)
+        except (RuntimeError, tk.TclError):
+            self.stopped = True    # 窗口已经关了
+
+    def _went_offline(self, path, error):
+        if not self.offline:
+            self.offline = True
+            self._emit("offline", path, str(error))
+
+    def _came_online(self, path):
+        if self.offline:
+            self.offline = False
+            self._emit("online", path)
+
+    def run(self):
+        while not self.stopped:
+            wait = (self.OFFLINE_POLL_SECONDS if self.offline
+                    else self.POLL_SECONDS + random.uniform(0, self.POLL_JITTER))
+            try:
+                job = self.jobs.get(timeout=wait)
+            except queue.Empty:
+                job = ("poll",)
+            if job is None:
+                break
+            try:
+                self._do(job)
+            except Exception as e:      # 兜底，线程不能死
+                self._emit("error", job[1] if len(job) > 1 else None, repr(e), False)
+
+    def _do(self, job):
+        kind = job[0]
+        g = self.gui
+        if kind == "poll":
+            path = g._sync_path() if g._sync_enabled else None
+            if not path:
+                return
+            try:
+                fp = ts_fingerprint(path)
+                self._came_online(path)
+                if fp == g._sync_last_fp:
+                    return
+                text, enc, fp = ts_read_stable(path)
+            except OSError as e:
+                self._went_offline(path, e)
+                return
+            g._sync_last_fp = fp
+            self._emit("disk", path, text, enc, False)
+        elif kind == "read":
+            path = job[1]
+            try:
+                text, enc, fp = ts_read_stable(path)
+            except OSError as e:
+                self._went_offline(path, e)
+                self._emit("error", path, str(e), True)
+                return
+            self._came_online(path)
+            g._sync_last_fp = fp
+            self._emit("disk", path, text, enc, True)
+        elif kind == "write":
+            _, path, content, enc, expected, backup_label = job
+            try:
+                result = ts_locked_write(path, content, enc, expected, backup_label)
+            except TsLockBusy:
+                self._emit("busy", path)
+                return
+            except OSError as e:
+                self._went_offline(path, e)
+                self._emit("error", path, str(e), True)
+                return
+            except ValueError as e:      # 编码写不进去等
+                self._emit("error", path, str(e), False)
+                return
+            self._came_online(path)
+            if result[2] is not None:
+                g._sync_last_fp = result[2]
+            if result[0] == "changed":
+                self._emit("disk", path, result[1], enc, True)
+            else:
+                self._emit("written", path, content, result[1])
+        elif kind == "backup":
+            _, path, content, enc, label = job
+            try:
+                self._emit("backup_done", path, ts_backup(path, content, enc, label))
+            except OSError as e:
+                self._emit("backup_failed", path, str(e))
 
 
 class SerialComm:
@@ -1229,7 +1891,7 @@ class RegexMonitor:
         # 情况1：自动保存正在运行，弹窗询问
         if not self._save_stop:
             dialog = tk.Toplevel(self.window)
-            dialog.title("自动保存运行中")
+            dialog.title(tr("regex.autosave_running_title", "Auto Save Running"))
             dialog.geometry("300x110")
             dialog.resizable(False, False)
             dialog.grab_set()
@@ -1237,7 +1899,7 @@ class RegexMonitor:
             x = (dialog.winfo_screenwidth() - dialog.winfo_width()) // 2
             y = (dialog.winfo_screenheight() - dialog.winfo_height()) // 2
             dialog.geometry(f"+{x}+{y}")
-            tk.Label(dialog, text="自动保存正在运行，请选择：", justify="center").pack(pady=(15, 5))
+            tk.Label(dialog, text=tr("regex.autosave_running_msg", "Auto save is running. Please choose:"), justify="center").pack(pady=(15, 5))
             btn_frame = tk.Frame(dialog)
             btn_frame.pack(pady=5)
             result = [None]
@@ -1247,8 +1909,8 @@ class RegexMonitor:
             def do_keep():
                 result[0] = "keep"
                 dialog.destroy()
-            tk.Button(btn_frame, text="停止并关闭窗口", command=do_stop, width=14).pack(side="left", padx=5)
-            tk.Button(btn_frame, text="继续运行不关闭", command=do_keep, width=14).pack(side="left", padx=5)
+            tk.Button(btn_frame, text=tr("regex.stop_and_close", "Stop & Close"), command=do_stop, width=14).pack(side="left", padx=5)
+            tk.Button(btn_frame, text=tr("regex.keep_running", "Keep Running"), command=do_keep, width=14).pack(side="left", padx=5)
             dialog.wait_window()
             if result[0] != "stop":
                 return
@@ -1271,23 +1933,23 @@ class RegexMonitor:
             self._close_window()
             return
         self.window = tk.Toplevel(self.gui.root)
-        self.window.title("正则匹配监控")
+        self.window.title(tr("regex.window_title", "Regex Match Monitor"))
         self.window.geometry("910x560")
         self.window.protocol("WM_DELETE_WINDOW", self._close_window)
 
         ctrl = tk.Frame(self.window)
         ctrl.pack(fill="x", padx=5, pady=5)
-        tk.Label(ctrl, text="正则表达式:").pack(side="left")
+        tk.Label(ctrl, text=tr("regex.regex_label", "Regex:")).pack(side="left")
         self._regex_entry = tk.Entry(ctrl, width=25)
         self._regex_entry.pack(side="left", padx=2)
         self._regex_entry.bind("<Return>", lambda e: self._add_rule())
-        tk.Label(ctrl, text="匹配窗口行数:").pack(side="left")
+        tk.Label(ctrl, text=tr("regex.window_lines", "Match lines:")).pack(side="left")
         self._lines_entry = tk.Entry(ctrl, width=3)
         self._lines_entry.insert(0, "1")
         self._lines_entry.pack(side="left", padx=2)
-        tk.Button(ctrl, text="添加⏎", width=8, command=self._add_rule).pack(side="left", padx=5)
-        tk.Button(ctrl, text="测试", width=8, command=self._test_all).pack(side="left", padx=5)
-        self._monitor_btn = tk.Button(ctrl, text="开始监控", width=8, bg="gray",
+        tk.Button(ctrl, text=tr("regex.add", "Add⏎"), width=8, command=self._add_rule).pack(side="left", padx=5)
+        tk.Button(ctrl, text=tr("regex.test", "Test"), width=8, command=self._test_all).pack(side="left", padx=5)
+        self._monitor_btn = tk.Button(ctrl, text=tr("regex.start_monitor", "Start"), width=8, bg="gray",
                                       command=self._toggle_monitoring)
         self._monitor_btn.pack(side="left", padx=5)
 
@@ -1295,19 +1957,19 @@ class RegexMonitor:
         ctrl2.pack(fill="x", padx=5, pady=(0, 2))
         tk.Button(ctrl2, text="<", command=self._swap_col_left).pack(side="left", padx=2)
         tk.Button(ctrl2, text=">", command=self._swap_col_right).pack(side="left", padx=2)
-        tk.Button(ctrl2, text="清空该列", command=self._clear_col_results).pack(side="left", padx=8)
-        tk.Button(ctrl2, text="清空所有", command=self._clear_all_results).pack(side="left", padx=2)
-        tk.Button(ctrl2, text="删除该列正则", command=self._delete_col_rule).pack(side="left", padx=2)
-        tk.Button(ctrl2, text="删除所有正则", command=self._delete_all_rules).pack(side="left", padx=2)
-        tk.Label(ctrl2, text="正则：").pack(side="left", padx=(16, 2))
-        tk.Button(ctrl2, text="加载", command=self._load_rules_file).pack(side="left", padx=2)
-        tk.Button(ctrl2, text="保存", command=self._save_rules_file).pack(side="left", padx=2)
-        tk.Button(ctrl2, text="另存为", command=self._saveas_rules_file).pack(side="left", padx=2)
+        tk.Button(ctrl2, text=tr("regex.clear_col", "Clear Column"), command=self._clear_col_results).pack(side="left", padx=8)
+        tk.Button(ctrl2, text=tr("regex.clear_all", "Clear All"), command=self._clear_all_results).pack(side="left", padx=2)
+        tk.Button(ctrl2, text=tr("regex.delete_col_rule", "Delete Column Regex"), command=self._delete_col_rule).pack(side="left", padx=2)
+        tk.Button(ctrl2, text=tr("regex.delete_all_rules", "Delete All Regex"), command=self._delete_all_rules).pack(side="left", padx=2)
+        tk.Label(ctrl2, text=tr("regex.rules_label", "Regex:")).pack(side="left", padx=(16, 2))
+        tk.Button(ctrl2, text=tr("common.load", "Load"), command=self._load_rules_file).pack(side="left", padx=2)
+        tk.Button(ctrl2, text=tr("common.save", "Save"), command=self._save_rules_file).pack(side="left", padx=2)
+        tk.Button(ctrl2, text=tr("regex.save_as", "Save As"), command=self._saveas_rules_file).pack(side="left", padx=2)
         tk.Label(ctrl2, text="").pack(side="left", padx=(16, 0))
-        tk.Label(ctrl2, text="结果：").pack(side="left", padx=(0, 2))
-        tk.Button(ctrl2, text="复制到剪贴板", command=self._copy_result_to_clipboard).pack(side="left", padx=2)
-        tk.Button(ctrl2, text="另存为文件", command=self._save_result_to_file).pack(side="left", padx=2)
-        tk.Button(ctrl2, text="在Excel中打开", command=self._open_result_in_excel).pack(side="left", padx=2)
+        tk.Label(ctrl2, text=tr("regex.results_label", "Results:")).pack(side="left", padx=(0, 2))
+        tk.Button(ctrl2, text=tr("regex.copy_to_clipboard", "Copy to Clipboard"), command=self._copy_result_to_clipboard).pack(side="left", padx=2)
+        tk.Button(ctrl2, text=tr("regex.save_to_file", "Save to File"), command=self._save_result_to_file).pack(side="left", padx=2)
+        tk.Button(ctrl2, text=tr("regex.open_in_excel", "Open in Excel"), command=self._open_result_in_excel).pack(side="left", padx=2)
 
         # 文本框 + 滚动条
         txt_frame = tk.Frame(self.window)
@@ -1327,18 +1989,18 @@ class RegexMonitor:
         # 底部自动保存控件行
         save_frame = tk.Frame(self.window)
         save_frame.pack(fill="x", padx=5, pady=(2, 5))
-        tk.Label(save_frame, text="自动保存").pack(side="left")
+        tk.Label(save_frame, text=tr("regex.autosave", "Auto Save")).pack(side="left")
         self._save_btn = tk.Button(save_frame, text="OFF", width=4, bg="gray",
                                    command=self._toggle_autosave)
         self._save_btn.pack(side="left", padx=2)
-        tk.Label(save_frame, text="路径").pack(side="left", padx=(8, 2))
+        tk.Label(save_frame, text=tr("regex.path", "Path")).pack(side="left", padx=(8, 2))
         self._save_path_entry = tk.Entry(save_frame, width=20, justify="right")
         self._save_path_entry.pack(side="left", padx=2)
         tk.Button(save_frame, text="...", command=self._choose_save_path).pack(side="left", padx=2)
-        tk.Label(save_frame, text="文件名").pack(side="left", padx=(8, 2))
+        tk.Label(save_frame, text=tr("regex.filename", "File name")).pack(side="left", padx=(8, 2))
         self._save_name_entry = tk.Entry(save_frame, width=15)
         self._save_name_entry.pack(side="left", padx=2)
-        tk.Label(save_frame, text="最大容量").pack(side="left", padx=(8, 2))
+        tk.Label(save_frame, text=tr("regex.max_size", "Max size")).pack(side="left", padx=(8, 2))
         self._save_max_mb_entry = tk.Entry(save_frame, width=5)
         self._save_max_mb_entry.insert(0, "10")
         self._save_max_mb_entry.pack(side="left", padx=2)
@@ -1364,13 +2026,13 @@ class RegexMonitor:
     def _toggle_monitoring(self):
         self._monitoring = not self._monitoring
         if self._monitoring:
-            self._monitor_btn.config(text="停止监控", bg="green")
+            self._monitor_btn.config(text=tr("regex.stop_monitor", "Stop"), bg="green")
         else:
-            self._monitor_btn.config(text="开始监控", bg="gray")
+            self._monitor_btn.config(text=tr("regex.start_monitor", "Start"), bg="gray")
 
     def _choose_save_path(self):
         from tkinter import filedialog
-        path = filedialog.askdirectory(title="选择保存路径", parent=self.window)
+        path = filedialog.askdirectory(title=tr("regex.choose_save_path", "Select Save Folder"), parent=self.window)
         if path:
             self._save_path_entry.delete(0, tk.END)
             self._save_path_entry.insert(0, path)
@@ -1381,10 +2043,10 @@ class RegexMonitor:
             path = self._save_path_entry.get().strip()
             name = self._save_name_entry.get().strip()
             if not path or not os.path.isdir(path):
-                messagebox.showwarning("警告", "请选择有效的保存路径", parent=self.window)
+                messagebox.showwarning(tr("common.warning", "Warning"), tr("regex.invalid_save_path", "Please select a valid save folder"), parent=self.window)
                 return
             if not name:
-                messagebox.showwarning("警告", "请输入文件名", parent=self.window)
+                messagebox.showwarning(tr("common.warning", "Warning"), tr("regex.enter_filename", "Please enter a file name"), parent=self.window)
                 return
             if self._create_save_file():
                 self._save_stop = False
@@ -1413,7 +2075,7 @@ class RegexMonitor:
                 rule["saved_count"] = len(rule["results"])
             return True
         except Exception as e:
-            messagebox.showerror("错误", "无法创建文件：{}".format(e), parent=self.window)
+            messagebox.showerror(tr("common.error", "Error"), tr("regex.create_file_failed", "Cannot create file: {error}", error=e), parent=self.window)
             return False
 
     def _stop_autosave(self):
@@ -1453,7 +2115,7 @@ class RegexMonitor:
         try:
             compiled = re.compile(pattern_str, re.DOTALL)
         except re.error as e:
-            messagebox.showerror("正则错误", "无效的正则表达式:\n{}".format(e), parent=self.window)
+            messagebox.showerror(tr("regex.regex_error", "Regex Error"), tr("regex.invalid_regex", "Invalid regular expression:\n{error}", error=e), parent=self.window)
             return
         try:
             lines = max(1, int(self._lines_entry.get().strip()))
@@ -1549,7 +2211,7 @@ class RegexMonitor:
 
     def _load_rules_file(self):
         path = filedialog.askopenfilename(
-            title="加载正则规则",
+            title=tr("regex.load_rules_title", "Load Regex Rules"),
             filetypes=(("Text Files", "*.txt"), ("All Files", "*.*")),
             parent=self.window
         )
@@ -1559,7 +2221,7 @@ class RegexMonitor:
             with open(path, "r", encoding="utf-8") as f:
                 lines = [l.rstrip("\n") for l in f.readlines()]
         except Exception as e:
-            messagebox.showerror("错误", "无法读取文件：{}".format(e), parent=self.window)
+            messagebox.showerror(tr("common.error", "Error"), tr("regex.read_file_failed", "Cannot read file: {error}", error=e), parent=self.window)
             return
         # 验证所有行都是合法正则
         for i, line in enumerate(lines):
@@ -1568,7 +2230,7 @@ class RegexMonitor:
             try:
                 re.compile(line.strip(), re.DOTALL)
             except re.error as e:
-                messagebox.showerror("正则错误", "第{}行无效：{}\n{}".format(i + 1, line.strip(), e), parent=self.window)
+                messagebox.showerror(tr("regex.regex_error", "Regex Error"), tr("regex.invalid_line", "Line {line_no} is invalid: {line}\n{error}", line_no=i + 1, line=line.strip(), error=e), parent=self.window)
                 return
         # 依次添加
         for line in lines:
@@ -1581,7 +2243,7 @@ class RegexMonitor:
 
     def _save_rules_file(self):
         if not self.rules:
-            messagebox.showwarning("警告", "当前没有任何正则规则", parent=self.window)
+            messagebox.showwarning(tr("common.warning", "Warning"), tr("regex.no_rules", "No regex rules defined"), parent=self.window)
             return
         if not self._rules_filepath:
             self._saveas_rules_file()
@@ -1590,16 +2252,16 @@ class RegexMonitor:
             with open(self._rules_filepath, "w", encoding="utf-8") as f:
                 for rule in self.rules:
                     f.write(rule["pattern_str"] + "\n")
-            messagebox.showinfo("提示", "已保存到：{}".format(self._rules_filepath), parent=self.window)
+            messagebox.showinfo(tr("common.info", "Info"), tr("regex.saved_to", "Saved to: {path}", path=self._rules_filepath), parent=self.window)
         except Exception as e:
-            messagebox.showerror("错误", "保存失败：{}".format(e), parent=self.window)
+            messagebox.showerror(tr("common.error", "Error"), tr("regex.save_failed", "Save failed: {error}", error=e), parent=self.window)
 
     def _saveas_rules_file(self):
         if not self.rules:
-            messagebox.showwarning("警告", "当前没有任何正则规则", parent=self.window)
+            messagebox.showwarning(tr("common.warning", "Warning"), tr("regex.no_rules", "No regex rules defined"), parent=self.window)
             return
         path = filedialog.asksaveasfilename(
-            title="另存为正则规则",
+            title=tr("regex.save_rules_as_title", "Save Regex Rules As"),
             defaultextension=".txt",
             filetypes=(("Text Files", "*.txt"), ("All Files", "*.*")),
             parent=self.window
@@ -1611,9 +2273,9 @@ class RegexMonitor:
                 for rule in self.rules:
                     f.write(rule["pattern_str"] + "\n")
             self._rules_filepath = path
-            messagebox.showinfo("提示", "已保存到：{}".format(path), parent=self.window)
+            messagebox.showinfo(tr("common.info", "Info"), tr("regex.saved_to", "Saved to: {path}", path=path), parent=self.window)
         except Exception as e:
-            messagebox.showerror("错误", "保存失败：{}".format(e), parent=self.window)
+            messagebox.showerror(tr("common.error", "Error"), tr("regex.save_failed", "Save failed: {error}", error=e), parent=self.window)
 
 
     def _copy_result_to_clipboard(self):
@@ -1627,7 +2289,7 @@ class RegexMonitor:
         if not self.window or not self.window.winfo_exists():
             return
         path = filedialog.asksaveasfilename(
-            title="另存为文件",
+            title=tr("regex.save_to_file", "Save to File"),
             defaultextension=".xlsx",
             filetypes=(("Excel Files", "*.xlsx"), ("Text Files", "*.txt"), ("All Files", "*.*")),
             parent=self.window
@@ -1641,7 +2303,7 @@ class RegexMonitor:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(self._result_text.get("1.0", "end"))
         except Exception as e:
-            messagebox.showerror("错误", "保存失败：{}".format(e), parent=self.window)
+            messagebox.showerror(tr("common.error", "Error"), tr("regex.save_failed", "Save failed: {error}", error=e), parent=self.window)
 
     def _save_result_as_xlsx(self, path):
         import openpyxl
@@ -1684,7 +2346,7 @@ class RegexMonitor:
             import subprocess as sp
             sp.Popen(["cmd", "/c", "start", "", tmp_path], shell=False)
         except Exception as e:
-            messagebox.showerror("错误", "打开Excel失败：{}".format(e), parent=self.window)
+            messagebox.showerror(tr("common.error", "Error"), tr("regex.open_excel_failed", "Failed to open Excel: {error}", error=e), parent=self.window)
 
 
 class SerialGUI:
@@ -1692,34 +2354,79 @@ class SerialGUI:
     # 显示方式下拉框：界面文字 <-> 渲染器模式 <-> ini 里保存的值
     # HEX显示 不是 AnsiTextRenderer 的模式，它只改串口接收内容的呈现方式，见 _on_display_mode_change
     HEX_RX_MODE = "hex"
-    DISPLAY_MODE_LABELS = ("终端效果", "显示为文字", "原样(方块)", "HEX显示")
+    # 标签文字随语言变化（模块加载时已读入语言），ini 里保存的是模式值，与语言无关
+    DISPLAY_MODE_LABELS = (
+        tr("display.terminal", "Terminal"),
+        tr("display.escape", "Show as text"),
+        tr("display.raw", "Raw (boxes)"),
+        tr("display.hex", "HEX"),
+    )
     DISPLAY_MODE_BY_LABEL = {
-        "终端效果": AnsiTextRenderer.MODE_TERMINAL,
-        "显示为文字": AnsiTextRenderer.MODE_ESCAPE,
-        "原样(方块)": AnsiTextRenderer.MODE_RAW,
-        "HEX显示": HEX_RX_MODE,
+        DISPLAY_MODE_LABELS[0]: AnsiTextRenderer.MODE_TERMINAL,
+        DISPLAY_MODE_LABELS[1]: AnsiTextRenderer.MODE_ESCAPE,
+        DISPLAY_MODE_LABELS[2]: AnsiTextRenderer.MODE_RAW,
+        DISPLAY_MODE_LABELS[3]: HEX_RX_MODE,
     }
     DISPLAY_LABEL_BY_MODE = {v: k for k, v in DISPLAY_MODE_BY_LABEL.items()}
-    DISPLAY_MODE_TIP = (
-        "主窗口收到的内容里，有些字符是设备发来的“隐藏指令”，本身看不见。\n"
+    DISPLAY_MODE_TIP = tr(
+        "display.tip",
+        "Some characters received in the main window are hidden control codes sent by the device.\n"
         "\n"
-        "终端效果：隐藏指令直接生效——该上色的上色，进度条能在原地刷新。\n"
-        "　　　　　少数无法还原的（清屏、光标上移等）会写成 <Esc>[2J 这样的文字。\n"
+        "Terminal: control codes take effect - colors are applied and progress bars refresh in place.\n"
+        "          The few that cannot be reproduced (clear screen, cursor up, ...) are shown as text like <Esc>[2J.\n"
         "\n"
-        "显示为文字：所有隐藏指令一个不漏地写成文字，如 <Esc>[1m、<CR>、<BEL>，\n"
-        "　　　　　　什么效果都不应用。想看清设备到底发了什么时用这档。\n"
+        "Show as text: every control code is written out as text, e.g. <Esc>[1m, <CR>, <BEL>,\n"
+        "          and no effect is applied. Use it to see exactly what the device sent.\n"
         "\n"
-        "原样(方块)：旧版行为，隐藏指令原样写进窗口，会显示成方块或直接消失。\n"
+        "Raw (boxes): old behavior, control codes are inserted as-is and show up as boxes or disappear.\n"
         "\n"
-        "HEX显示：串口收到的每个字节都按两位十六进制显示、字节之间空一格，\n"
-        "　　　　　如 A0 01 01 A2。不做任何文本解码，适合调试继电器、Modbus 这类\n"
-        "　　　　　二进制协议——非 ASCII 字节不会再变成“�”而丢掉原值。\n"
-        "　　　　　只转换串口收到的内容，时间戳、[HEX SEND] 回显、脚本输出照旧。\n"
-        "　　　　　切回其他三档即退出十六进制显示。"
+        "HEX: every byte received from the serial port is shown as two hex digits separated by spaces,\n"
+        "          e.g. A0 01 01 A2. No text decoding, useful for binary protocols such as relays and Modbus -\n"
+        "          non-ASCII bytes are no longer turned into \"\ufffd\" and lost.\n"
+        "          Only serial input is converted; timestamps, [HEX SEND] echo and script output are unchanged.\n"
+        "          Switch to any other option to leave HEX display."
     )
 
     # 串口接收是否按十六进制显示（对应下拉框的“HEX显示”），供接收线程读取
     hex_rx_display = False
+
+    # 按键文件是否有未保存的修改。做成属性：任何地方改它，窗口标题的 * 标记都会跟着更新
+    @property
+    def script_modified(self):
+        return getattr(self, "_script_modified", False)
+
+    @script_modified.setter
+    def script_modified(self, value):
+        self._script_modified = bool(value)
+        self._refresh_title()
+        # 自动同步：任何一次本地修改都安排一次保存（同步引擎自己改界面时不算）
+        if value and getattr(self, "_sync_enabled", False) and not getattr(self, "_sync_applying", False):
+            self._sync_local_rev += 1
+            self._sync_schedule()
+
+    def _refresh_title(self):
+        """主窗口标题 = 窗口名。（未保存标记 * 只显示在按键编辑窗口的标题上，见 _update_edit_title）"""
+        var = getattr(self, "window_name_var", None)
+        if var is None:
+            return
+        try:
+            self.root.title(var.get())
+        except tk.TclError:
+            pass
+
+    def _update_edit_title(self, cell_id):
+        """按键编辑窗口的标题 = 按键名；窗口里的内容改了还没 Save 时在后面加 " *"。"""
+        info = getattr(self, "cell_edit_info", {}).get(cell_id)
+        if not info:
+            return
+        try:
+            if not info["win"].winfo_exists():
+                return
+            current = (info["entry"].get(), info["text"].get("1.0", tk.END).strip())
+            name = info["base"][0] or tr("keys.untitled", "Untitled")
+            info["win"].title(name + (" *" if current != info["base"] else ""))
+        except tk.TclError:
+            pass
 
     def __init__(self, root, center=True):
         self.root = root
@@ -1739,7 +2446,7 @@ class SerialGUI:
 
         # 字体设置
         default_font = tkFont.nametofont("TkDefaultFont")
-        default_font.configure(family="Microsoft YaHei UI", size=9)
+        default_font.configure(family=ui_font_family(), size=9)
 
         # 窗口标题
         self.root.title("TermPlus")     
@@ -1799,18 +2506,23 @@ class SerialGUI:
         self.root.config(menu=self.menu_bar)
         # New 菜单
         self.new_menu = tk.Menu(self.menu_bar, tearoff=0)
-        self.menu_bar.add_cascade(label="新建", menu=self.new_menu)
-        self.new_menu.add_command(label="新建窗口", command=self.new_port)
+        self.menu_bar.add_cascade(label=tr("main.menu_new", "New"), menu=self.new_menu)
+        self.new_menu.add_command(label=tr("main.menu_new_window", "New Window"), command=self.new_port)
         self.new_menu.add_separator()
-        self.new_menu.add_command(label="退出", command=self.root.destroy)
+        self.new_menu.add_command(label=tr("main.menu_exit", "Exit"), command=self.root.destroy)
         # # Scripts Git Menu
         # self.scripts_git_menu = tk.Menu(self.menu_bar, tearoff=0)
         # self.menu_bar.add_cascade(label="脚本同步", menu=self.scripts_git_menu)
         # self.scripts_git_menu.add_command(label="脚本同步", command=self.show_scripts_git_setup_window)
 
+        # Language 菜单：始终用英文显示，选错语言时也能找回来
+        self.language_menu = tk.Menu(self.menu_bar, tearoff=0)
+        self.menu_bar.add_cascade(label="Language", menu=self.language_menu)
+        self.language_menu.add_command(label="Choose Language", command=self.show_language_window)
+
         # About 菜单
         self.about_menu = tk.Menu(self.menu_bar, tearoff=0)
-        self.menu_bar.add_cascade(label="关于", menu=self.about_menu)
+        self.menu_bar.add_cascade(label=tr("main.menu_about", "About"), menu=self.about_menu)
         self.about_menu.add_command(label="Developed by Xian.Wu", state="disabled")
         self.about_menu.add_command(label="dakongwuxian@gmail.com", state="disabled")
 
@@ -1834,6 +2546,31 @@ class SerialGUI:
         self.current_cell = None
         # 用于跟踪每个按钮对应的编辑窗口 {cell_id: edit_window}
         self.cell_edit_windows = {}
+        # 按键拖动交换 / tab 拖动排序的状态（None 表示没有在拖动）
+        self._drag = None
+        # 拖动结束后吞掉这一次松手可能触发的按键发送
+        self._suppress_cell_click = False
+        # 按键区的撤销记录（交换、清空、粘贴、删除标签页），Ctrl+Z 撤销
+        self._key_undo = []
+        # 按键编辑窗口的控件，自动同步时用来刷新内容 {id(cell): {...}}
+        self.cell_edit_info = {}
+        # ---- 按键文件自动同步的状态 ----
+        self._sync_enabled = False
+        self._sync_worker = None
+        self._sync_last_fp = None          # ts 文件上次看到的 (修改时间, 大小)
+        self._sync_base_tabs = []          # 基准：上次加载/保存/同步时 ts 文件的内容
+        self._sync_base_canon = None
+        self._sync_busy = False            # 正在合并 / 等待写入结果
+        self._sync_again = False           # 忙的时候又有本地修改，结束后再同步一次
+        self._sync_deferred = None         # 忙的时候收到的 ts 变化，结束后再处理
+        self._sync_after_id = None
+        self._sync_applying = False        # 同步引擎正在改界面，不算本地修改
+        self._sync_local_rev = 0
+        self._sync_job_rev = 0
+        self._sync_write_frames = []
+        self._sync_manual = False          # 本次同步由“保存”按钮触发，完成后弹提示
+        self._sync_offline_since = None
+        self._sync_offline_timer = None
         self.cell_send_all_stop = False
 
         # 在 __init__ 方法中，对根窗口进行 grid 配置
@@ -1861,19 +2598,19 @@ class SerialGUI:
         # row 0 area show/hide buttons
         self.row_0_frame = tk.Frame(self.main_frame)
         self.row_0_frame.grid(row=0, column=0, sticky="NW", padx=0)
-        self.show_keys_btn = tk.Button(self.row_0_frame, text="按键", command=self.toggle_key_area)
+        self.show_keys_btn = tk.Button(self.row_0_frame, text=tr("main.btn_keys", "Keys"), command=self.toggle_key_area)
         self.show_keys_btn.pack(side="left", padx=(10,4))
-        self.show_script_btn = tk.Button(self.row_0_frame, text="脚本", command=self.toggle_script_area)
+        self.show_script_btn = tk.Button(self.row_0_frame, text=tr("main.btn_script", "Script"), command=self.toggle_script_area)
         self.show_script_btn.pack(side="left", padx=4)
-        self.toggle_sidebar_btn = tk.Button(self.row_0_frame, text="配置", command=self.toggle_sidebar)
+        self.toggle_sidebar_btn = tk.Button(self.row_0_frame, text=tr("main.btn_config", "Config"), command=self.toggle_sidebar)
         self.toggle_sidebar_btn.pack(side="left", padx=4)
 
         # 黑白主题切换
-        self.theme_btn = tk.Button(self.row_0_frame, text="主题", command=self.toggle_theme)
+        self.theme_btn = tk.Button(self.row_0_frame, text=tr("main.btn_theme", "Theme"), command=self.toggle_theme)
         self.theme_btn.pack(side="left", padx=4)
 
         # 正则匹配按钮
-        self.regex_monitor_btn = tk.Button(self.row_0_frame, text="正则匹配", command=self.toggle_regex_monitor)
+        self.regex_monitor_btn = tk.Button(self.row_0_frame, text=tr("main.btn_regex", "Regex"), command=self.toggle_regex_monitor)
         self.regex_monitor_btn.pack(side="left", padx=4)
 
         # row 1 text_area
@@ -1887,12 +2624,12 @@ class SerialGUI:
         )
         # 添加右键菜单
         self.text_popup_menu = tk.Menu(self.text_area, tearoff=0)
-        self.text_popup_menu.add_command(label="剪切", command=lambda: self.text_area.event_generate("<<Cut>>"))
-        self.text_popup_menu.add_command(label="复制", command=lambda: self.text_area.event_generate("<<Copy>>"))
-        self.text_popup_menu.add_command(label="粘贴", command=lambda: self.text_area.event_generate("<<Paste>>"))
-        self.text_popup_menu.add_command(label="删除", command=self._delete_selection)
+        self.text_popup_menu.add_command(label=tr("main.cut", "Cut"), command=lambda: self.text_area.event_generate("<<Cut>>"))
+        self.text_popup_menu.add_command(label=tr("main.copy", "Copy"), command=lambda: self.text_area.event_generate("<<Copy>>"))
+        self.text_popup_menu.add_command(label=tr("main.paste", "Paste"), command=lambda: self.text_area.event_generate("<<Paste>>"))
+        self.text_popup_menu.add_command(label=tr("main.delete", "Delete"), command=self._delete_selection)
         self.text_popup_menu.add_separator()
-        self.text_popup_menu.add_command(label="全选", command=lambda: self.text_area.event_generate("<<SelectAll>>"))
+        self.text_popup_menu.add_command(label=tr("main.select_all", "Select All"), command=lambda: self.text_area.event_generate("<<SelectAll>>"))
 
         self.text_area.bind("<Button-3>", self._show_text_popup)  # Windows右键
         self.text_area.bind("<Control-a>", lambda e: self.text_area.event_generate("<<SelectAll>>"))  # Ctrl+A 全选
@@ -1965,7 +2702,7 @@ class SerialGUI:
         self.row_2_frame = tk.Frame(self.main_frame, width=730, height=32)
         self.row_2_frame.grid(row=2, column=0, sticky="nw", padx=10, pady=(10,0))
         # “发送文本:”
-        self.label_send = tk.Label(self.row_2_frame, text="发送文本:")
+        self.label_send = tk.Label(self.row_2_frame, text=tr("main.send_text_label", "Send:"))
         self.label_send.place(relx=0, rely=0.5, anchor="w",x=0)
         
         # 发送文本框
@@ -2026,11 +2763,11 @@ class SerialGUI:
 
         # 发送新行复选框
         self.send_newline_var = tk.BooleanVar(value=True)
-        self.newline_checkbox = ttk.Checkbutton(self.row_2_frame, text="发送新行", variable=self.send_newline_var, style='Custom.TCheckbutton')
+        self.newline_checkbox = ttk.Checkbutton(self.row_2_frame, text=tr("main.send_newline", "Newline"), variable=self.send_newline_var, style='Custom.TCheckbutton')
         self.newline_checkbox.place(relx=0, rely=0.5, anchor="w",x=560)
         
         # 发送按钮
-        self.send_btn = tk.Button(self.row_2_frame, text="发送", command=self.send_data_btn, state=tk.DISABLED, width=10)
+        self.send_btn = tk.Button(self.row_2_frame, text=tr("main.send", "Send"), command=self.send_data_btn, state=tk.DISABLED, width=10)
         self.send_btn.place(relx=0, rely=0.5, anchor="w",x=640)
 
         # Row 3：数据统计、循环间隔（s)标签、循环间隔输入框和循环发送按钮
@@ -2038,38 +2775,38 @@ class SerialGUI:
         self.row_3_frame.grid(row=3, column=0, sticky="nw", padx=0)
 
         #数据统计："发送: 0 B | 接收: 0 B"
-        self.data_stats = tk.StringVar(value="发送: 000 B | 接收: 000 B")
+        self.data_stats = tk.StringVar(value=tr("main.data_stats", "Sent: {sent} | Recv: {recv}", sent="000 B", recv="000 B"))
         self.stats_label = tk.Label(self.row_3_frame, textvariable=self.data_stats)
         self.stats_label.place(relx=0, rely=0.5, anchor="w",x=10)
         # 新增：显示日期的静态标签和动态标签
-        self.date_label_title = tk.Label(self.row_3_frame, text="日期:")
+        self.date_label_title = tk.Label(self.row_3_frame, text=tr("main.date", "Date:"))
         self.date_label_title.place(relx=0, rely=0.5, anchor="w",x=170, y=0)
         self.date_label = tk.Label(self.row_3_frame, text="")
         self.date_label.place(relx=0, rely=0.5, anchor="w",x=210)
 
         # 新增：显示时间的静态标签和动态标签
-        self.time_label_title = tk.Label(self.row_3_frame, text="时间:")
+        self.time_label_title = tk.Label(self.row_3_frame, text=tr("main.time", "Time:"))
         self.time_label_title.place(relx=0, rely=0.5, anchor="w",x=290)
         self.time_label = tk.Label(self.row_3_frame, text="")
         self.time_label.place(relx=0, rely=0.5, anchor="w",x=330)
 
         # 时间戳 check box
         self.timestamp_onoff = tk.BooleanVar(value=False)
-        self.timestamp_check = ttk.Checkbutton(self.row_3_frame, text="时间戳",
+        self.timestamp_check = ttk.Checkbutton(self.row_3_frame, text=tr("main.timestamp", "Timestamp"),
                                                variable=self.timestamp_onoff,
                                                style='Custom.TCheckbutton')
         self.timestamp_check.place(relx=0, rely=0.5, anchor="w", x=420)  
 
         self.update_time()  # 启动时间更新
         #循环间隔（s)标签
-        self.loop_interval_label = tk.Label(self.row_3_frame, text="循环间隔 (s):")
+        self.loop_interval_label = tk.Label(self.row_3_frame, text=tr("main.loop_interval", "Interval (s):"))
         self.loop_interval_label.place(relx=0, rely=0.5, anchor="w",x=500)
         #循环间隔输入框
         self.loop_interval_entry = tk.Entry(self.row_3_frame, width=5)
         self.loop_interval_entry.place(relx=0, rely=0.5, anchor="w",x=600)
         self.loop_interval_entry.insert(0, "3")
         # 单行循环发送按钮
-        self.single_loop_send_btn = tk.Button(self.row_3_frame, text="单行循环", command=self.toggle_loop_send, state=tk.DISABLED, width=10)
+        self.single_loop_send_btn = tk.Button(self.row_3_frame, text=tr("main.single_loop", "Loop Send"), command=self.toggle_loop_send, state=tk.DISABLED, width=10)
         self.single_loop_send_btn.place(relx=0, rely=0.5, anchor="w",x=650)
 
         # Row 4:
@@ -2078,22 +2815,22 @@ class SerialGUI:
 
         # 自动清屏 check box
         self.auto_clear_onoff = tk.BooleanVar(value=True)
-        self.auto_clear_check = ttk.Checkbutton(self.row_4_frame, text="自动清屏",variable=self.auto_clear_onoff, style='Custom.TCheckbutton')
+        self.auto_clear_check = ttk.Checkbutton(self.row_4_frame, text=tr("main.auto_clear", "Auto Clear"),variable=self.auto_clear_onoff, style='Custom.TCheckbutton')
         self.auto_clear_check.place(relx=0, rely=0.5, anchor="w",x=560)  
 
         # “清屏”按钮
-        self.clear_screen_btn = tk.Button(self.row_4_frame, text="清屏", command=self.clear_text_area, width=10)
+        self.clear_screen_btn = tk.Button(self.row_4_frame, text=tr("main.clear", "Clear"), command=self.clear_text_area, width=10)
         self.clear_screen_btn.place(relx=0, rely=0.5, anchor="w",x=650-10)
 
         # 等待符号
-        self.send_all_terminal_label = tk.Label(self.row_4_frame, text="等待符号:")
+        self.send_all_terminal_label = tk.Label(self.row_4_frame, text=tr("main.wait_symbol", "Prompt:"))
         self.send_all_terminal_label.place(relx=0, rely=0.5, anchor="w",x=0)
         # 等待符号选择框
         self.send_all_terminal_entry = tk.Entry(self.row_4_frame, width=5) # 如果直接让text等于某个字符串，会导致多个窗口时共享同一个text变量，会一起被手动修改
         self.send_all_terminal_entry.place(relx=0, rely=0.5, anchor="w",x=70)
         self.send_all_terminal_entry.insert(0,"#,$") # 在entry被创建后，插入内容，这个内容就不会导致多个窗口被同步修改
         # Terminal wait over time label and entry
-        self.send_all_over_time_label = tk.Label(self.row_4_frame, text="超时时间 (s):")
+        self.send_all_over_time_label = tk.Label(self.row_4_frame, text=tr("main.timeout", "Timeout (s):"))
         self.send_all_over_time_label.place(relx=0, rely=0.5, anchor="w",x=140)
 
         self.send_all_over_time_entry = tk.Entry(self.row_4_frame, width=5)
@@ -2101,7 +2838,7 @@ class SerialGUI:
         self.send_all_over_time_entry.insert(0, "5")
 
         # 显示方式下拉框：控制字符怎么显示
-        self.display_mode_label = tk.Label(self.row_4_frame, text="显示方式:")
+        self.display_mode_label = tk.Label(self.row_4_frame, text=tr("main.display_mode", "Display:"))
         self.display_mode_label.place(relx=0, rely=0.5, anchor="w", x=290)
         self.display_mode_combo = ttk.Combobox(self.row_4_frame, width=10, state="readonly",
                                                values=list(self.DISPLAY_MODE_LABELS))
@@ -2113,7 +2850,7 @@ class SerialGUI:
 
         # 自动滚动复选框
         self.auto_scroll_var = tk.BooleanVar(value=True)
-        self.auto_scroll_check = ttk.Checkbutton(self.row_4_frame, text="自动滚动",
+        self.auto_scroll_check = ttk.Checkbutton(self.row_4_frame, text=tr("main.auto_scroll", "Auto Scroll"),
                                                   variable=self.auto_scroll_var,
                                                   style='Custom.TCheckbutton')
         self.auto_scroll_check.place(relx=0, rely=0.5, anchor="w", x=460)
@@ -2125,7 +2862,7 @@ class SerialGUI:
 
         # 使用 pack 布局，让下拉框自动填充剩余空间
         # 左侧固定控件
-        self.script_path_label = tk.Label(self.row_5_frame, text="按键选择")
+        self.script_path_label = tk.Label(self.row_5_frame, text=tr("main.key_file", "Key File"))
         self.script_path_label.pack(side="left")
 
         self.script_path_entry = tk.Entry(self.row_5_frame, width=25, justify="right")
@@ -2144,18 +2881,27 @@ class SerialGUI:
             btn = tk.Button(self.history_btn_frame, text=str(i+1),
                             command=lambda idx=i: self._load_from_history(idx))
             btn.pack(side="left", padx=1)
+            # 右键：Clear / Clear All，清掉不用的历史记录，按键变回窄的数字，腾出界面位置
+            btn.bind("<Button-3>", lambda event, idx=i: self._show_history_menu(event, idx))
             self.history_buttons.append(btn)
 
-        self.history_label = tk.Label(self.row_5_frame, text="历史...")
+        self.history_label = tk.Label(self.row_5_frame, text=tr("main.history", "History..."))
         self.history_label.pack(side="right", padx=(5,2))
 
-        self.save_as_script_button = tk.Button(self.row_5_frame, width=5, text="另存", command=self.save_as_new_script)
+        # 自动同步勾选框（在“另存”右边；右侧控件是从右往左 pack 的）
+        self.key_sync_var = tk.BooleanVar(value=False)
+        self.key_sync_check = ttk.Checkbutton(self.row_5_frame, text=tr("keys.auto_sync", "Auto Sync"),
+                                              variable=self.key_sync_var, command=self._on_sync_toggle,
+                                              style='Custom.TCheckbutton')
+        self.key_sync_check.pack(side="right", padx=(4, 2))
+
+        self.save_as_script_button = tk.Button(self.row_5_frame, width=5, text=tr("common.save_as", "SaveAs"), command=self.save_as_new_script)
         self.save_as_script_button.pack(side="right", padx=2)
 
-        self.save_script_button = tk.Button(self.row_5_frame, width=5, text="保存", command=self.save_script)
+        self.save_script_button = tk.Button(self.row_5_frame, width=5, text=tr("common.save", "Save"), command=self.save_script)
         self.save_script_button.pack(side="right", padx=2)
 
-        self.load_script_button = tk.Button(self.row_5_frame, width=5, text="加载", command=self.load_script)
+        self.load_script_button = tk.Button(self.row_5_frame, width=5, text=tr("common.load", "Load"), command=self.load_script)
         self.load_script_button.pack(side="right", padx=2)
 
         # 中间下拉框，填充剩余空间
@@ -2178,26 +2924,37 @@ class SerialGUI:
         # 为标签页添加右键上下文菜单,创建一个菜单，包含 New / Rename / Delete 三项
         self.tab_menu = tk.Menu(self.root, tearoff=0)
         self.tab_menu.add_command(label="New",   command=self.create_new_tab)
+        self.tab_menu.add_command(label="Duplicate", command=self.duplicate_current_tab)
         self.tab_menu.add_command(label="Rename",command=self.rename_current_tab)
         self.tab_menu.add_command(label="Delete",command=self.delete_current_tab)
 
         # 绑定右键事件到 notebook，弹出上下文菜单
         self.notebook.bind("<Button-3>", self.show_tab_menu)
 
+        # 左键拖动 tab 标签调整顺序（add="+" 保留 Notebook 自带的按下即切换）
+        self.notebook.bind("<ButtonPress-1>", self._tab_drag_press, add="+")
+        self.notebook.bind("<B1-Motion>", self._tab_drag_motion, add="+")
+        self.notebook.bind("<ButtonRelease-1>", self._tab_drag_release, add="+")
+        # 拖动过程中按 Esc 取消（按键拖动和 tab 拖动共用）
+        self.root.bind("<Escape>", self._drag_cancel, add="+")
+        # 按键区撤销。输入框/文本框里的 Ctrl+Z 仍然是它们自己的撤销，见 _on_key_undo
+        self.root.bind("<Control-z>", self._on_key_undo, add="+")
+        self.root.bind("<Control-Z>", self._on_key_undo, add="+")
+
         # Row 7, “多行循环”等文字和按键
         self.row_7_frame = tk.Frame(self.main_frame, width=730, height=34)
         self.row_7_frame.grid(row=7, column=0, sticky="nw", padx=(10,0), pady=(0,0))
 
         # 文字“脚本区域”
-        self.multi_loop_label = tk.Label(self.row_7_frame, text="脚本区域")
+        self.multi_loop_label = tk.Label(self.row_7_frame, text=tr("main.script_area", "Script Area"))
         self.multi_loop_label.place(relx=0, rely=0.5, anchor="w",x=0)
 
         # “行间延时ms:”文字
-        self.default_delay_time_label = tk.Label(self.row_7_frame, text="行间延时ms:")
+        self.default_delay_time_label = tk.Label(self.row_7_frame, text=tr("main.line_delay", "Delay ms:"))
         self.default_delay_time_label.place(relx=0, rely=0.5, anchor="w",x=235)
 
         # 文字，当前执行循环：x
-        self.current_loop_count = tk.StringVar(value="当前循环：0000")
+        self.current_loop_count = tk.StringVar(value=tr("main.current_loop", "Loop: {count}", count="0000"))
         self.current_loop_count_label = tk.Label(self.row_7_frame, textvariable=self.current_loop_count)
         self.current_loop_count_label.place(relx=0, rely=0.5, anchor="w",x=365)
 
@@ -2206,20 +2963,20 @@ class SerialGUI:
         self.default_delay_time_entry.place(relx=0, rely=0.5, anchor="w",x=315)
         self.default_delay_time_entry.insert(0,0)
         # “循环次数”文字
-        self.loop_count_label = tk.Label(self.row_7_frame, text="循环次数:")
+        self.loop_count_label = tk.Label(self.row_7_frame, text=tr("main.loop_count", "Loops:"))
         self.loop_count_label.place(relx=0, rely=0.5, anchor="w",x=520-55)
         # 单行文本框,“循环次数”右侧
         self.loop_count_entry = tk.Entry(self.row_7_frame, width=5)
         self.loop_count_entry.place(relx=0, rely=0.5, anchor="w",x=580-55)
         self.loop_count_entry.insert(0,3)
         # “开始”按钮，放在单行文本框右侧
-        self.start_button = tk.Button(self.row_7_frame, width=5, text="开始", command=self.start_multi_loop_send, state=tk.NORMAL)
+        self.start_button = tk.Button(self.row_7_frame, width=5, text=tr("main.start", "Start"), command=self.start_multi_loop_send, state=tk.NORMAL)
         self.start_button.place(relx=0, rely=0.5, anchor="w",x=640-55)
         # “暂停”按钮
-        self.pause_button = tk.Button(self.row_7_frame, width=5, text="暂停", command=self.pause_resume_multi_loop_send, state=tk.DISABLED)
+        self.pause_button = tk.Button(self.row_7_frame, width=5, text=tr("main.pause", "Pause"), command=self.pause_resume_multi_loop_send, state=tk.DISABLED)
         self.pause_button.place(relx=0, rely=0.5, anchor="w", x=690-55)
         # “停止”按钮
-        self.stop_button = tk.Button(self.row_7_frame, width=5, text="停止", command=self.stop_multi_loop_send, state=tk.DISABLED)
+        self.stop_button = tk.Button(self.row_7_frame, width=5, text=tr("main.stop", "Stop"), command=self.stop_multi_loop_send, state=tk.DISABLED)
         self.stop_button.place(relx=0, rely=0.5, anchor="w", x=740-55)
          # 暂停控制的 Event，以及标记当前暂停状态
         self.pause_event = threading.Event()
@@ -2244,12 +3001,12 @@ class SerialGUI:
         # 为 multi_loop_text 添加右键菜单
         def show_loop_context_menu(event):
             context_menu = tk.Menu(self.multi_loop_text, tearoff=0)
-            context_menu.add_command(label="剪切", command=lambda: self.multi_loop_text.event_generate("<<Cut>>"))
-            context_menu.add_command(label="复制", command=lambda: self.multi_loop_text.event_generate("<<Copy>>"))
-            context_menu.add_command(label="粘贴", command=lambda: self.multi_loop_text.event_generate("<<Paste>>"))
-            context_menu.add_command(label="删除", command=lambda: self.multi_loop_text.delete("sel.first", "sel.last") if self.multi_loop_text.tag_ranges("sel") else None)
+            context_menu.add_command(label=tr("main.cut", "Cut"), command=lambda: self.multi_loop_text.event_generate("<<Cut>>"))
+            context_menu.add_command(label=tr("main.copy", "Copy"), command=lambda: self.multi_loop_text.event_generate("<<Copy>>"))
+            context_menu.add_command(label=tr("main.paste", "Paste"), command=lambda: self.multi_loop_text.event_generate("<<Paste>>"))
+            context_menu.add_command(label=tr("main.delete", "Delete"), command=lambda: self.multi_loop_text.delete("sel.first", "sel.last") if self.multi_loop_text.tag_ranges("sel") else None)
             context_menu.add_separator()
-            context_menu.add_command(label="全选", command=lambda: self.multi_loop_text.tag_add("sel", "1.0", "end"))
+            context_menu.add_command(label=tr("main.select_all", "Select All"), command=lambda: self.multi_loop_text.tag_add("sel", "1.0", "end"))
             context_menu.tk_popup(event.x_root, event.y_root)
 
         self.multi_loop_text.bind("<Button-3>", show_loop_context_menu)
@@ -2346,7 +3103,7 @@ class SerialGUI:
 
         # 使用 pack 布局
         # 左侧固定控件
-        self.multi_script_path_label = tk.Label(self.row_9_frame, text="脚本选择")
+        self.multi_script_path_label = tk.Label(self.row_9_frame, text=tr("main.script_file", "Script File"))
         self.multi_script_path_label.pack(side="left")
 
         self.multi_script_path_entry = tk.Entry(self.row_9_frame, width=25, justify="right")
@@ -2356,13 +3113,13 @@ class SerialGUI:
         self.multi_script_path_button.pack(side="left", padx=(0,5))
 
         # 右侧固定控件（从右往左 pack）
-        self.save_as_multi_loop_btn = tk.Button(self.row_9_frame, text="另存", width=5, command=self.save_multi_loop_file_as)
+        self.save_as_multi_loop_btn = tk.Button(self.row_9_frame, text=tr("common.save_as", "SaveAs"), width=5, command=self.save_multi_loop_file_as)
         self.save_as_multi_loop_btn.pack(side="right", padx=2)
 
-        self.save_multi_loop_btn = tk.Button(self.row_9_frame, text="保存", width=5, command=self.save_multi_loop_file)
+        self.save_multi_loop_btn = tk.Button(self.row_9_frame, text=tr("common.save", "Save"), width=5, command=self.save_multi_loop_file)
         self.save_multi_loop_btn.pack(side="right", padx=2)
 
-        self.open_multi_loop_btn = tk.Button(self.row_9_frame, text="打开", width=5, command=self.open_multi_loop_file)
+        self.open_multi_loop_btn = tk.Button(self.row_9_frame, text=tr("common.open", "Open"), width=5, command=self.open_multi_loop_file)
         self.open_multi_loop_btn.pack(side="right", padx=2)
 
         # 中间下拉框，填充剩余空间
@@ -2375,25 +3132,25 @@ class SerialGUI:
         self.right_frame.grid(row=0, column=1,rowspan=10,sticky="ne",padx=(5,5), pady=(0,0))        # south-east，贴到右下
 
         # 窗口名输入框，默认“TermPlus”
-        self.window_name_label = tk.Label(self.right_frame, text="窗口名:")
+        self.window_name_label = tk.Label(self.right_frame, text=tr("main.window_name", "Window name:"))
         self.window_name_label.pack(anchor="w")
         self.window_name_var = tk.StringVar(value="TermPlus")
         self.window_name_entry = tk.Entry(self.right_frame, textvariable=self.window_name_var, width=15)
         self.window_name_entry.pack(fill="x", pady=2,anchor="se")
         self.window_name_entry.bind("<KeyRelease>", self.update_window_title)
         # 启动时设置窗口标题为默认值
-        self.root.title(self.window_name_var.get())
+        self._refresh_title()
 		# 选择串口
-        self.choose_port_label = tk.Label(self.right_frame, text="选择串口:")
+        self.choose_port_label = tk.Label(self.right_frame, text=tr("main.choose_port", "Port:"))
         self.choose_port_label.pack(anchor="w",pady=(20,0))
         self.port_var = tk.StringVar()
         self.port_menu = ttk.Combobox(self.right_frame, textvariable=self.port_var, values=self.get_ports(), state="readonly", width=10)
         self.port_menu.pack(fill="x", pady=2, anchor="se")
         # 检测可用串口
-        self.refresh_btn = tk.Button(self.right_frame, text="检测可用串口", command=self.refresh_ports, width=10)
+        self.refresh_btn = tk.Button(self.right_frame, text=tr("main.refresh_ports", "Scan Ports"), command=self.refresh_ports, width=10)
         self.refresh_btn.pack(fill="x", pady=2, anchor="se")
         # 选择或输入波特率
-        self.baud_label = tk.Label(self.right_frame, text="波特率:")
+        self.baud_label = tk.Label(self.right_frame, text=tr("main.baudrate", "Baud rate:"))
         self.baud_label.pack(anchor="w")
         self.baud_var = tk.StringVar(value="115200")
         baudrates = ["300", "1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200", "230400"]
@@ -2402,7 +3159,7 @@ class SerialGUI:
         # 串口指示、打开串口/关闭串口
         self.toggle_frame = tk.Frame(self.right_frame)
         self.toggle_frame.pack(fill="x", pady=2, anchor="se")
-        self.toggle_port_btn = tk.Button(self.toggle_frame, text="连接串口", command=self.toggle_serial, width=10)
+        self.toggle_port_btn = tk.Button(self.toggle_frame, text=tr("main.connect_serial", "Connect"), command=self.toggle_serial, width=10)
         self.toggle_port_btn.pack(side="left", anchor="se")
         # 将状态画布放在按钮右侧，设置一些水平间距
         self.status_canvas = Canvas(self.toggle_frame, width=20, height=20, bg="gray", highlightthickness=0)
@@ -2410,14 +3167,14 @@ class SerialGUI:
         # 配置SSH
         self.ssh_frame = tk.Frame(self.right_frame)
         self.ssh_frame.pack(fill="x", pady=2, anchor="se")
-        self.ssh_config_btn = tk.Button(self.ssh_frame, text="配置SSH", command=self.open_ssh_config_window, width=10)
+        self.ssh_config_btn = tk.Button(self.ssh_frame, text=tr("main.ssh_config", "SSH Setup"), command=self.open_ssh_config_window, width=10)
         self.ssh_config_btn.pack(side="left", anchor="se")
         # 将状态画布放在按钮右侧，设置一些水平间距
         self.ssh_status_canvas = Canvas(self.ssh_frame, width=20, height=20, bg="gray", highlightthickness=0)
         self.ssh_status_canvas.pack(side="left", padx=5, anchor="se")
 
         # 文字“自动保存路径”
-        self.auto_save_path_label = tk.Label(self.right_frame, text="自动保存路径")
+        self.auto_save_path_label = tk.Label(self.right_frame, text=tr("main.auto_save_path", "Auto-save path"))
         self.auto_save_path_label.pack(anchor="sw",pady=(20,0))
         # 文本框 方形按键
         self.auto_save_path_frame = tk.Frame(self.right_frame)
@@ -2428,7 +3185,7 @@ class SerialGUI:
         self.square_button = tk.Button(self.auto_save_path_frame, text="…", width=2, height=1, command=self.choose_auto_save_path)
         self.square_button.pack(side="left", anchor="se")
         # 文字 保存文件名
-        self.save_file_name_label = tk.Label(self.right_frame, text="保存文件名")
+        self.save_file_name_label = tk.Label(self.right_frame, text=tr("main.save_file_name", "File name"))
         self.save_file_name_label.pack(anchor="sw")
         # 文本框
         self.file_name_entry = tk.Entry(self.right_frame, width=10, justify="left")
@@ -2438,13 +3195,13 @@ class SerialGUI:
         self.auto_save_frame = tk.Frame(self.right_frame)
         self.auto_save_frame.pack(fill="x", pady=0)
         # 文字“自动保存”
-        self.auto_save_label = tk.Label(self.auto_save_frame, text="自动保存")
+        self.auto_save_label = tk.Label(self.auto_save_frame, text=tr("main.auto_save", "Auto Save"))
         self.auto_save_label.pack(side="left", anchor="se")
         # 自动保存按键，初始背景为灰色，点击后切换颜色
         self.auto_save_btn = tk.Button(self.auto_save_frame, text="OFF", width=4, height=1, bg="gray", command=self.toggle_auto_save)
         self.auto_save_btn.pack(side="right", padx=(2,0), anchor="se")
         # 文件最大容量
-        self.file_max_volume_label = tk.Label(self.right_frame, text="文件最大容量")
+        self.file_max_volume_label = tk.Label(self.right_frame, text=tr("main.max_file_size", "Max file size"))
         self.file_max_volume_label.pack(anchor="sw", pady=(0,0))
         # 文本框 右侧显示“MB”
         self.file_capacity_frame = tk.Frame(self.right_frame)
@@ -2611,7 +3368,9 @@ class SerialGUI:
 
         # 弹出错误提示，但不中断程序
         try:
-            messagebox.showerror("程序异常", f"发生异常:\n{val}", parent=self.root)
+            messagebox.showerror(tr("main.app_exception_title", "Program Error"),
+                                 tr("main.app_exception_msg", "An exception occurred:\n{error}", error=val),
+                                 parent=self.root)
 
         except Exception:
             # 避免在没有主窗口或多线程时弹窗崩溃
@@ -2653,7 +3412,7 @@ class SerialGUI:
             label.image = photo  # 防止被垃圾回收
             label.pack(pady=10)
         except Exception as e:
-            tk.Label(top, text=f"图片显示失败: {e}").pack()
+            tk.Label(top, text=tr("main.image_failed", "Failed to show image: {error}", error=e)).pack()
 
         tk.Label(top, text="If this tool saved your time,").pack()
         tk.Label(top, text="feel free to buy me a coffee.").pack()
@@ -2666,7 +3425,9 @@ class SerialGUI:
         dir_path = self.multi_script_path_entry.get().strip()
         file_name = self.multi_script_file_combo.get().strip()
         if not dir_path or not file_name:
-            messagebox.showwarning("警告", "请选择脚本路径和脚本文件", parent=self.root)
+            messagebox.showwarning(tr("common.warning", "Warning"),
+                                   tr("main.select_script_path_file", "Please select a script path and a script file."),
+                                   parent=self.root)
 
             return
         full_path = os.path.join(dir_path, file_name)
@@ -2679,7 +3440,9 @@ class SerialGUI:
                 self.multi_loop_text.insert("1.0", content)
                 self.multi_loop_txt_filepath = full_path
         except Exception as e:
-            messagebox.showerror("错误", f"加载脚本失败：{e}", parent=self.root)
+            messagebox.showerror(tr("common.error", "Error"),
+                                 tr("main.load_script_failed", "Failed to load script: {error}", error=e),
+                                 parent=self.root)
 
             return
 
@@ -2693,10 +3456,12 @@ class SerialGUI:
             try:
                 with open(self.multi_loop_txt_filepath, "w", encoding="utf-8") as f:
                     f.write(self.multi_loop_text.get("1.0", tk.END))
-                messagebox.showinfo("提示", "保存成功", parent=self.root)
+                messagebox.showinfo(tr("common.info", "Info"), tr("main.save_ok", "Saved successfully."), parent=self.root)
 
             except Exception as e:
-                messagebox.showerror("错误", f"保存文件失败: {e}", parent=self.root)
+                messagebox.showerror(tr("common.error", "Error"),
+                                     tr("main.save_file_failed", "Failed to save file: {error}", error=e),
+                                     parent=self.root)
 
         else:
             # 若之前未指定路径，则调用另存为功能
@@ -2706,7 +3471,7 @@ class SerialGUI:
     def save_multi_loop_file_as(self):
         """弹出对话框指定路径和文件名，将多行循环发送文本框中的内容保存至指定的 .txt 文件中"""
         file_path = filedialog.asksaveasfilename(
-            title="另存为",
+            title=tr("main.save_as_dialog", "Save As"),
             defaultextension=".txt",
             filetypes=(("Text Files", "*.txt"), ("All Files", "*.*"))
         )
@@ -2724,17 +3489,18 @@ class SerialGUI:
                     self.multi_script_file_combo.config(values=current_values)
                 # 将当前选中项设置为新保存的文件
                 self.multi_script_file_combo.set(file_name)
-                messagebox.showinfo("提示", "保存成功", parent=self.root)
+                messagebox.showinfo(tr("common.info", "Info"), tr("main.save_ok", "Saved successfully."), parent=self.root)
 
 
             except Exception as e:
-                messagebox.showerror("错误", f"保存文件失败: {e}", parent=self.root)
+                messagebox.showerror(tr("common.error", "Error"),
+                                     tr("main.save_file_failed", "Failed to save file: {error}", error=e),
+                                     parent=self.root)
 
 
     # 根据窗口名文本框更新窗口名
     def update_window_title(self, event=None):
-        new_title = self.window_name_var.get()
-        self.root.title(new_title)
+        self._refresh_title()
 
     def clear_text_area(self):
         #raise RuntimeError("测试异常触发")
@@ -2813,7 +3579,7 @@ class SerialGUI:
         # 恢复按钮初始状态
         self.start_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
-        self.pause_button.config(state=tk.DISABLED, text="暂停")
+        self.pause_button.config(state=tk.DISABLED, text=tr("main.pause", "Pause"))
 
     def pause_resume_multi_loop_send(self):
         # 如果没有运行，则不处理
@@ -2823,11 +3589,11 @@ class SerialGUI:
         if not self.paused:
             self.pause_event.clear()  # 清除后wait()处将会阻塞
             self.paused = True
-            self.pause_button.config(text="继续")
+            self.pause_button.config(text=tr("main.resume", "Resume"))
         else:
             self.pause_event.set()     # 允许继续执行
             self.paused = False
-            self.pause_button.config(text="暂停")
+            self.pause_button.config(text=tr("main.pause", "Pause"))
 
 
     def run_custom_script(self):
@@ -2921,7 +3687,7 @@ class SerialGUI:
                         return "same", "", ci
                     status, val, new_index = self.tk_safe(_wait_for_check)
                     if status == "error":
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait_for get function find last index bigger than current index. wait for function skipped", parent=self.root))
+                        self.tk_safe(lambda: messagebox.showerror(tr("script.exec_error_title", "Script Error"), "wait_for get function find last index bigger than current index. wait for function skipped", parent=self.root))
                         return False
                     if status == "new":
                         script_wait_for_new_text += val
@@ -3005,7 +3771,7 @@ class SerialGUI:
                         return "same", "", ci
                     status, val, new_index = self.tk_safe(_wait_for_any_check)
                     if status == "error":
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "wait for any index error, last index bigger than current index. wait for any skipped.", parent=self.root))
+                        self.tk_safe(lambda: messagebox.showerror(tr("script.exec_error_title", "Script Error"), "wait for any index error, last index bigger than current index. wait for any skipped.", parent=self.root))
                         return None
                     if status == "new":
                         self.script_wait_for_any_new_text += val
@@ -3044,7 +3810,7 @@ class SerialGUI:
 
         def show_str(string_to_show):
             if string_to_show == "":
-                self.tk_safe(lambda: messagebox.showerror("函数错误", "show_str函数的输入值不能为空.", parent=self.root))
+                self.tk_safe(lambda: messagebox.showerror(tr("script.func_error_title", "Function Error"), tr("script.show_str_empty", "show_str input must not be empty."), parent=self.root))
 
                 return
             self.tk_safe(lambda:self.text_area.insert(tk.END, string_to_show))
@@ -3174,9 +3940,11 @@ class SerialGUI:
             if not wait_str or not str(wait_str).strip():
                 self.tk_safe(lambda: messagebox.showwarning(
                     "Warning",
-                    f"{func_name} 必须指定等待符号。\n\n"
-                    "例如设备提示符 $ 或 #。逐行发送时要靠它判断上一条命令是否执行完，\n"
-                    "留空会导致命令被连续灌进设备。",
+                    tr("script.wait_str_required",
+                       "{func_name} requires a wait string.\n\n"
+                       "E.g. the device prompt $ or #. It is used to tell when the previous command has finished,\n"
+                       "leaving it empty floods the device with commands.",
+                       func_name=func_name),
                     parent=self.root))
                 return False
             try:
@@ -3184,7 +3952,7 @@ class SerialGUI:
                     raise ValueError
             except (TypeError, ValueError):
                 self.tk_safe(lambda: messagebox.showwarning(
-                    "Warning", f"{func_name} 的超时时间必须是大于 0 的数字。", parent=self.root))
+                    "Warning", tr("script.timeout_positive", "{func_name}: timeout must be a number greater than 0.", func_name=func_name), parent=self.root))
                 return False
             return True
 
@@ -3217,7 +3985,7 @@ class SerialGUI:
                 cmds.append((idx, text))
             total = len(cmds)
             if total == 0:
-                _write_script_alert(f"*** {source_desc} 里没有可发送的命令，已跳过 ***")
+                _write_script_alert(tr("script.no_commands", "*** No commands to send in {source}, skipped ***", source=source_desc))
                 return 0
 
             all_hit = True
@@ -3258,11 +4026,14 @@ class SerialGUI:
 
                     def _alert(reason):
                         _write_script_alert(
-                            f"*** 等待超时 ***  来源：{source_desc}  第 {src_line_no} 行"
-                            f"（进度 {seq}/{total}）\n"
-                            f"    命令：{cmd}\n"
-                            f"{reason}\n"
-                            f"    已跳过该行的等待，继续执行下一行"
+                            tr("script.timeout_alert",
+                               "*** Wait timeout ***  Source: {source}  Line {line}"
+                               " (progress {seq}/{total})\n"
+                               "    Command: {cmd}\n"
+                               "{reason}\n"
+                               "    Wait for this line skipped, continuing with next line",
+                               source=source_desc, line=src_line_no, seq=seq, total=total,
+                               cmd=cmd, reason=reason)
                         )
 
                     if interpret:
@@ -3282,7 +4053,7 @@ class SerialGUI:
                             target, secs = m.group(1), float(m.group(2))
                             if not wait_for(target, secs):
                                 all_hit = False
-                                _alert(f"    该行是 wait for 语句，未在 {secs:g} 秒内等到：{target}")
+                                _alert("    " + tr("script.wait_for_not_found", "wait for line: not received within {secs:g} s: {target}", secs=secs, target=target))
                             continue
                         # ---- 自定义函数命令（与按键区域支持的完全相同）----
                         if self.tk_safe(lambda c=cmd: self._try_execute_cell_command(c)):
@@ -3345,7 +4116,7 @@ class SerialGUI:
 
                     if not hit:
                         all_hit = False
-                        _alert(f"    未等到等待符号：{wait_str}    超时时间：{over_time:g} 秒")
+                        _alert("    " + tr("script.wait_str_not_found", "Wait string not received: {wait_str}    Timeout: {timeout:g} s", wait_str=wait_str, timeout=over_time))
             finally:
                 self.auto_delete_lock_count -= 1
                 if show_progress and suffix:
@@ -3366,7 +4137,7 @@ class SerialGUI:
             """
             if not button_name or not str(button_name).strip():
                 self.tk_safe(lambda: messagebox.showwarning(
-                    "Warning", "run_button 必须指定按键名。", parent=self.root))
+                    "Warning", tr("script.run_button_name_required", "run_button requires a button name."), parent=self.root))
                 return 0
             if not _check_run_lines_args("run_button", wait_str, over_time):
                 return 0
@@ -3385,25 +4156,30 @@ class SerialGUI:
 
             matches = self.tk_safe(_find_buttons)
             if not matches:
-                where = f"标签页 {tab_name}" if tab_name else "所有标签页"
+                where = (tr("script.where_tab", "tab {tab}", tab=tab_name) if tab_name
+                         else tr("script.where_all_tabs", "all tabs"))
                 self.tk_safe(lambda: messagebox.showwarning(
                     "Warning",
-                    f"在{where}里找不到名为 {button_name} 的按键。\n\n"
-                    "请确认按键发送区域已经加载了对应的按键文件，且按键名完全一致。",
+                    tr("script.button_not_found",
+                       "No button named {button} found in {where}.\n\n"
+                       "Make sure the matching key file is loaded and the button name matches exactly.",
+                       where=where, button=button_name),
                     parent=self.root))
                 return 0
             if len(matches) > 1:
-                tabs_str = "、".join(m[0] for m in matches)
+                tabs_str = tr("script.list_sep", ", ").join(m[0] for m in matches)
                 self.tk_safe(lambda ts=tabs_str: messagebox.showwarning(
                     "Warning",
-                    f"有多个按键都叫 {button_name}（分别在 {ts}）。\n\n"
-                    "请用 tab_name 参数指定标签页，例如：\n"
-                    f'run_button("{button_name}", "$", 20, tab_name="Tab 1")',
+                    tr("script.button_ambiguous",
+                       "Several buttons are named {button} (in {tabs}).\n\n"
+                       "Use the tab_name parameter to choose a tab, e.g.:\n",
+                       button=button_name, tabs=ts)
+                    + f'run_button("{button_name}", "$", 20, tab_name="Tab 1")',
                     parent=self.root))
                 return 0
 
             tab_of, data = matches[0]
-            desc = f"按键 {button_name}（标签页 {tab_of}）"
+            desc = tr("script.desc_button", "button {button} (tab {tab})", button=button_name, tab=tab_of)
             return _run_command_lines(desc, data.splitlines(), wait_str, over_time, interpret)
 
         def send_commands_from_file(file_name, wait_str, over_time, interpret=True):
@@ -3419,7 +4195,7 @@ class SerialGUI:
             """
             if not file_name or not str(file_name).strip():
                 self.tk_safe(lambda: messagebox.showwarning(
-                    "Warning", "send_commands_from_file 必须指定文件名。", parent=self.root))
+                    "Warning", tr("script.file_name_required", "send_commands_from_file requires a file name."), parent=self.root))
                 return 0
             if not _check_run_lines_args("send_commands_from_file", wait_str, over_time):
                 return 0
@@ -3433,8 +4209,10 @@ class SerialGUI:
             if not os.path.isfile(path):
                 self.tk_safe(lambda p=path: messagebox.showwarning(
                     "Warning",
-                    f"找不到命令文件：\n\n{p}\n\n"
-                    "相对文件名是以【脚本路径】输入框为基准解析的，也可以直接填绝对路径。",
+                    tr("script.cmd_file_not_found",
+                       "Command file not found:\n\n{path}\n\n"
+                       "Relative names are resolved against the script path field; an absolute path also works.",
+                       path=p),
                     parent=self.root))
                 return 0
 
@@ -3448,14 +4226,14 @@ class SerialGUI:
                     continue
                 except Exception as e:
                     self.tk_safe(lambda err=e, p=path: messagebox.showerror(
-                        "错误", f"读取命令文件失败：\n\n{err}\n\n{p}", parent=self.root))
+                        tr("common.error", "Error"), tr("script.cmd_file_read_failed", "Failed to read command file:\n\n{error}\n\n{path}", error=err, path=p), parent=self.root))
                     return 0
             if content is None:
                 # utf-8 和 gbk 都解不开，退化成替换非法字节，至少能跑
                 with open(path, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read()
 
-            desc = f"文件 {os.path.basename(path)}"
+            desc = tr("script.desc_file", "file {name}", name=os.path.basename(path))
             return _run_command_lines(desc, content.splitlines(), wait_str, over_time, interpret)
 
         def show_date_time():
@@ -3493,7 +4271,7 @@ class SerialGUI:
                     current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
                     if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
                         #print(f"get_future_lines function failed due to last index bigger than current index.\n")
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index.", parent=self.root))
+                        self.tk_safe(lambda: messagebox.showerror(tr("script.exec_error_title", "Script Error"), "get_future_lines function failed due to last index bigger than current index.", parent=self.root))
 
                         return None
                     if self.tk_safe(lambda:self.text_area.compare(last_index, "==", current_index)):
@@ -3542,7 +4320,7 @@ class SerialGUI:
                     current_index = self.tk_safe(lambda:self.text_area.index("end-1c"))
                     if self.tk_safe(lambda:self.text_area.compare(last_index, ">", current_index)):
                         #print(f"get_future_lines function failed due to last index bigger than current index.\n")
-                        self.tk_safe(lambda: messagebox.showerror("脚本执行错误", "get_future_lines function failed due to last index bigger than current index.", parent=self.root))
+                        self.tk_safe(lambda: messagebox.showerror(tr("script.exec_error_title", "Script Error"), "get_future_lines function failed due to last index bigger than current index.", parent=self.root))
 
                         return None
                     if self.tk_safe(lambda:self.text_area.compare(last_index, "==", current_index)):
@@ -3570,7 +4348,7 @@ class SerialGUI:
             try:
                 self.tk_safe(lambda: self.port_menu.set(port_str))
             except Exception as e:
-                self.tk_safe(lambda: messagebox.showerror("错误", f"设置端口失败: {e}", parent=self.root))
+                self.tk_safe(lambda: messagebox.showerror(tr("common.error", "Error"), tr("script.set_port_failed", "Failed to set port: {error}", error=e), parent=self.root))
 
 
         def set_baudrate(baud):
@@ -3578,7 +4356,7 @@ class SerialGUI:
             try:
                 self.tk_safe(lambda: self.baud_var.set(baud_str))
             except Exception as e:
-                self.tk_safe(lambda: messagebox.showerror("错误", f"设置波特率失败: {e}", parent=self.root))
+                self.tk_safe(lambda: messagebox.showerror(tr("common.error", "Error"), tr("script.set_baud_failed", "Failed to set baud rate: {error}", error=e), parent=self.root))
 
 
         # This function will be injected into the user's script
@@ -3812,7 +4590,7 @@ class SerialGUI:
         
         while (loop_count == 0 or iteration < loop_count) and not self.loop_stop:
             iteration += 1
-            self.root.after(0, lambda i=iteration: self.current_loop_count.set(f"当前循环：{i}"))
+            self.root.after(0, lambda i=iteration: self.current_loop_count.set(tr("main.current_loop", "Loop: {count}", count=i)))
 
             try:
                 # 重定向 stdout 捕获 print 输出
@@ -3854,12 +4632,12 @@ class SerialGUI:
                         if 0 < lineno <= len(script_lines):
                             last_tb_line = script_lines[lineno - 1].strip()
                         else:
-                            last_tb_line = "<无法获取行内容>"
+                            last_tb_line = tr("script.err_no_line", "<cannot get line content>")
                     else:
                         import linecache
                         last_tb_line = linecache.getline(filename, lineno).strip()
                 else:
-                    last_tb_line = "<未知代码行>"
+                    last_tb_line = tr("script.err_unknown_line", "<unknown code line>")
 
                 # 从代码行中解析可能的变量名
                 #import re
@@ -3874,72 +4652,74 @@ class SerialGUI:
                         elif name in last_frame.f_globals:
                             vars_in_line[name] = repr(last_frame.f_globals[name])
                         else:
-                            vars_in_line[name] = "<未定义>"
+                            vars_in_line[name] = tr("script.err_undefined", "<undefined>")
                 vars_in_line_str = "\n".join([f"{k} = {v}" for k, v in vars_in_line.items()])
 
                 # 获取 text_area 内容
                 try:
                     text_area_content = self.tk_safe(lambda:self.text_area.get("1.0", tk.END))
                 except Exception:
-                    text_area_content = "<无法获取 text_area 内容>"
+                    text_area_content = tr("script.err_no_text_area", "<cannot get text_area content>")
 
                 # 获取所有局部变量
                 try:
                     local_vars_str = "\n".join([f"{k}={v!r}" for k, v in local_namespace.items()])
                 except Exception:
-                    local_vars_str = "<无法获取局部变量>"
+                    local_vars_str = tr("script.err_no_locals", "<cannot get local variables>")
 
                 # 获取全局变量（排除内建）
                 try:
                     global_vars_str = "\n".join([f"{k}={v!r}" for k, v in globals().items() if k not in ("__builtins__",)])
                 except Exception:
-                    global_vars_str = "<无法获取全局变量>"
+                    global_vars_str = tr("script.err_no_globals", "<cannot get global variables>")
 
                 # 获取 GUI 控件状态
                 gui_vars_str = ""
                 try:
                     gui_vars_str = "\n".join([f"{name}={entry.get()}" for name, entry in getattr(self, "entries_dict", {}).items()])
                 except Exception:
-                    gui_vars_str = "<无法获取 GUI 控件状态>"
+                    gui_vars_str = tr("script.err_no_gui_state", "<cannot get GUI widget state>")
 
                 # 系统信息
-                system_info = f"Python版本: {sys.version}\n平台: {platform.platform()}\n当前目录: {os.getcwd()}"
+                system_info = tr("script.err_system_info",
+                                 "Python version: {version}\nPlatform: {platform}\nCurrent dir: {cwd}",
+                                 version=sys.version, platform=platform.platform(), cwd=os.getcwd())
 
                 # 生成完整错误信息
                 error_info = f"""
 ==== Script Execution Error ====
-时间: {error_time}
-循环次数: {iteration}
-异常类型: {type(e).__name__}
-异常信息: {e}
+{tr('script.err_time', 'Time')}: {error_time}
+{tr('script.err_loop_count', 'Loop count')}: {iteration}
+{tr('script.err_exc_type', 'Exception type')}: {type(e).__name__}
+{tr('script.err_exc_msg', 'Exception message')}: {e}
 Traceback:
 {tb_str}
 
-出错行信息:
+{tr('script.err_line_info', 'Error line')}:
 {last_tb_line}
 
-出错行相关变量:
+{tr('script.err_line_vars', 'Variables in error line')}:
 {vars_in_line_str}
 
-脚本输出(print):
+{tr('script.err_print_output', 'Script output (print)')}:
 {output_text}
 
-当前执行脚本内容:
+{tr('script.err_script_content', 'Executed script content')}:
 {full_executable_script}
 
-局部变量:
+{tr('script.err_locals', 'Local variables')}:
 {local_vars_str}
 
-全局变量:
+{tr('script.err_globals', 'Global variables')}:
 {global_vars_str}
 
-GUI 控件状态:
+{tr('script.err_gui_state', 'GUI widget state')}:
 {gui_vars_str}
 
-当前 text_area 内容:
+{tr('script.err_text_area', 'Current text_area content')}:
 {text_area_content}
 
-系统信息:
+{tr('script.err_system', 'System info')}:
 {system_info}
 ===============================
 """
@@ -3951,11 +4731,13 @@ GUI 控件状态:
                     pass
 
                 self.tk_safe(lambda: messagebox.showerror(
-                    "脚本执行错误",
-                    f"错误原因:\n{e}\n\n"
-                    f"出错位置：\n{last_tb_line}\n\n"
-                    f"错误详情：\n{tb_str}\n\n"
-                    f"详细信息参见 script_error_info.txt",
+                    tr("script.exec_error_title", "Script Error"),
+                    tr("script.exec_error_msg",
+                       "Error:\n{error}\n\n"
+                       "Location:\n{line}\n\n"
+                       "Details:\n{traceback}\n\n"
+                       "See script_error_info.txt for more information",
+                       error=e, line=last_tb_line, traceback=tb_str),
                     parent=self.root
                 ))
 
@@ -4048,7 +4830,7 @@ GUI 控件状态:
             time.sleep(0.1)
 
         except Exception as e:
-            self.tk_safe(lambda: messagebox .showerror("错误", f"无法打开 PowerShell: {e}"))
+            self.tk_safe(lambda: messagebox .showerror(tr("common.error", "Error"), tr("script.ps_open_failed", "Cannot open PowerShell: {error}", error=e)))
 
     def _read_ps_output(self):
         #print("[_read_ps_output] thread started")
@@ -4089,10 +4871,10 @@ GUI 控件状态:
                 self.ps_proc.stdin.write(cmd_text + "\n")
                 self.ps_proc.stdin.flush()
             except Exception as e:
-                self.tk_safe(lambda: messagebox.showerror("错误", f"PowerShell 发送失败: {e}", parent=self.root))
+                self.tk_safe(lambda: messagebox.showerror(tr("common.error", "Error"), tr("script.ps_send_failed", "PowerShell send failed: {error}", error=e), parent=self.root))
 
         else:
-            self.tk_safe(lambda: messagebox.showwarning("警告", "请先执行 open power shell", parent=self.root))
+            self.tk_safe(lambda: messagebox.showwarning(tr("common.warning", "Warning"), tr("script.ps_not_open", "Please run open power shell first"), parent=self.root))
 
     
 
@@ -4103,6 +4885,7 @@ GUI 控件状态:
         # 检查是否有未保存的更改
         if not self.check_unsaved_changes():
             return
+        self._sync_stop()
             
         # 如果自动保存正在开启，则先关闭文件
         if self.auto_save_file:
@@ -4114,6 +4897,76 @@ GUI 控件状态:
         
         # 然后再销毁窗口
         self.root.destroy()
+
+    def show_language_window(self):
+        """Language -> Choose Language：列出 language 文件夹里的语言，选中后写入 ini 并重启。
+        窗口文字固定用英文，选错语言时也能看懂。"""
+        langs = list_languages()
+
+        win = tk.Toplevel(self.root)
+        win.withdraw()  # 先隐藏，摆好位置再显示，避免先在别处闪一下
+        win.title("Choose Language")
+        win.transient(self.root)
+        win.resizable(False, False)
+        win.attributes('-topmost', True)
+
+        tk.Label(win, text=f"Languages found in: {LANG_DIR}", anchor="w",
+                 justify="left", wraplength=360).pack(fill="x", padx=12, pady=(12, 6))
+
+        listbox = tk.Listbox(win, height=max(3, min(10, len(langs))), exportselection=False)
+        listbox.pack(fill="both", expand=True, padx=12)
+        for code, name in langs:
+            mark = "   (current)" if code == _LANG_CODE else ""
+            listbox.insert(tk.END, f"{name}  [{code}]{mark}")
+        codes = [c for c, _ in langs]
+        if _LANG_CODE in codes:
+            listbox.selection_set(codes.index(_LANG_CODE))
+            listbox.see(codes.index(_LANG_CODE))
+
+        def do_load():
+            global _LANG_SAVE_CODE
+            sel = listbox.curselection()
+            if not sel:
+                messagebox.showwarning("Language", "Please select a language first.", parent=win)
+                return
+            code = codes[sel[0]]
+            if code == _LANG_CODE:
+                messagebox.showinfo("Language", "This language is already in use.", parent=win)
+                return
+            msg = "TermPlus needs to close and restart for the new language to take effect.\n\nClose and restart now?"
+            if _LANG_CODE != DEFAULT_LANG:
+                msg += "\n\n" + tr("lang.restart_prompt",
+                                   "TermPlus needs to close and restart for the new language to take effect.\n\nClose and restart now?")
+            if not messagebox.askokcancel("Language", msg, parent=win):
+                return
+            # 有未保存的按键文件时先询问；取消则不切换
+            if not self.check_unsaved_changes():
+                return
+            win.destroy()
+            # 写入 ini（save_setup 会保存 _LANG_SAVE_CODE），然后关闭并重新启动
+            _LANG_SAVE_CODE = code
+            if self.auto_save_file:
+                self.auto_save_file.close()
+                self.auto_save_file = None
+            self.save_setup()
+            try:
+                restart_app()
+            except Exception as e:
+                messagebox.showerror("Language",
+                                     f"Language saved, but TermPlus could not restart automatically:\n{e}\n\n"
+                                     "Please start TermPlus again manually.", parent=self.root)
+            # 用 _root() 关闭整个程序（包括 新建窗口 打开的其他窗口）
+            self.root._root().destroy()
+
+        btn_frame = tk.Frame(win)
+        btn_frame.pack(fill="x", padx=12, pady=12)
+        ttk.Button(btn_frame, text="Cancel", width=10, command=win.destroy).pack(side="right")
+        ttk.Button(btn_frame, text="Load", width=10, command=do_load).pack(side="right", padx=(0, 8))
+        listbox.bind("<Double-Button-1>", lambda e: do_load())
+
+        place_on_parent_monitor(win, self.root)
+        win.deiconify()
+        win.grab_set()
 
     def update_time(self):
         current_date = time.strftime("%Y-%m-%d")
@@ -4128,7 +4981,7 @@ GUI 控件状态:
         try:
             path = self.root.tk.call('tk_chooseDirectory')
         except Exception:
-            path = filedialog.askdirectory(title="选择文件夹")
+            path = filedialog.askdirectory(title=tr("file.select_folder", "Select Folder"))
         if path:
             self.auto_save_path_entry.delete(0, tk.END)
             self.auto_save_path_entry.insert(0, path)
@@ -4141,7 +4994,7 @@ GUI 控件状态:
         try:
             path = self.root.tk.call('tk_chooseDirectory')
         except Exception:
-            path = filedialog.askdirectory(title="选择文件夹")
+            path = filedialog.askdirectory(title=tr("file.select_folder", "Select Folder"))
         if path:
             self.script_path_entry.delete(0, tk.END)
             self.script_path_entry.insert(0, path)
@@ -4164,7 +5017,7 @@ GUI 控件状态:
         try:
             path = self.root.tk.call('tk_chooseDirectory')
         except Exception:
-            path = filedialog.askdirectory(title="选择文件夹")
+            path = filedialog.askdirectory(title=tr("file.select_folder", "Select Folder"))
         if path:
             self.multi_script_path_entry.delete(0, tk.END)
             self.multi_script_path_entry.insert(0, path)
@@ -4187,7 +5040,7 @@ GUI 控件状态:
         if self.script_modified:
             # 创建自定义对话框
             dialog = tk.Toplevel(self.root)
-            dialog.title("未保存的更改")
+            dialog.title(tr("file.unsaved_title", "Unsaved Changes"))
             dialog.geometry("300x120")
             dialog.resizable(False, False)
             dialog.grab_set()  # 模态对话框
@@ -4199,7 +5052,7 @@ GUI 控件状态:
             dialog.geometry(f"+{x}+{y}")
             
             # 消息文本
-            tk.Label(dialog, text="当前脚本有未保存的更改，是否保存后继续下一步？", 
+            tk.Label(dialog, text=tr("file.unsaved_msg", "The current script has unsaved changes. Save before continuing?"), 
                     wraplength=280, justify="center").pack(pady=20)
             
             # 按钮框架
@@ -4221,16 +5074,16 @@ GUI 控件状态:
                 dialog.destroy()
             
             # 三个按钮
-            tk.Button(btn_frame, text="保存", command=save_and_continue, width=10).pack(side="left", padx=5)
-            tk.Button(btn_frame, text="不保存", command=dont_save, width=12).pack(side="left", padx=5)
-            tk.Button(btn_frame, text="取消", command=cancel, width=10).pack(side="left", padx=5)
+            tk.Button(btn_frame, text=tr("common.save", "Save"), command=save_and_continue, width=10).pack(side="left", padx=5)
+            tk.Button(btn_frame, text=tr("file.dont_save", "Don't Save"), command=dont_save, width=12).pack(side="left", padx=5)
+            tk.Button(btn_frame, text=tr("common.cancel", "Cancel"), command=cancel, width=10).pack(side="left", padx=5)
             
             # 等待用户选择
             dialog.wait_window()
             
             if result[0] == "save":
-                self.save_current_script()
-                return True
+                # 保存失败（如共享盘连不上）时不继续，避免关闭窗口或加载别的文件后丢掉修改
+                return bool(self.save_current_script())
             elif result[0] == "dont_save":
                 return True
             else:  # cancel
@@ -4238,11 +5091,14 @@ GUI 控件状态:
         return True
 
     def save_current_script(self):
-        """保存当前正在编辑的脚本文件"""
+        """保存当前正在编辑的脚本文件。返回 True 表示保存成功。"""
         if not self.current_script_path or not self.current_script_file:
-            messagebox.showwarning("警告", "无法确定当前编辑的脚本文件", parent=self.root)
+            messagebox.showwarning(tr("common.warning", "Warning"), tr("file.no_current_script", "Cannot determine the script file being edited"), parent=self.root)
 
-            return
+            return False
+        if self._sync_enabled:
+            # 自动同步开着：和 ts 文件合并后再保存，并等保存完成
+            return self._sync_blocking_save()
             
         full_path = os.path.join(self.current_script_path, self.current_script_file)
         
@@ -4284,12 +5140,15 @@ GUI 控件状态:
             file_encoding = self.file_encodings.get(current_file_path, "gbk")
             with open(full_path, "w", encoding=file_encoding) as f:
                 f.write(script_content)
+            self._sync_reset_base_from_content(script_content, full_path)
             # 保存成功后重置修改标记
             self.script_modified = False
-            messagebox.showinfo("提示", "脚本保存成功", parent=self.root)
+            messagebox.showinfo(tr("common.info", "Info"), tr("file.script_saved", "Script saved successfully"), parent=self.root)
+            return True
 
         except Exception as e:
-            messagebox.showerror("错误", f"保存脚本失败：{e}", parent=self.root)
+            messagebox.showerror(tr("common.error", "Error"), tr("file.save_script_failed", "Failed to save script: {error}", error=e), parent=self.root)
+            return False
 
 
     def _update_history_button(self, idx):
@@ -4297,15 +5156,39 @@ GUI 控件状态:
         path = self.history_paths[idx]
         strike = self.history_strike[idx]
         if not path:
-            btn.config(text=str(idx+1), width=2, font=('Microsoft YaHei UI', 9))
+            btn.config(text=str(idx+1), width=2, font=(ui_font_family(), 9))
         else:
             name = os.path.basename(path)
             display = name if len(name) <= 20 else name[:20] + '...'
             w = max(2, min(20, len(display)))
             if strike:
-                btn.config(text=display, width=w, font=('Microsoft YaHei UI', 9, 'overstrike'))
+                btn.config(text=display, width=w, font=(ui_font_family(), 9, 'overstrike'))
             else:
-                btn.config(text=display, width=w, font=('Microsoft YaHei UI', 9))
+                btn.config(text=display, width=w, font=(ui_font_family(), 9))
+
+    def _show_history_menu(self, event, idx):
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label=tr("history.clear", "Clear"), command=lambda: self._clear_history(idx),
+                         state="normal" if self.history_paths[idx] else "disabled")
+        menu.add_command(label=tr("history.clear_all", "Clear All"), command=self._clear_all_history,
+                         state="normal" if any(self.history_paths) else "disabled")
+        menu.tk_popup(event.x_root, event.y_root)
+        menu.grab_release()
+
+    def _clear_history(self, idx):
+        """清掉一个历史记录；后面的往前移，有记录的始终排在前面。"""
+        self.history_paths.pop(idx)
+        self.history_paths.append("")
+        self.history_strike.pop(idx)
+        self.history_strike.append(False)
+        for i in range(5):
+            self._update_history_button(i)
+
+    def _clear_all_history(self):
+        self.history_paths = [""] * 5
+        self.history_strike = [False] * 5
+        for i in range(5):
+            self._update_history_button(i)
 
     def _push_history(self, full_path):
         if not full_path:
@@ -4335,7 +5218,7 @@ GUI 控件状态:
         if not self.check_unsaved_changes():
             return
         if not os.path.isfile(full_path):
-            messagebox.showwarning("警告", f"文件不存在或已移动：\n{full_path}", parent=self.root)
+            messagebox.showwarning(tr("common.warning", "Warning"), tr("file.history_missing", "File does not exist or has been moved:\n{path}", path=full_path), parent=self.root)
             self.history_strike[idx] = True
             self._update_history_button(idx)
             return
@@ -4377,7 +5260,7 @@ GUI 控件状态:
         dir_path = self.script_path_entry.get().strip()
         file_name = self.script_file_combo.get().strip()
         if not dir_path or not file_name:
-            messagebox.showwarning("警告", "请选择脚本路径和脚本文件", parent=self.root)
+            messagebox.showwarning(tr("common.warning", "Warning"), tr("main.select_script_path_file", "Please select a script path and a script file."), parent=self.root)
 
             return
         full_path = os.path.join(dir_path, file_name)
@@ -4396,7 +5279,7 @@ GUI 控件状态:
             except UnicodeDecodeError:
                 continue
             except Exception as e:
-                messagebox.showerror("错误", f"加载脚本失败：{e}", parent=self.root)
+                messagebox.showerror(tr("common.error", "Error"), tr("main.load_script_failed", "Failed to load script: {error}", error=e), parent=self.root)
 
                 return
         
@@ -4407,7 +5290,7 @@ GUI 控件状态:
                     content = f.read()
                 used_encoding = "gbk"
             except Exception as e:
-                messagebox.showerror("错误", f"加载脚本失败：{e}", parent=self.root)
+                messagebox.showerror(tr("common.error", "Error"), tr("main.load_script_failed", "Failed to load script: {error}", error=e), parent=self.root)
 
                 return
         # 使用正则表达式解析标签页和按钮信息
@@ -4416,12 +5299,35 @@ GUI 控件状态:
         data_pattern = re.compile(r'<data>\s*(.*?)\s*</data>', re.DOTALL)
         tabs = tab_pattern.findall(content)
         if not tabs:
-            messagebox.showwarning("警告", "未找到任何标签页定义", parent=self.root)
+            messagebox.showwarning(tr("common.warning", "Warning"), tr("keys.no_tabs_found", "No tab definitions found"), parent=self.root)
 
             return
-        # 清除现有标签页
+        # 加载会替换所有按键；有打开的编辑窗口时先确认，确认后关掉它们
+        open_editors = [cid for cid, win in self.cell_edit_windows.items() if self._widget_alive(win)]
+        if open_editors and not messagebox.askyesno(
+                tr("common.confirm", "Confirm"),
+                tr("keys.load_close_editors",
+                   "Loading will close {count} open button edit window(s). Unsaved edits in them will be lost.\n\nContinue?",
+                   count=len(open_editors)),
+                parent=self.root):
+            return
+        # 记住当前选中的标签页，加载后切回去（先按名称找，找不到按位置）
+        prev_name, prev_index = None, 0
+        try:
+            prev = self.notebook.select()
+            if prev:
+                prev_name = self.notebook.tab(prev, "text")
+                prev_index = self.notebook.index(prev)
+        except tk.TclError:
+            pass
+        # 清除现有标签页：关掉编辑窗口并销毁，避免旧按键一直留在内存里
+        self._clear_key_undo()
         for tab in self.notebook.tabs():
+            frame = self.notebook.nametowidget(tab)
             self.notebook.forget(tab)
+            self._destroy_tab_frame(frame)
+        for cid in list(self.cell_edit_windows):
+            self._close_edit_window(cid)
         # 对每个标签页创建新的标签
         for tab_name, tab_content in tabs:
             button_info = {}  # key: 按钮索引(int)，value: (按钮名称, 按钮文本)
@@ -4431,6 +5337,14 @@ GUI 控件状态:
                 btn_text = data_match.group(1).strip() if data_match else ""
                 button_info[int(btn_index)] = (btn_name, btn_text)
             self.create_tab_from_script(tab_name, button_info)
+        new_tabs = self.notebook.tabs()
+        target = None
+        if prev_name is not None:
+            target = next((t for t in new_tabs if self.notebook.tab(t, "text") == prev_name), None)
+        if target is None and new_tabs:
+            target = new_tabs[min(prev_index, len(new_tabs) - 1)]
+        if target is not None:
+            self.notebook.select(target)
         
         # 加载成功前，把被换下的旧文件推入历史
         old_path = self.current_script_path
@@ -4444,22 +5358,31 @@ GUI 控件状态:
         self.current_script_path = dir_path
         self.current_script_file = file_name
         self.file_encodings[full_path] = used_encoding  # 记录文件编码
+        # 自动同步的基准：刚加载的内容
+        self._sync_busy = False
+        self._sync_deferred = None
+        self._sync_reset_base_from_content(content, full_path)
         self.script_modified = False
 
     def save_script(self):
         # 获取脚本文件名，如果为空则提示警告
         file_name = self.script_file_combo.get().strip()
         if not file_name:
-            messagebox.showwarning("警告", "未指定保存文件", parent=self.root)
+            messagebox.showwarning(tr("common.warning", "Warning"), tr("keys.no_save_file", "No file specified to save"), parent=self.root)
 
             return
         # 获取脚本路径
         dir_path = self.script_path_entry.get().strip()
         if not dir_path:
-            messagebox.showwarning("警告", "未指定脚本路径", parent=self.root)
+            messagebox.showwarning(tr("common.warning", "Warning"), tr("keys.no_script_path", "No script path specified"), parent=self.root)
 
             return
         full_path = os.path.join(dir_path, file_name)
+        # 自动同步开着、保存的就是当前同步的文件：走合并保存，完成后弹“保存成功”
+        if self._sync_enabled and self._same_path(full_path, self._sync_path()):
+            self._sync_manual = True
+            self._sync_kick()
+            return
     
         # 构造脚本文本内容
         script_content = ""
@@ -4498,30 +5421,35 @@ GUI 控件状态:
             file_encoding = self.file_encodings.get(full_path, "gbk")
             with open(full_path, "w", encoding=file_encoding) as f:
                 f.write(script_content)
+            # 保存到哪个文件，之后编辑的就是哪个文件（另存为也走这里）；同步的基准也换成它
+            self.current_script_path = dir_path
+            self.current_script_file = file_name
+            self.file_encodings[full_path] = file_encoding
+            self._sync_reset_base_from_content(script_content, full_path)
             # 保存成功后重置修改标记
             self.script_modified = False
-            messagebox.showinfo("提示", "脚本保存成功", parent=self.root)
+            messagebox.showinfo(tr("common.info", "Info"), tr("file.script_saved", "Script saved successfully"), parent=self.root)
 
         except Exception as e:
-            messagebox.showerror("错误", f"保存脚本失败：{e}", parent=self.root)
+            messagebox.showerror(tr("common.error", "Error"), tr("file.save_script_failed", "Failed to save script: {error}", error=e), parent=self.root)
 
 
     def save_as_new_script(self):
         # 弹出新窗口，允许选择保存路径和输入文件名
         new_win = tk.Toplevel(self.root)
-        new_win.title("保存为新脚本")
+        new_win.title(tr("keys.save_as_new_title", "Save as New Script"))
         new_win.grab_set()  # 模态窗口
 
-        tk.Label(new_win, text="保存路径:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        tk.Label(new_win, text=tr("keys.save_path", "Save path:")).grid(row=0, column=0, padx=5, pady=5, sticky="w")
         path_entry = tk.Entry(new_win, width=40)
         path_entry.grid(row=0, column=1, padx=5, pady=5)
         # 新增：默认值为当前脚本路径文本框的值
         default_path = self.script_path_entry.get().strip()
         path_entry.insert(0, default_path)
     
-        tk.Button(new_win, text="选择", command=lambda: self.choose_folder_in_win(path_entry)).grid(row=0, column=2, padx=5, pady=5)
+        tk.Button(new_win, text=tr("keys.browse", "Browse"), command=lambda: self.choose_folder_in_win(path_entry)).grid(row=0, column=2, padx=5, pady=5)
 
-        tk.Label(new_win, text="文件名 (.ts):").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        tk.Label(new_win, text=tr("keys.file_name_ts", "File name (.ts):")).grid(row=1, column=0, padx=5, pady=5, sticky="w")
         file_entry = tk.Entry(new_win, width=40)
         file_entry.grid(row=1, column=1, padx=5, pady=5)
 
@@ -4529,7 +5457,7 @@ GUI 控件状态:
             folder = path_entry.get().strip()
             file_name = file_entry.get().strip()
             if not folder or not file_name:
-                messagebox.showwarning("警告", "请选择保存路径并输入文件名", parent=new_win)
+                messagebox.showwarning(tr("common.warning", "Warning"), tr("keys.select_path_and_name", "Please select a save path and enter a file name"), parent=new_win)
                 return
             if not file_name.lower().endswith(".ts"):
                 file_name += ".ts"
@@ -4546,7 +5474,7 @@ GUI 控件状态:
                 with open(full_path, "w", encoding="utf-8") as f:
                     f.write("")
             except Exception as e:
-                messagebox.showerror("错误", f"无法创建文件：{e}", parent=new_win)
+                messagebox.showerror(tr("common.error", "Error"), tr("keys.create_file_failed", "Cannot create file: {error}", error=e), parent=new_win)
                 return
             # 更新主窗口中的脚本路径文本框
             self.script_path_entry.delete(0, tk.END)
@@ -4571,13 +5499,13 @@ GUI 控件状态:
             # 调用保存脚本功能，将当前标签页信息保存到刚创建的文件中
             self.save_script()
 
-        tk.Button(new_win, text="保存", command=do_save).grid(row=2, column=0, columnspan=3, padx=5, pady=10)
+        tk.Button(new_win, text=tr("common.save", "Save"), command=do_save).grid(row=2, column=0, columnspan=3, padx=5, pady=10)
     
     def choose_folder_in_win(self, entry_widget):
         try:
             folder = self.root.tk.call('tk_chooseDirectory')
         except Exception:
-            folder = filedialog.askdirectory(title="选择文件夹")
+            folder = filedialog.askdirectory(title=tr("file.select_folder", "Select Folder"))
         if folder:
             entry_widget.delete(0, tk.END)
             entry_widget.insert(0, folder)
@@ -4599,8 +5527,7 @@ GUI 控件状态:
             cell = tk.Button(tab_frame, text="", anchor="w", justify="left", relief="groove")
             cell.grid(row=row, column=col, padx=1, pady=1, sticky="nsew")
             cell.custom_data = ""
-            cell.config(command=lambda c=cell: self.cell_send(c))
-            cell.bind("<Button-3>", lambda event, c=cell: self.show_cell_menu(event, c))
+            self._bind_cell(cell)
             # 如果当前索引在脚本中有定义，则更新按钮名称和文本
             if idx in button_info:
                 btn_name, btn_text = button_info[idx]
@@ -4620,10 +5547,309 @@ GUI 控件状态:
                 cell = tk.Button(tab_frame, text="", height=1, anchor="w", justify="left", relief="groove") #width=16 
                 cell.grid(row=i, column=j, padx=1, pady=1, sticky="nsew")  # 使用 sticky="nsew"
                 cell.custom_data = ""  # 存储多行待发送内容
-                # 左键点击：发送该按钮保存的多行内容
-                cell.config(command=lambda c=cell: self.cell_send(c))
-                # 右键绑定：弹出单元格菜单
-                cell.bind("<Button-3>", lambda event, c=cell: self.show_cell_menu(event, c))
+                self._bind_cell(cell)
+
+    # ------------------------------------------------ 按键拖动交换 / tab 拖动排序
+    DRAG_THRESHOLD = 5      # 按下后移动超过这么多像素才算拖动，避免点击时手抖
+    DRAG_GHOST_ALPHA = 0.6  # 跟随光标的虚影透明度
+
+    def _bind_cell(self, cell):
+        """给按键区的一个按钮绑定：左键点击发送、右键菜单、左键拖动交换。"""
+        cell.config(command=lambda c=cell: self.cell_send(c))
+        cell.bind("<Button-3>", lambda event, c=cell: self.show_cell_menu(event, c))
+        # add="+"：不覆盖 Button 自带的按下/松开行为
+        cell.bind("<ButtonPress-1>", lambda event, c=cell: self._cell_drag_press(event, c), add="+")
+        cell.bind("<B1-Motion>", self._cell_drag_motion, add="+")
+        cell.bind("<ButtonRelease-1>", self._cell_drag_release, add="+")
+
+    # ---------------- 虚影与公共状态
+    def _drag_passed_threshold(self, event):
+        d = self._drag
+        return (abs(event.x_root - d["x0"]) >= self.DRAG_THRESHOLD
+                or abs(event.y_root - d["y0"]) >= self.DRAG_THRESHOLD)
+
+    def _create_drag_ghost(self, text, width, height, **label_opts):
+        """创建跟随光标的半透明虚影（无边框的小窗口）。"""
+        ghost = tk.Toplevel(self.root)
+        ghost.overrideredirect(True)
+        try:
+            ghost.attributes("-alpha", self.DRAG_GHOST_ALPHA)
+            ghost.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        tk.Label(ghost, text=text, relief="groove", bd=2, **label_opts).pack(fill="both", expand=True)
+        ghost.geometry(f"{max(int(width), 1)}x{max(int(height), 1)}+-10000+-10000")
+        # 万一焦点落到虚影上，Esc 照样能取消
+        ghost.bind("<Escape>", self._drag_cancel)
+        return ghost
+
+    def _move_drag_ghost(self, x_root, y_root):
+        d = self._drag
+        ghost = d.get("ghost") if d else None
+        if ghost is None:
+            return
+        try:
+            ghost.geometry(f"+{x_root - d['off_x']}+{y_root - d['off_y']}")
+        except tk.TclError:
+            pass
+
+    def _end_drag(self):
+        """结束拖动：销毁虚影、恢复光标、清空状态。可以重复调用。"""
+        d = self._drag
+        self._drag = None
+        if not d:
+            return
+        ghost = d.get("ghost")
+        if ghost is not None:
+            try:
+                ghost.destroy()
+            except tk.TclError:
+                pass
+        widget = d.get("cursor_widget")
+        if widget is not None:
+            try:
+                widget.config(cursor=d.get("old_cursor", ""))
+            except tk.TclError:
+                pass
+
+    def _start_drag_visual(self, widget, ghost):
+        """进入拖动状态：显示虚影、改光标。"""
+        d = self._drag
+        d["active"] = True
+        d["ghost"] = ghost
+        try:
+            d["old_cursor"] = widget.cget("cursor")
+            widget.config(cursor="fleur")
+            d["cursor_widget"] = widget
+        except tk.TclError:
+            pass
+
+    def _drag_cancel(self, event=None):
+        """拖动中按 Esc：取消本次拖动，松手后什么都不做。"""
+        d = self._drag
+        if not d or not d["active"] or d["cancelled"]:
+            return
+        d["cancelled"] = True
+        ghost = d.get("ghost")
+        if ghost is not None:
+            try:
+                ghost.destroy()
+            except tk.TclError:
+                pass
+            d["ghost"] = None
+        return "break"
+
+    # ---------------- 按键拖动交换（同一个 tab 内）
+    def _cell_drag_press(self, event, cell):
+        self._end_drag()
+        self._drag = {
+            "kind": "cell", "source": cell,
+            "x0": event.x_root, "y0": event.y_root,
+            # 保持按下时光标在按钮里的相对位置，虚影看起来像把按钮拎起来
+            "off_x": event.x, "off_y": event.y,
+            "active": False, "cancelled": False, "ghost": None,
+        }
+
+    def _cell_drag_motion(self, event):
+        d = self._drag
+        if not d or d["kind"] != "cell" or d["cancelled"]:
+            return
+        if not d["active"]:
+            if not self._drag_passed_threshold(event):
+                return
+            src = d["source"]
+            try:
+                ghost = self._create_drag_ghost(
+                    src.cget("text"), src.winfo_width(), src.winfo_height(),
+                    fg=src.cget("fg"), bg=src.cget("bg"), font=src.cget("font"),
+                    anchor="w", justify="left")
+            except tk.TclError:
+                self._end_drag()
+                return
+            self._start_drag_visual(src, ghost)
+        self._move_drag_ghost(event.x_root, event.y_root)
+
+    def _cell_drag_release(self, event):
+        d = self._drag
+        if not d or d["kind"] != "cell":
+            return
+        was_active, cancelled, source = d["active"], d["cancelled"], d["source"]
+        # 先销毁虚影再找目标，否则 winfo_containing 可能拿到虚影窗口
+        self._end_drag()
+        if not was_active:
+            return  # 没拖动，就是普通点击，交给 Button 自己的 command
+
+        # 拖动过（包括取消）：如果松手又回到了源按钮上，Button 会执行 command，这里吞掉它。
+        # Button 的 command 在本回调之后同步执行，after_idle 再把标记清掉，不影响下一次点击。
+        self._suppress_cell_click = True
+        self.root.after_idle(self._clear_cell_click_suppress)
+        if cancelled:
+            return
+
+        try:
+            target = self.root.winfo_containing(event.x_root, event.y_root)
+        except (tk.TclError, KeyError):
+            target = None
+        if (target is None or target is source
+                or not isinstance(target, tk.Button)
+                or not hasattr(target, "custom_data")
+                or target.master is not source.master):   # 只在同一个 tab 内交换
+            return
+        # 放到松手事件处理完之后执行，弹窗不会让按钮卡在按下状态
+        self.root.after_idle(lambda: self._swap_cells(source, target))
+
+    def _clear_cell_click_suppress(self):
+        self._suppress_cell_click = False
+
+    def _cell_has_open_editor(self, cell):
+        win = self.cell_edit_windows.get(id(cell))
+        if win is None:
+            return False
+        try:
+            return bool(win.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def _swap_cells(self, a, b):
+        """交换两个按键的名称和多行内容。"""
+        try:
+            if not (a.winfo_exists() and b.winfo_exists()):
+                return
+            a_text, b_text = a.cget("text"), b.cget("text")
+        except tk.TclError:
+            return
+        a_data, b_data = a.custom_data or "", b.custom_data or ""
+        a_empty = not a_text.strip() and not a_data.strip()
+        b_empty = not b_text.strip() and not b_data.strip()
+        if a_empty and b_empty:
+            return  # 两边都是空按钮，不做任何操作
+        if self._cell_has_open_editor(a) or self._cell_has_open_editor(b):
+            messagebox.showwarning(
+                tr("common.warning", "Warning"),
+                tr("cell.swap_editor_open",
+                   "This button has an edit window open. Close the edit window first, then drag to swap."),
+                parent=self.root)
+            return
+        self._push_undo({"type": "cells", "items": [(a, a_text, a_data), (b, b_text, b_data)]})
+        a.config(text=b_text)
+        a.custom_data = b_data
+        b.config(text=a_text)
+        b.custom_data = a_data
+        self.script_modified = True
+
+    # ---------------- tab 拖动排序
+    def _notebook_tab_at(self, x, y):
+        """返回 notebook 坐标 (x, y) 处的 tab 索引，不在任何 tab 上时返回 None。"""
+        try:
+            # 直接调 Tcl：不在 tab 上时返回空字符串，Python 封装的 index() 会因此报错
+            v = self.notebook.tk.call(self.notebook._w, "index", f"@{int(x)},{int(y)}")
+        except tk.TclError:
+            return None
+        if v == "" or v is None:
+            return None
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _notebook_tab_span(self, idx, x, y):
+        """从 (x, y) 向左右逐像素扫描，得到第 idx 个 tab 的左右边界（含）。"""
+        width = self.notebook.winfo_width()
+        left = right = int(x)
+        while left > 0 and self._notebook_tab_at(left - 1, y) == idx:
+            left -= 1
+        while right < width - 1 and self._notebook_tab_at(right + 1, y) == idx:
+            right += 1
+        return left, right
+
+    def _notebook_header_height(self):
+        """标签栏的高度：当前页内容区的顶部（相对 notebook）。取不到时返回 0。"""
+        try:
+            page = self.notebook.nametowidget(self.notebook.select())
+            return max(0, page.winfo_rooty() - self.notebook.winfo_rooty())
+        except (tk.TclError, KeyError):
+            return 0
+
+    def _tab_drag_press(self, event):
+        self._end_drag()
+        idx = self._notebook_tab_at(event.x, event.y)
+        if idx is None:
+            return
+        tabs = self.notebook.tabs()
+        if idx >= len(tabs):
+            return
+        left, right = self._notebook_tab_span(idx, event.x, event.y)
+        height = self._notebook_header_height() or 24
+        self._drag = {
+            "kind": "tab", "source": tabs[idx],
+            "x0": event.x_root, "y0": event.y_root,
+            "off_x": event.x - left, "off_y": event.y,
+            "width": right - left + 1, "height": height,
+            "active": False, "cancelled": False, "ghost": None,
+        }
+
+    def _tab_drag_motion(self, event):
+        d = self._drag
+        if not d or d["kind"] != "tab" or d["cancelled"]:
+            return
+        if not d["active"]:
+            if not self._drag_passed_threshold(event):
+                return
+            # 虚影用选中 tab 的样式（两种主题下选中的 tab 都是白底黑字）
+            style = ttk.Style()
+            bg = style.lookup("TNotebook.Tab", "background", ("selected",)) or "#FFFFFF"
+            fg = style.lookup("TNotebook.Tab", "foreground", ("selected",)) or "black"
+            font = style.lookup("TNotebook.Tab", "font") or "TkDefaultFont"
+            try:
+                text = self.notebook.tab(d["source"], "text")
+                ghost = self._create_drag_ghost(text, d["width"], d["height"],
+                                                fg=fg, bg=bg, font=font)
+            except tk.TclError:
+                self._end_drag()
+                return
+            self._start_drag_visual(self.notebook, ghost)
+        self._move_drag_ghost(event.x_root, event.y_root)
+
+    def _tab_drag_release(self, event):
+        d = self._drag
+        if not d or d["kind"] != "tab":
+            return
+        was_active, cancelled, src = d["active"], d["cancelled"], d["source"]
+        self._end_drag()
+        if not was_active or cancelled:
+            return
+
+        tabs = list(self.notebook.tabs())
+        if src not in tabs:
+            return
+        header = self._notebook_header_height()
+        x, y = event.x, event.y
+        # 只认标签栏那一行，且不超出 notebook 的宽度
+        if header <= 0 or not (0 <= y < header) or not (0 <= x < self.notebook.winfo_width()):
+            return
+        row_y = header // 2   # 用标签栏中线判断，避免未选中的 tab 顶部留白造成误判
+        n = len(tabs)
+        s = tabs.index(src)
+        idx = self._notebook_tab_at(x, row_y)
+        if idx is not None:
+            left, right = self._notebook_tab_span(idx, x, row_y)
+            # 左半边插到目标前面，右半边插到目标后面
+            insert_at = idx if x < (left + right + 1) / 2 else idx + 1
+            if s < insert_at:
+                insert_at -= 1   # 源 tab 移走后，后面的索引整体前移
+        else:
+            # 不在 tab 上：只有在最后一个 tab 右边的空白处才算“移到最后”
+            probe = x - 1
+            while probe >= 0 and self._notebook_tab_at(probe, row_y) is None:
+                probe -= 1
+            if probe < 0 or self._notebook_tab_at(probe, row_y) != n - 1:
+                return
+            insert_at = n - 1
+        if insert_at == s:
+            return
+        self.notebook.insert(insert_at, src)
+        self.notebook.select(src)
+        self.script_modified = True
 
     def show_tab_menu(self, event):
         """
@@ -4689,19 +5915,9 @@ GUI 控件状态:
 
         cell = self.current_cell
         edit_win = tk.Toplevel(self.root)
-
-
-        
+        # 先隐藏，控件都建好、位置算好后再显示（见 _place_cell_edit_window），避免先在别处闪一下
+        edit_win.withdraw()
         edit_win.configure(bg=window_bg_color)
-        # 将编辑窗口放在屏幕正中心
-        edit_win.update_idletasks()
-        screen_width = edit_win.winfo_screenwidth()
-        screen_height = edit_win.winfo_screenheight()
-        window_width = edit_win.winfo_reqwidth()
-        window_height = edit_win.winfo_reqheight()
-        x = (screen_width // 2) - (window_width // 2)
-        y = (screen_height // 2) - (window_height // 2)
-        edit_win.geometry(f"+{x}+{y}")
 
         # 使用 grid 布局，让窗口随大小变化
         edit_win.columnconfigure(0, weight=1)
@@ -4724,6 +5940,11 @@ GUI 控件状态:
         )
         single_entry.grid(row=0, column=0, sticky="ew")
         single_entry.insert(tk.END, self.current_cell.cget("text"))
+        # 名称一改就刷新标题上的 *（见 _update_edit_title）
+        name_var = tk.StringVar(edit_win, value=single_entry.get())
+        single_entry.config(textvariable=name_var)
+        edit_win._name_var = name_var   # 保持引用，否则 StringVar 被回收后监听失效
+        name_var.trace_add("write", lambda *a, cid=cell_id: self.root.after_idle(self._update_edit_title, cid))
 
         # pin 按钮放在 single_entry 右侧
         pin_button = tk.Button(row0_frame, text="📍", width=2,
@@ -4735,7 +5956,7 @@ GUI 控件状态:
         # 获取单行文本框中的内容，设置为窗口标题
         current_single_line_text = single_entry.get()
         if current_single_line_text == '':
-            cell_title = "未命名"
+            cell_title = tr("keys.untitled", "Untitled")
         else:
             cell_title = current_single_line_text
         edit_win.title(cell_title)
@@ -4788,6 +6009,8 @@ GUI 控件状态:
 
         # 3. 绑定 <<Modified>> 事件
         multi_text.bind("<<Modified>>", _highlight_comments)
+        # 内容一改就刷新标题上的 *（_highlight_comments 每次都会复位 modified 标记，所以每次修改都会触发）
+        multi_text.bind("<<Modified>>", lambda e, cid=cell_id: self.root.after_idle(self._update_edit_title, cid), add="+")
 
         # 每次按键或删除后插入撤销分隔，确保每次撤销只回退一个字符操作
         def _on_multi_edit_keyrelease(event):
@@ -4912,6 +6135,34 @@ GUI 控件状态:
             old_data = cell.custom_data
             new_text = single_entry.get()
             new_data = multi_text.get("1.0", tk.END).strip()
+            info = self.cell_edit_info.get(cell_id)
+            if info is not None and info["ext"]:
+                # 编辑期间 ts 文件里这个按键被改了：让用户选保留哪个版本
+                ts_now = (old_text, (old_data or "").strip())
+                if ts_now != info["base"] and ts_now != (new_text, new_data):
+                    conflict = {"local": (new_text, new_data), "ts": ts_now, "idx": self._cell_index(cell),
+                                "tab": self.notebook.tab(str(cell.master), "text") if str(cell.master) in self.notebook.tabs() else ""}
+                    choice, edited = self._conflict_button_dialog(conflict, 1, 1, allow_all=False, parent=edit_win)
+                    if choice == "cancel":
+                        return
+                    if choice == "ts":
+                        single_entry.delete(0, tk.END)
+                        single_entry.insert(0, ts_now[0])
+                        multi_text.delete("1.0", tk.END)
+                        multi_text.insert("1.0", ts_now[1])
+                        multi_text.edit_reset()
+                        new_text, new_data = ts_now
+                    else:
+                        new_text, new_data = edited if edited is not None else ("", "")
+                        single_entry.delete(0, tk.END)
+                        single_entry.insert(0, new_text)
+                        multi_text.delete("1.0", tk.END)
+                        multi_text.insert("1.0", new_data)
+                info["ext"] = False
+            if info is not None:
+                info["base"] = (new_text, new_data)
+                if info.get("notice") is not None:
+                    info["notice"].grid_remove()
             
             # 只有内容真正改变时才标记
             if old_text != new_text or old_data != new_data:
@@ -4919,7 +6170,7 @@ GUI 控件状态:
                 
             cell.config(text=new_text)
             cell.custom_data = new_data
-            edit_win.title(new_text)
+            self._update_edit_title(cell_id)
             if close_after:
                 edit_win.destroy()
         btn_send_row = tk.Button(left_frame, text="Send(F1)", command=send_current_row,bg=btn_bg_color, fg=btn_fg_color,activebackground=btn_bg_color, activeforeground=btn_fg_color)
@@ -4955,21 +6206,92 @@ GUI 控件状态:
         # ——— 为 multi_text 增加右键菜单 ———
         def show_context_menu(event):
             context_menu = tk.Menu(multi_text, tearoff=0)
-            context_menu.add_command(label="剪切", command=lambda: multi_text.event_generate("<<Cut>>"))
-            context_menu.add_command(label="复制", command=lambda: multi_text.event_generate("<<Copy>>"))
-            context_menu.add_command(label="粘贴", command=lambda: multi_text.event_generate("<<Paste>>"))
-            context_menu.add_command(label="删除", command=lambda: multi_text.delete("sel.first", "sel.last") if multi_text.tag_ranges("sel") else None)
+            context_menu.add_command(label=tr("main.cut", "Cut"), command=lambda: multi_text.event_generate("<<Cut>>"))
+            context_menu.add_command(label=tr("main.copy", "Copy"), command=lambda: multi_text.event_generate("<<Copy>>"))
+            context_menu.add_command(label=tr("main.paste", "Paste"), command=lambda: multi_text.event_generate("<<Paste>>"))
+            context_menu.add_command(label=tr("main.delete", "Delete"), command=lambda: multi_text.delete("sel.first", "sel.last") if multi_text.tag_ranges("sel") else None)
             context_menu.add_separator()
-            context_menu.add_command(label="全选", command=lambda: multi_text.tag_add("sel", "1.0", "end"))
+            context_menu.add_command(label=tr("main.select_all", "Select All"), command=lambda: multi_text.tag_add("sel", "1.0", "end"))
             context_menu.tk_popup(event.x_root, event.y_root)
 
         multi_text.bind("<Button-3>", show_context_menu)
 
+        # 自动同步的提示（ts 文件里这个按键被改了），平时隐藏
+        notice_label = tk.Label(edit_win, text="", anchor="w", justify="left", bg=window_bg_color, wraplength=520)
+        notice_label.grid(row=3, column=0, padx=10, pady=(0, 8), sticky="ew")
+        notice_label.grid_remove()
+
         # 在创建编辑窗口后,将其添加到字典中
         self.cell_edit_windows[cell_id] = edit_win
+        # 记下编辑窗口的控件和打开时的内容，自动同步时用来刷新或判断是否正在修改
+        self.cell_edit_info[cell_id] = {
+            "cell": cell, "win": edit_win, "entry": single_entry, "text": multi_text, "notice": notice_label,
+            "base": (cell.cget("text"), (cell.custom_data or "").strip()), "ext": False,
+        }
+
+        def _on_edit_destroy(event, win=edit_win, cid=cell_id):
+            # Save & close 直接 destroy 窗口时也清掉记录
+            if event.widget is win:
+                info = self.cell_edit_info.get(cid)
+                if info is not None and info["win"] is win:
+                    self.cell_edit_info.pop(cid, None)
+        edit_win.bind("<Destroy>", _on_edit_destroy, add="+")
         
         # 在窗口关闭时从字典中移除
         edit_win.protocol("WM_DELETE_WINDOW", lambda: self.on_edit_window_close(cell_id))
+
+        used_title = self._place_cell_edit_window(edit_win)
+        edit_win.deiconify()
+        # 显示后量一下编辑窗口自己的标题栏高度，和估计的不一样就再放一次
+        edit_win.update_idletasks()
+        try:
+            measured = edit_win.winfo_rooty() - edit_win.winfo_y()
+        except tk.TclError:
+            measured = 0
+        if measured > 0 and measured != used_title:
+            self._place_cell_edit_window(edit_win, measured)
+        edit_win.focus_set()
+
+    CELL_EDIT_MARGIN_Y = 30      # 编辑窗口上下各比主窗口缩进多少像素
+    CELL_EDIT_MARGIN_RIGHT = 30  # 编辑窗口右边比主窗口右边往左缩进多少像素
+
+    def _place_cell_edit_window(self, win, edit_title=None):
+        """编辑窗口：垂直方向在主窗口中间、高度比主窗口小一点；右边对齐主窗口右边再往左一点；宽度不变。
+        edit_title：编辑窗口标题栏的高度（已显示后量到的）；不给就估算。返回用到的标题栏高度。"""
+        win.update_idletasks()
+        root = self.root
+        try:
+            rx, ry = root.winfo_rootx(), root.winfo_rooty()      # 主窗口内容区的左上角
+            rw, rh = root.winfo_width(), root.winfo_height()
+            outer_top = root.winfo_y()                            # 主窗口外框（含标题栏、菜单栏）的顶部
+        except tk.TclError:
+            return edit_title
+        if edit_title is None:
+            # 主窗口的标题栏 + 菜单栏；编辑窗口没有菜单栏，减掉菜单栏的高度
+            edit_title = max(0, ry - outer_top)
+            if sys.platform == "win32" and str(root.cget("menu") if "menu" in root.keys() else ""):
+                try:
+                    import ctypes
+                    edit_title = max(0, edit_title - ctypes.windll.user32.GetSystemMetrics(15))  # SM_CYMENU
+                except Exception:
+                    pass
+        outer_bottom = ry + rh
+        width = win.winfo_reqwidth()
+        # 整个编辑窗口（含标题栏）比主窗口（含标题栏）上下各小 CELL_EDIT_MARGIN_Y
+        y = outer_top + self.CELL_EDIT_MARGIN_Y
+        height = max(200, outer_bottom - self.CELL_EDIT_MARGIN_Y - y - edit_title)
+        x = rx + rw - self.CELL_EDIT_MARGIN_RIGHT - width
+        title_h = edit_title
+        # 不超出主窗口所在屏幕的工作区（不压到任务栏、不跑到屏幕外）
+        area = _monitor_work_area(rx + rw // 2, ry + rh // 2)
+        if area:
+            left, top, right, bottom = area
+            width = min(width, right - left)
+            height = min(height, bottom - top - title_h)
+            x = max(left, min(x, right - width))
+            y = max(top, min(y, bottom - title_h - height))
+        win.geometry(f"{width}x{height}+{x}+{y}")
+        return edit_title
 
     def toggle_pin(self, cell_id, window, pin_button):
         """切换窗口置顶状态"""
@@ -4985,6 +6307,7 @@ GUI 控件状态:
     
     def on_edit_window_close(self, cell_id):
         """当编辑窗口关闭时,从字典中移除"""
+        self.cell_edit_info.pop(cell_id, None)
         if cell_id in self.cell_edit_windows:
             edit_win = self.cell_edit_windows[cell_id]
             edit_win.attributes('-topmost', False)  # 先取消置顶
@@ -4996,14 +6319,14 @@ GUI 控件状态:
         try:
             visa_res = self.rm.open_resource(address, access_mode=AccessModes.shared_lock, open_timeout=3000)
             self.psu = VisaComm(visa_res)
-            self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA 初始化成功: {address}\n"))
+            self.tk_safe(lambda: self.text_area.insert(tk.END, "√ " + tr("visa.init_ok", "VISA initialized: {address}", address=address) + "\n"))
         except Exception as e:
-            self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA 初始化失败: {e}\n"))
+            self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.init_failed", "VISA init failed: {error}", error=e) + "\n"))
         self.tk_safe(lambda: self._auto_scroll())
 
     def _script_visa_query(self, cmd):
         if not self.psu:
-            self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
+            self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.not_initialized", "Please use visa_init to initialize the device first") + "\n"))
             self.tk_safe(lambda: self._auto_scroll())
             return None
         try:
@@ -5012,25 +6335,25 @@ GUI 控件状态:
             self.tk_safe(lambda: self._auto_scroll())
             return resp
         except Exception as e:
-            self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA QUERY 错误: {e}\n"))
+            self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.query_error", "VISA QUERY error: {error}", error=e) + "\n"))
             self.tk_safe(lambda: self._auto_scroll())
             return None
 
     def _script_visa_write(self, cmd):
         if not self.psu:
-            self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
+            self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.not_initialized", "Please use visa_init to initialize the device first") + "\n"))
             self.tk_safe(lambda: self._auto_scroll())
             return
         try:
             self.psu.write(cmd)
             self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA WRITE: {cmd}\n"))
         except Exception as e:
-            self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA WRITE 错误: {e}\n"))
+            self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.write_error", "VISA WRITE error: {error}", error=e) + "\n"))
         self.tk_safe(lambda: self._auto_scroll())
 
     def _script_visa_read(self):
         if not self.psu:
-            self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
+            self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.not_initialized", "Please use visa_init to initialize the device first") + "\n"))
             self.tk_safe(lambda: self._auto_scroll())
             return None
         try:
@@ -5039,7 +6362,7 @@ GUI 控件状态:
             self.tk_safe(lambda: self._auto_scroll())
             return resp
         except Exception as e:
-            self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA READ 错误: {e}\n"))
+            self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.read_error", "VISA READ error: {error}", error=e) + "\n"))
             self.tk_safe(lambda: self._auto_scroll())
             return None
 
@@ -5114,18 +6437,18 @@ GUI 控件状态:
                 try:
                     visa_res = self.rm.open_resource(addr, access_mode=AccessModes.shared_lock, open_timeout=3000)
                     self.psu = VisaComm(visa_res)
-                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA 初始化成功: {addr}\n"))
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, "√ " + tr("visa.init_ok", "VISA initialized: {address}", address=addr) + "\n"))
                 except Exception as e:
-                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA 初始化失败: {e}\n"))
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.init_failed", "VISA init failed: {error}", error=e) + "\n"))
             else:
-                self.tk_safe(lambda: self.text_area.insert(tk.END, "× visa_init 格式错误，应为 visa_init(ADDRESS)\n"))
+                self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.init_format_error", "visa_init format error, expected visa_init(ADDRESS)") + "\n"))
             self.tk_safe(lambda: self._auto_scroll())
             return True
         
         # visa_query(command)
         if low.startswith("visa_query"):
             if not self.psu:
-                self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
+                self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.not_initialized", "Please use visa_init to initialize the device first") + "\n"))
             else:
                 cmd = _parse_visa_call("visa_query", command)
                 if cmd is not None:
@@ -5133,16 +6456,16 @@ GUI 控件状态:
                         resp = self.psu.query(cmd)
                         self.tk_safe(lambda: self.text_area.insert(tk.END, f">>> VISA QUERY: {cmd}\n{resp}\n"))
                     except Exception as e:
-                        self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA QUERY 错误: {e}\n"))
+                        self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.query_error", "VISA QUERY error: {error}", error=e) + "\n"))
                 else:
-                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"× visa_query 格式错误，应为 visa_query(COMMAND)，收到: {command!r}\n"))
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.query_format_error", "visa_query format error, expected visa_query(COMMAND), got: {command!r}", command=command) + "\n"))
             self.tk_safe(lambda: self._auto_scroll())
             return True
         
         # visa_write(command)
         if low.startswith("visa_write"):
             if not self.psu:
-                self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
+                self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.not_initialized", "Please use visa_init to initialize the device first") + "\n"))
             else:
                 cmd = _parse_visa_call("visa_write", command)
                 if cmd is not None:
@@ -5150,22 +6473,22 @@ GUI 控件状态:
                         self.psu.write(cmd)
                         self.tk_safe(lambda: self.text_area.insert(tk.END, f"√ VISA WRITE: {cmd}\n"))
                     except Exception as e:
-                        self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA WRITE 错误: {e}\n"))
+                        self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.write_error", "VISA WRITE error: {error}", error=e) + "\n"))
                 else:
-                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"× visa_write 格式错误，应为 visa_write(COMMAND)，收到: {command!r}\n"))
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.write_format_error", "visa_write format error, expected visa_write(COMMAND), got: {command!r}", command=command) + "\n"))
             self.tk_safe(lambda: self._auto_scroll())
             return True
         
         # visa_read()
         if low.startswith("visa_read"):
             if not self.psu:
-                self.tk_safe(lambda: self.text_area.insert(tk.END, "× 请先使用 visa_init 初始化设备\n"))
+                self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.not_initialized", "Please use visa_init to initialize the device first") + "\n"))
             else:
                 try:
                     resp = self.psu.read()
                     self.tk_safe(lambda: self.text_area.insert(tk.END, f">>> VISA READ:\n{resp}\n"))
                 except Exception as e:
-                    self.tk_safe(lambda: self.text_area.insert(tk.END, f"× VISA READ 错误: {e}\n"))
+                    self.tk_safe(lambda: self.text_area.insert(tk.END, "× " + tr("visa.read_error", "VISA READ error: {error}", error=e) + "\n"))
             self.tk_safe(lambda: self._auto_scroll())
             return True
         
@@ -5269,7 +6592,7 @@ GUI 控件状态:
                     if any(term in self.button_send_check_terminal_new_text for term in self.terminal_strs):
                         self._send_next_command_with_stop(all_lines, index + 1, on_complete)
                     elif time.time() - start_time >= timeout:
-                        self.text_area.insert(tk.END, "串口未收到设置的等待符号，发送终止，请设置或去掉等待符号。", "red")
+                        self.text_area.insert(tk.END, tr("send.wait_symbol_timeout", "Wait symbol not received from the port. Sending stopped. Set or clear the wait symbol."), "red")
                         self._auto_scroll()
                         on_complete()
                     else:
@@ -5383,7 +6706,7 @@ GUI 控件状态:
                         self._send_next_command(all_lines, index + 1)
                     elif time.time() - start_time >= timeout:
                         # 超时未检测到终止符，在主窗口中显示超时，直接终止函数执行
-                        self.text_area.insert(tk.END, "串口未收到设置的等待符号，发送终止，请设置或去掉等待符号。", "red")
+                        self.text_area.insert(tk.END, tr("send.wait_symbol_timeout", "Wait symbol not received from the port. Sending stopped. Set or clear the wait symbol."), "red")
                         self._auto_scroll()
                         return
                     else:
@@ -5401,7 +6724,10 @@ GUI 控件状态:
     def cell_clear(self):
         if self.current_cell:
             # 检查是否有内容需要清除
-            if self.current_cell.cget("text") or self.current_cell.custom_data:
+            old_text = self.current_cell.cget("text")
+            old_data = self.current_cell.custom_data
+            if old_text or old_data:
+                self._push_undo({"type": "cells", "items": [(self.current_cell, old_text, old_data)]})
                 self.script_modified = True
             self.current_cell.config(text="")
             self.current_cell.custom_data = ""
@@ -5415,12 +6741,17 @@ GUI 控件状态:
             new_data = self.cell_clipboard[1]
             
             if old_text != new_text or old_data != new_data:
+                self._push_undo({"type": "cells", "items": [(self.current_cell, old_text, old_data)]})
                 self.script_modified = True
                 
             self.current_cell.config(text=new_text)
             self.current_cell.custom_data = new_data
 
     def cell_send(self, cell):
+        # 刚刚拖动过（拖出去又回到原按钮松手、或按 Esc 取消），这次松手不发送
+        if self._suppress_cell_click:
+            self._suppress_cell_click = False
+            return
         if self.serial_conn and cell.custom_data:
             self.send_all(cell.custom_data)  # 传递 cell.custom_data
 
@@ -5444,7 +6775,7 @@ GUI 控件状态:
         ):
             # 将SSH状态色块置为灰色
             self.tk_safe(lambda: self.ssh_status_canvas.config(bg="gray"))
-            self.tk_safe(lambda: messagebox.showwarning("警告", "串口或 SSH 未连接", parent=self.root))
+            self.tk_safe(lambda: messagebox.showwarning(tr("common.warning", "Warning"), tr("send.not_connected", "Serial port or SSH not connected"), parent=self.root))
 
             return
         key = data.strip().lower()
@@ -5470,7 +6801,7 @@ GUI 控件状态:
                         ))
                     return
             except Exception as e:
-                messagebox.showerror("HEX 转义形式错误", f"{e}", parent=self.root)
+                messagebox.showerror(tr("send.hex_format_error", "Invalid HEX Escape Format"), f"{e}", parent=self.root)
 
                 return
 
@@ -5487,7 +6818,7 @@ GUI 控件状态:
             try:
                 self.ssh_channel.send(raw)
             except Exception as e:
-                self.tk_safe(lambda: messagebox.showerror("SSH 发送失败", str(e), parent=self.root))
+                self.tk_safe(lambda: messagebox.showerror(tr("send.ssh_send_failed", "SSH Send Failed"), str(e), parent=self.root))
 
                 return
         else:
@@ -5509,23 +6840,818 @@ GUI 控件状态:
         new_title = f"Tab {len([t for t in self.notebook.tabs() if self.notebook.tab(t, 'text') != '']) + 1}"
         self.add_tab(new_title)
         self.notebook.select(self.notebook.tabs()[-1])
+        self.script_modified = True
 
     def rename_current_tab(self):
         current = self.notebook.select()
         if current:
             current_name = self.notebook.tab(current, "text")
-            new_name = simpledialog.askstring("重命名", "请输入新名称：",initialvalue=current_name, parent=self.root)
-            if new_name:
+            new_name = simpledialog.askstring(tr("keys.rename_title", "Rename"), tr("keys.rename_prompt", "Enter a new name:"),initialvalue=current_name, parent=self.root)
+            if new_name and new_name != current_name:
                 self.notebook.tab(current, text=new_name)
+                self.script_modified = True
 
     def delete_current_tab(self):
+        """删除当前标签页：全是空按键时直接删；有内容时先确认。删除后可以 Ctrl+Z 撤销。"""
         current = self.notebook.select()
-        if current:
-            self.notebook.forget(current)
+        if not current:
+            return
+        frame = self.notebook.nametowidget(current)
+        name = self.notebook.tab(current, "text")
+        cells = self._frame_cells(frame)
+        if any(self._cell_has_open_editor(c) for c in cells):
+            messagebox.showwarning(
+                tr("common.warning", "Warning"),
+                tr("tab.delete_editor_open",
+                   "A button in this tab has an edit window open. Close the edit window first, then delete the tab."),
+                parent=self.root)
+            return
+        has_content = any(c.cget("text").strip() or (c.custom_data or "").strip() for c in cells)
+        if has_content and not messagebox.askyesno(
+                tr("common.confirm", "Confirm"),
+                tr("tab.delete_confirm",
+                   "Tab \"{name}\" contains buttons with content. Delete it?\n\nYou can press Ctrl+Z to undo.",
+                   name=name),
+                parent=self.root):
+            return
+        index = self.notebook.index(current)
+        self.notebook.forget(current)   # 只移出界面不销毁，撤销时放回去
+        self._push_undo({"type": "tab_delete", "frame": frame, "index": index, "text": name})
+        self.script_modified = True
+
+    def duplicate_current_tab(self):
+        """复制当前标签页，新标签页放在它右边，名称后加 (2)、(3)…"""
+        current = self.notebook.select()
+        if not current:
+            return
+        src_frame = self.notebook.nametowidget(current)
+        name = self.notebook.tab(current, "text")
+        button_info = {}
+        for cell in self._frame_cells(src_frame):
+            text, data = cell.cget("text"), cell.custom_data or ""
+            if text or data:
+                gi = cell.grid_info()
+                button_info[int(gi.get("row", 0)) * 6 + int(gi.get("column", 0))] = (text, data)
+        existing = {self.notebook.tab(t, "text") for t in self.notebook.tabs()}
+        n = 2
+        while f"{name} ({n})" in existing:
+            n += 1
+        self.create_tab_from_script(f"{name} ({n})", button_info)
+        new_id = self.notebook.tabs()[-1]
+        new_frame = self.notebook.nametowidget(new_id)
+        # 沿用原标签页的配色（深色/浅色主题）
+        try:
+            new_frame.configure(background=src_frame.cget("background"))
+            src_cells = self._frame_cells(src_frame)
+            if src_cells:
+                ref = src_cells[0]
+                colors = {k: ref.cget(k) for k in ("background", "foreground",
+                                                   "activebackground", "activeforeground")}
+                for cell in self._frame_cells(new_frame):
+                    cell.configure(**colors)
+        except tk.TclError:
+            pass
+        self.notebook.insert(self.notebook.index(current) + 1, new_id)
+        self.notebook.select(new_id)
+        self.script_modified = True
+
+    # ---------------- 按键区撤销（Ctrl+Z）
+    UNDO_LIMIT = 30
+
+    @staticmethod
+    def _frame_cells(frame):
+        """标签页里的所有按键。"""
+        return [c for c in frame.winfo_children()
+                if isinstance(c, tk.Button) and hasattr(c, "custom_data")]
+
+    @staticmethod
+    def _widget_alive(widget):
+        try:
+            return bool(widget.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def _close_edit_window(self, cell_id):
+        """关闭一个按键编辑窗口；窗口已经不在时只清掉记录。"""
+        try:
+            self.on_edit_window_close(cell_id)
+        except tk.TclError:
+            self.cell_edit_windows.pop(cell_id, None)
+
+    def _close_edit_windows_in(self, frame):
+        for cell in self._frame_cells(frame):
+            if id(cell) in self.cell_edit_windows:
+                self._close_edit_window(id(cell))
+
+    def _destroy_tab_frame(self, frame):
+        """彻底销毁一个标签页（先关掉其中按键的编辑窗口）。"""
+        if not self._widget_alive(frame):
+            return
+        self._close_edit_windows_in(frame)
+        try:
+            frame.destroy()
+        except tk.TclError:
+            pass
+
+    def _push_undo(self, record):
+        self._key_undo.append(record)
+        while len(self._key_undo) > self.UNDO_LIMIT:
+            self._discard_undo_record(self._key_undo.pop(0))
+        # 点按键不会移动焦点；把焦点交给主窗口，紧接着按 Ctrl+Z 才会撤销按键操作，
+        # 而不是撤销输入框里的文字
+        try:
+            self.root.focus_set()
+        except tk.TclError:
+            pass
+
+    def _discard_undo_record(self, record):
+        if record["type"] == "tab_delete":
+            self._destroy_tab_frame(record["frame"])
+
+    def _clear_key_undo(self):
+        for record in self._key_undo:
+            self._discard_undo_record(record)
+        self._key_undo = []
+
+    def _on_key_undo(self, event=None):
+        widget = getattr(event, "widget", None)
+        # 焦点在输入框、文本框里时不处理，让它们撤销自己的文字
+        if not isinstance(widget, tk.Misc) or isinstance(
+                widget, (tk.Entry, tk.Text, tk.Spinbox, ttk.Entry)):
+            return
+        self.key_undo()
+        return "break"
+
+    def key_undo(self):
+        """撤销最近一次交换 / 清空 / 粘贴 / 删除标签页。"""
+        while self._key_undo:
+            record = self._key_undo[-1]
+            if record["type"] == "cells":
+                items = [it for it in record["items"] if self._widget_alive(it[0])]
+                if not items:
+                    self._key_undo.pop()
+                    continue
+                if any(self._cell_has_open_editor(cell) for cell, _, _ in items):
+                    messagebox.showwarning(
+                        tr("common.warning", "Warning"),
+                        tr("cell.undo_editor_open",
+                           "This button has an edit window open. Close the edit window first, then undo."),
+                        parent=self.root)
+                    return
+                self._key_undo.pop()
+                for cell, text, data in items:
+                    cell.config(text=text)
+                    cell.custom_data = data
+                # 切到被撤销的按键所在的标签页
+                page = items[0][0].master
+                if str(page) in self.notebook.tabs():
+                    self.notebook.select(page)
+            elif record["type"] == "tab_delete":
+                self._key_undo.pop()
+                frame = record["frame"]
+                if not self._widget_alive(frame):
+                    continue
+                if record["index"] < len(self.notebook.tabs()):
+                    self.notebook.insert(record["index"], frame, text=record["text"])
+                else:
+                    self.notebook.add(frame, text=record["text"])
+                self.notebook.select(frame)
+            else:
+                self._key_undo.pop()
+                continue
+            self.script_modified = True
+            return
+
+    # ================================================================
+    # 按键文件自动同步
+    # 多个 TermPlus 打开同一个 ts 文件时：本地一改就自动保存（保存时和 ts 文件逐个按键合并），
+    # 别的窗口改了 ts 文件就自动加载进来。读写都在后台线程 KeyFileSyncWorker 里做。
+    # ================================================================
+    SYNC_DEBOUNCE_MS = 300               # 连续操作合并成一次保存
+    SYNC_BIG_CONFLICTS = 5               # 冲突超过这个数，先弹总结窗口
+    SYNC_OFFLINE_REMIND_MS = 5 * 60 * 1000
+
+    def _sync_path(self):
+        if self.current_script_path and self.current_script_file:
+            return os.path.join(self.current_script_path, self.current_script_file)
+        return None
+
+    @staticmethod
+    def _same_path(a, b):
+        if not a or not b:
+            return False
+        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+    def _notebook_frames(self):
+        return [self.notebook.nametowidget(t) for t in self.notebook.tabs()]
+
+    @staticmethod
+    def _cell_index(cell):
+        gi = cell.grid_info()
+        return int(gi.get("row", 0)) * 6 + int(gi.get("column", 0))
+
+    @staticmethod
+    def _cell_value(cell):
+        """按键在文件里的样子：(名称, 去掉首尾空白的内容)；名称为空白的按键不会写进文件，记为 None。"""
+        name = cell.cget("text")
+        if not name.strip():
+            return None
+        return (name, (cell.custom_data or "").strip())
+
+    def _sync_set_modified(self, value):
+        """同步引擎自己设置修改标记，不触发新一轮保存。"""
+        self._sync_applying = True
+        try:
+            self.script_modified = value
+        finally:
+            self._sync_applying = False
+
+    def _sync_set_base(self, tabs, frames):
+        """记下新的基准，并记下界面上每个标签页对应基准里的第几个。"""
+        self._sync_base_tabs = [(n, dict(b)) for n, b in tabs]
+        self._sync_base_canon = ts_serialize(self._sync_base_tabs)
+        listed = set()
+        for i, frame in enumerate(frames):
+            if self._widget_alive(frame):
+                frame._sync_base = i
+                listed.add(str(frame))
+        for frame in self._notebook_frames():
+            if str(frame) not in listed:
+                frame._sync_base = None
+        for record in self._key_undo:
+            if record["type"] == "tab_delete" and self._widget_alive(record["frame"]):
+                record["frame"]._sync_base = None   # 撤销删除放回来的，算本地新建
+
+    def _sync_reset_base_from_content(self, content, path=None):
+        """加载或手动保存之后：以 content 为基准，界面上的标签页按顺序对应。"""
+        frames = self._notebook_frames()
+        for frame in frames:
+            frame._sync_pending = set()
+        self._sync_set_base(ts_parse(content), frames)
+        path = path or self._sync_path()
+        try:
+            self._sync_last_fp = ts_fingerprint(path) if path else None
+        except OSError:
+            self._sync_last_fp = None
+
+    def _sync_snapshot(self):
+        local = []
+        for frame in self._notebook_frames():
+            buttons, editors = {}, False
+            for cell in self._frame_cells(frame):
+                v = self._cell_value(cell)
+                if v is not None:
+                    buttons[self._cell_index(cell)] = v
+                editors = editors or self._cell_has_open_editor(cell)
+            local.append({"name": self.notebook.tab(str(frame), "text"), "buttons": buttons,
+                          "base": getattr(frame, "_sync_base", None), "editors": editors,
+                          "pending": set(getattr(frame, "_sync_pending", set())), "ref": frame})
+        return local
+
+    # ---------------- 开关、调度
+    def _on_sync_toggle(self, quiet=False):
+        if self.key_sync_var.get():
+            if not self._sync_path() or self._sync_base_canon is None:
+                self.key_sync_var.set(False)
+                if not quiet:
+                    messagebox.showwarning(tr("common.warning", "Warning"),
+                                           tr("keys.sync_need_file", "Load a key file first, then turn on Auto Sync."),
+                                           parent=self.root)
+                return
+            self._sync_enabled = True
+            if self._sync_worker is None:
+                self._sync_worker = KeyFileSyncWorker(self)
+                self._sync_worker.start()
+            self._sync_kick()
+        else:
+            self._sync_stop()
+
+    def _sync_stop(self):
+        self._sync_enabled = False
+        if self._sync_worker is not None:
+            self._sync_worker.stop()
+            self._sync_worker = None
+        for attr in ("_sync_after_id", "_sync_offline_timer"):
+            aid = getattr(self, attr)
+            if aid:
+                try:
+                    self.root.after_cancel(aid)
+                except tk.TclError:
+                    pass
+                setattr(self, attr, None)
+        self._sync_busy = self._sync_again = False
+        self._sync_deferred = None
+        self._sync_offline_since = None
+
+    def _sync_schedule(self):
+        if self._sync_after_id:
+            try:
+                self.root.after_cancel(self._sync_after_id)
+            except tk.TclError:
+                pass
+        self._sync_after_id = self.root.after(self.SYNC_DEBOUNCE_MS, self._sync_kick)
+
+    def _sync_kick(self):
+        self._sync_after_id = None
+        path = self._sync_path()
+        if not self._sync_enabled or not path or self._sync_worker is None:
+            return
+        if self._sync_busy:
+            self._sync_again = True
+            return
+        self._sync_busy = True
+        self._sync_job_rev = self._sync_local_rev
+        self._sync_worker.post(("read", path))
+
+    def _sync_finish(self, ok=True, error=None):
+        self._sync_busy = False
+        if self._sync_manual:
+            self._sync_manual = False
+            if ok:
+                messagebox.showinfo(tr("common.info", "Info"), tr("file.script_saved", "Script saved successfully"), parent=self.root)
+            else:
+                messagebox.showerror(tr("common.error", "Error"),
+                                     tr("file.save_script_failed", "Failed to save script: {error}", error=error),
+                                     parent=self.root)
+        if self._sync_deferred is not None and self._sync_enabled:
+            path, text, enc = self._sync_deferred
+            self._sync_deferred = None
+            self._sync_busy = True
+            self._sync_process_disk(path, text, enc)
+        elif self._sync_again:
+            self._sync_again = False
+            self._sync_kick()
+
+    # ---------------- 后台线程的结果
+    def _sync_on_result(self, kind, path, *rest):
+        if kind in ("backup_done", "backup_failed"):
+            if kind == "backup_done":
+                self._sync_log(tr("sync.backup_saved", "[Auto Sync] Backup saved: {path}", path=rest[0]), "blue")
+            else:
+                self._sync_log(tr("sync.backup_failed", "[Auto Sync] Failed to save the backup: {error}", error=rest[0]))
+            return
+        if not self._sync_enabled:
+            return
+        if not self._same_path(path, self._sync_path()):
+            # 期间加载了别的文件，旧文件的结果作废
+            if kind in ("written", "error", "busy") or (kind == "disk" and rest[2]):
+                self._sync_busy = False
+            return
+        if kind == "offline":
+            self._sync_offline_since = time.time()
+            self._sync_log(tr("sync.offline",
+                              "[Auto Sync] Cannot access the key file: {path}\nLocal changes are not synced yet. ({error})",
+                              path=path, error=rest[0]))
+            self._sync_offline_timer = self.root.after(self.SYNC_OFFLINE_REMIND_MS, self._sync_offline_tick)
+        elif kind == "online":
+            if self._sync_offline_since is not None:
+                self._sync_log(tr("sync.online", "[Auto Sync] The key file is reachable again. Syncing."), "green")
+            self._sync_offline_since = None
+            if self._sync_offline_timer:
+                self.root.after_cancel(self._sync_offline_timer)
+                self._sync_offline_timer = None
+            if self.script_modified:
+                self._sync_kick()
+        elif kind == "disk":
+            text, enc, forced = rest
+            if self._sync_busy and not forced:
+                self._sync_deferred = (path, text, enc)
+                return
+            self._sync_busy = True
+            self._sync_process_disk(path, text, enc)
+        elif kind == "written":
+            content, backup_path = rest
+            if backup_path:
+                self._sync_log(tr("sync.backup_saved", "[Auto Sync] Backup saved: {path}", path=backup_path), "blue")
+            self._sync_on_written(content)
+            self._sync_finish(True)
+        elif kind == "error":
+            error, connectivity = rest
+            if not connectivity:
+                self._sync_log(tr("sync.save_failed", "[Auto Sync] Failed to save the key file: {error}", error=error))
+            self._sync_finish(False, error)
+        elif kind == "busy":
+            self._sync_busy = False
+            self._sync_again = False
+            self.root.after(1000, self._sync_kick)
+
+    def _sync_offline_tick(self):
+        self._sync_offline_timer = None
+        if not self._sync_enabled or self._sync_offline_since is None:
+            return
+        minutes = int((time.time() - self._sync_offline_since) // 60)
+        self._sync_log(tr("sync.still_offline",
+                          "[Auto Sync] The key file has been unreachable for {minutes} min. Local changes are not synced yet. You can use SaveAs to keep a copy.",
+                          minutes=minutes))
+        self._sync_offline_timer = self.root.after(self.SYNC_OFFLINE_REMIND_MS, self._sync_offline_tick)
+
+    def _sync_log(self, text, tag="red"):
+        """自动同步的提示写进主窗口。"""
+        try:
+            self.text_area.insert(tk.END, f"\n{datetime.now().strftime('%H:%M:%S')} {text}\n", tag)
+            self._auto_scroll()
+        except tk.TclError:
+            pass
+
+    def _sync_on_written(self, content):
+        frames = [f for f in self._sync_write_frames if self._widget_alive(f)]
+        self._sync_set_base(ts_parse(content), frames)
+        self._sync_write_frames = []
+        pending = any(getattr(f, "_sync_pending", None) for f in self._notebook_frames())
+        if self._sync_local_rev != self._sync_job_rev:
+            self._sync_again = True           # 写入期间又有本地修改
+        else:
+            self._sync_set_modified(pending)
+
+    # ---------------- 合并
+    def _sync_process_disk(self, path, text, enc):
+        """收到 ts 文件内容（定时检查发现变化，或本地修改后读到的）：合并，然后交给后台写入。"""
+        try:
+            action = self._sync_merge(path, text, enc)
+        except Exception as e:
+            self._sync_log(tr("sync.save_failed", "[Auto Sync] Failed to save the key file: {error}", error=repr(e)))
+            self._sync_finish(False, e)
+            return
+        if action is not None and action[0] == "write" and self._sync_worker is not None:
+            _, content, expected, backup_label = action
+            self._sync_worker.post(("write", path, content, enc, expected, backup_label))
+            return
+        if action is not None and action[0] == "backup" and self._sync_worker is not None:
+            self._sync_worker.post(("backup", path, action[1], enc, "local"))
+        self._sync_finish(True)
+
+    def _sync_merge(self, path, text, enc):
+        """返回 None（不用写）/ ("write", 内容, 预期的 ts 内容, 备份标签) / ("backup", 内容) / ("pause",)。
+        界面在这里就更新好了。"""
+        self.file_encodings[path] = enc
+        disk = ts_parse(text)
+        if not disk:
+            self._sync_log(tr("sync.invalid_file",
+                              "[Auto Sync] No tab definitions found in the key file, so it was not loaded. Check whether the file is damaged: {path}",
+                              path=path))
+            return None
+        disk_canon = ts_serialize(disk)
+        if disk_canon == self._sync_base_canon and not self.script_modified:
+            return None
+        base = self._sync_base_tabs
+        local = self._sync_snapshot()
+        disk_map = ts_match_tabs(base, disk)
+        entries, lkeys, dkeys, conflicts = ts_merge(base, local, disk, disk_map)
+        if conflicts:
+            unmatched = len(base) - sum(1 for b in disk_map if b is not None)
+            big = len(conflicts) > self.SYNC_BIG_CONFLICTS or (bool(base) and unmatched / len(base) > 0.5)
+            mode = self._sync_resolve(conflicts, entries, big, unmatched)
+            if mode == "pause":
+                self.key_sync_var.set(False)
+                self._sync_stop()
+                self._sync_log(tr("sync.paused", "[Auto Sync] Auto Sync is paused. Local changes are kept and not saved."), "blue")
+                return ("pause",)
+            if mode == "ts_all":
+                # 以 ts 为准：先备份本地版本，再把界面换成 ts 的内容
+                local_content = ts_serialize([(e["name"], e["buttons"]) for e in local])
+                ref_by_base = {e["base"]: e["ref"] for e in local if e["base"] is not None}
+                final = [_ts_entry(dn, db, ref_by_base.get(disk_map[j]), j) for j, (dn, db) in enumerate(disk)]
+                frames = self._sync_apply(final)
+                self._sync_set_base(disk, frames)
+                self._sync_set_modified(False)
+                return ("backup", local_content)
+            if mode == "local_all":
+                # 以本地为准：写入时先备份 ts 当前的版本
+                for f in self._notebook_frames():
+                    f._sync_pending = set()
+                content = ts_serialize([(e["name"], e["buttons"]) for e in local])
+                self._sync_write_frames = self._notebook_frames()
+                return ("write", content, disk_canon, "ts")
+        order = [k for k in ts_merge_order(lkeys, dkeys) if k in entries]
+        final = [entries[k] for k in order]
+        frames = self._sync_apply(final)
+        file_tabs = [(e["name"], e["buttons"]) for e in final]
+        content = ts_serialize(file_tabs)
+        if content == disk_canon:
+            self._sync_set_base(file_tabs, frames)
+            self._sync_set_modified(any(e["pending"] for e in final))
+            return None
+        self._sync_write_frames = frames
+        return ("write", content, disk_canon, None)
+
+    def _sync_apply(self, final):
+        """把合并结果放到界面上：尽量沿用原来的标签页和按键（已打开的编辑窗口还连着同一个按键），
+        当前选中的标签页不变。返回按最终顺序排列的标签页 frame。"""
+        self._sync_applying = True
+        try:
+            frames_before = self._notebook_frames()
+            sel = self.notebook.select()
+            sel_frame = self.notebook.nametowidget(sel) if sel else None
+            sel_index = self.notebook.index(sel) if sel else 0
+            ref_cell = next((c for f in frames_before for c in self._frame_cells(f)), None)
+            frames = []
+            for e in final:
+                ui_buttons = dict(e["buttons"])
+                for idx, val in e["ui"].items():
+                    if val is None:
+                        ui_buttons.pop(idx, None)
+                    else:
+                        ui_buttons[idx] = val
+                frame = e["ref"] if e["ref"] is not None and self._widget_alive(e["ref"]) else None
+                if frame is None:
+                    self.create_tab_from_script(e["name"], ui_buttons)
+                    frame = self.notebook.nametowidget(self.notebook.tabs()[-1])
+                    self._sync_copy_theme(frame, ref_cell)
+                else:
+                    if self.notebook.tab(str(frame), "text") != e["name"]:
+                        self.notebook.tab(str(frame), text=e["name"])
+                    self._sync_update_cells(frame, ui_buttons)
+                frame._sync_pending = set(e["pending"])
+                frames.append(frame)
+            keep = {str(f) for f in frames}
+            for frame in frames_before:
+                if str(frame) not in keep:
+                    self.notebook.forget(str(frame))
+                    self._destroy_tab_frame(frame)
+            for i, frame in enumerate(frames):
+                self.notebook.insert(i, frame)
+            if sel_frame is not None and str(sel_frame) in keep:
+                self.notebook.select(sel_frame)
+            elif frames:
+                self.notebook.select(frames[min(sel_index, len(frames) - 1)])
+            return frames
+        finally:
+            self._sync_applying = False
+
+    @staticmethod
+    def _sync_copy_theme(frame, ref_cell):
+        if ref_cell is None:
+            return
+        try:
+            frame.configure(background=ref_cell.master.cget("background"))
+            colors = {k: ref_cell.cget(k) for k in ("background", "foreground", "activebackground", "activeforeground")}
+            for c in frame.winfo_children():
+                if isinstance(c, tk.Button):
+                    c.configure(**colors)
+        except tk.TclError:
+            pass
+
+    def _sync_update_cells(self, frame, buttons):
+        for cell in self._frame_cells(frame):
+            new = buttons.get(self._cell_index(cell))
+            if self._cell_value(cell) == new:
+                continue
+            name, data = new if new is not None else ("", "")
+            self._sync_refresh_editor(cell, name, data)
+            cell.config(text=name)
+            cell.custom_data = data
+
+    def _sync_refresh_editor(self, cell, name, data):
+        """按键被 ts 文件改了：编辑窗口没在改就直接刷新；正在改就只提示，点 Save 时再让用户选。"""
+        info = self.cell_edit_info.get(id(cell))
+        if not info or info["cell"] is not cell or not self._widget_alive(info["win"]):
+            return
+        current = (info["entry"].get(), info["text"].get("1.0", tk.END).strip())
+        if current == info["base"]:
+            info["entry"].delete(0, tk.END)
+            info["entry"].insert(0, name)
+            info["text"].delete("1.0", tk.END)
+            info["text"].insert("1.0", data)
+            info["text"].edit_reset()
+            info["base"] = (name, data)
+            info["ext"] = False
+            self._update_edit_title(id(cell))
+            self._edit_notice(info, tr("edit.ext_updated", "Updated from the key file at {time}",
+                                       time=datetime.now().strftime("%H:%M:%S")), "green")
+        else:
+            info["ext"] = True
+            self._edit_notice(info, tr("edit.ext_changed",
+                                       "This button was changed in the key file. When you click Save, you can choose which version to keep."),
+                              "red")
+
+    @staticmethod
+    def _edit_notice(info, text, color):
+        label = info.get("notice")
+        if label is None:
+            return
+        try:
+            label.config(text=text, fg=color)
+            label.grid()
+        except tk.TclError:
+            pass
+
+    # ---------------- 冲突处理
+    def _sync_resolve(self, conflicts, entries, big, unmatched):
+        """返回 "done" / "pause" / "ts_all" / "local_all"。"""
+        if big:
+            stats = {
+                "tabs": len({c["key"] for c in conflicts}),
+                "buttons": sum(1 for c in conflicts if c["kind"] == "button"),
+                "names": sum(1 for c in conflicts if c["kind"] == "name"),
+                "deletes": sum(1 for c in conflicts if c["kind"] == "delete"),
+                "unmatched": unmatched,
+            }
+            mode = self._sync_summary_dialog(stats)
+            if mode != "itemized":
+                return mode
+        all_side = None
+        total = len(conflicts)
+        for n, c in enumerate(conflicts, 1):
+            choice = all_side
+            if choice is None:
+                if c["kind"] == "button":
+                    choice, edited = self._conflict_button_dialog(c, n, total, allow_all=True)
+                    if choice in ("local", "all_local"):
+                        c["local"] = edited
+                else:
+                    choice = self._conflict_tab_dialog(c, n, total)
+                if choice in ("all_local", "all_ts"):
+                    all_side = choice
+            if c["kind"] == "delete":
+                if choice in ("all_local", "all_ts"):
+                    deleter = "local" if choice == "all_local" else "ts"
+                    side = "delete" if c["deleted_by"] == deleter else "keep"
+                else:
+                    side = choice
+            else:
+                side = {"all_local": "local", "all_ts": "ts"}.get(choice, choice)
+            ts_apply_choice(entries, c, side)
+        return "done"
+
+    def _conflict_window(self, title, parent=None):
+        win = tk.Toplevel(parent or self.root)
+        win.withdraw()
+        win.title(title)
+        win.transient(parent or self.root)
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+        return win
+
+    def _conflict_show(self, win, parent=None):
+        place_on_parent_monitor(win, parent or self.root)
+        win.deiconify()
+        win.lift()
+        win.grab_set()
+        win.focus_force()
+        win.wait_window()
+
+    def _conflict_button_dialog(self, conflict, n, total, allow_all, parent=None):
+        """按键冲突：左边本地（可改），右边 ts（只读可复制）。
+        返回 (选择, 本地的值)；选择为 local / ts / cancel / all_local / all_ts。直接关窗口 = 取消。"""
+        result = {"choice": "cancel", "value": conflict["local"]}
+        win = self._conflict_window(tr("conflict.button_title", "Button Conflict {n}/{total}", n=n, total=total), parent)
+        idx = conflict.get("idx", 0)
+        tk.Label(win, justify="left", anchor="w", wraplength=760,
+                 text=tr("conflict.button_msg",
+                         "Button {idx} (row {row}, column {col}) in tab \"{tab}\" was changed both here and in the key file.",
+                         idx=idx, row=idx // 6 + 1, col=idx % 6 + 1, tab=conflict.get("tab", ""))
+                 ).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 6))
+        win.columnconfigure(0, weight=1)
+        win.columnconfigure(1, weight=1)
+        win.rowconfigure(1, weight=1)
+
+        def column(col, title, value, editable):
+            frame = tk.LabelFrame(win, text=title)
+            frame.grid(row=1, column=col, sticky="nsew", padx=10, pady=4)
+            frame.columnconfigure(1, weight=1)
+            frame.rowconfigure(1, weight=1)
+            name, data = value if value is not None else ("", "")
+            tk.Label(frame, text=tr("conflict.name", "Name:")).grid(row=0, column=0, sticky="w", padx=4, pady=4)
+            entry = tk.Entry(frame)
+            entry.insert(0, name)
+            entry.grid(row=0, column=1, sticky="ew", padx=4, pady=4)
+            text = scrolledtext.ScrolledText(frame, width=44, height=16, undo=editable)
+            text.insert("1.0", data)
+            text.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=4, pady=4)
+            if not editable:
+                entry.config(state="readonly")
+
+                def block(event):
+                    # 只读，但可以选中、复制、移动光标
+                    if event.state & 0x4 and event.keysym.lower() in ("c", "a", "insert"):
+                        return None
+                    if event.keysym in ("Left", "Right", "Up", "Down", "Home", "End", "Prior", "Next"):
+                        return None
+                    return "break"
+                text.bind("<Key>", block)
+                for ev in ("<<Paste>>", "<<Cut>>", "<<Clear>>"):
+                    text.bind(ev, lambda e: "break")
+            return entry, text
+
+        l_entry, l_text = column(0, tr("conflict.local", "Local version (editable)"), conflict["local"], True)
+        column(1, tr("conflict.ts", "Key file version (read-only)"), conflict["ts"], False)
+
+        def done(choice):
+            result["choice"] = choice
+            name = l_entry.get()
+            data = l_text.get("1.0", tk.END).strip()
+            result["value"] = (name, data) if name.strip() else None
+            win.destroy()
+
+        bar = tk.Frame(win)
+        bar.grid(row=2, column=0, columnspan=2, pady=(6, 10))
+        tk.Button(bar, text=tr("conflict.keep_local", "Save Local Version"), command=lambda: done("local")).pack(side="left", padx=4)
+        tk.Button(bar, text=tr("conflict.keep_ts", "Save Key File Version"), command=lambda: done("ts")).pack(side="left", padx=4)
+        tk.Button(bar, text=tr("common.cancel", "Cancel"), command=lambda: done("cancel")).pack(side="left", padx=4)
+        if allow_all and n < total:
+            tk.Button(bar, text=tr("conflict.all_local", "Use Local for All Remaining"), command=lambda: done("all_local")).pack(side="left", padx=(16, 4))
+            tk.Button(bar, text=tr("conflict.all_ts", "Use Key File for All Remaining"), command=lambda: done("all_ts")).pack(side="left", padx=4)
+        self._conflict_show(win, parent)
+        return result["choice"], result["value"]
+
+    def _conflict_tab_dialog(self, conflict, n, total):
+        """标签页冲突（名称 / 一边删除一边修改）。返回 local / ts（名称）、delete / keep（删除），
+        或 all_local / all_ts。直接关窗口按不丢内容处理：名称用 ts 的，删除选保留。"""
+        result = {"choice": "ts" if conflict["kind"] == "name" else "keep"}
+        win = self._conflict_window(tr("conflict.tab_title", "Tab Conflict {n}/{total}", n=n, total=total))
+        if conflict["kind"] == "name":
+            msg = tr("conflict.name_msg",
+                     "This tab was renamed both here and in the key file.\n\nLocal name: {local}\nKey file name: {ts}",
+                     local=conflict["local"], ts=conflict["ts"])
+            options = [(tr("conflict.use_local_name", "Use Local Name"), "local"),
+                       (tr("conflict.use_ts_name", "Use Key File Name"), "ts")]
+        else:
+            if conflict["deleted_by"] == "ts":
+                msg = tr("conflict.deleted_by_ts_msg",
+                         "Tab \"{tab}\" was deleted in the key file, but it was changed here (or has an open edit window).",
+                         tab=conflict["tab"])
+            else:
+                msg = tr("conflict.deleted_by_local_msg",
+                         "Tab \"{tab}\" was deleted here, but it was changed in the key file.", tab=conflict["tab"])
+            options = [(tr("conflict.delete_tab", "Delete Tab"), "delete"),
+                       (tr("conflict.keep_tab", "Keep Tab"), "keep")]
+        tk.Label(win, text=msg, justify="left", wraplength=460).pack(padx=16, pady=(14, 10), anchor="w")
+        bar = tk.Frame(win)
+        bar.pack(pady=(0, 12), padx=10)
+
+        def done(choice):
+            result["choice"] = choice
+            win.destroy()
+        for label, value in options:
+            tk.Button(bar, text=label, command=lambda v=value: done(v)).pack(side="left", padx=4)
+        if n < total:
+            tk.Button(bar, text=tr("conflict.all_local", "Use Local for All Remaining"), command=lambda: done("all_local")).pack(side="left", padx=(16, 4))
+            tk.Button(bar, text=tr("conflict.all_ts", "Use Key File for All Remaining"), command=lambda: done("all_ts")).pack(side="left", padx=4)
+        self._conflict_show(win)
+        return result["choice"]
+
+    def _sync_summary_dialog(self, stats):
+        """差异太大时的总结窗口。返回 ts_all / local_all / itemized / pause（直接关窗口 = 暂停同步）。"""
+        result = {"choice": "pause"}
+        win = self._conflict_window(tr("conflict.summary_title", "Many Differences"))
+        tk.Label(win, justify="left", wraplength=520, text=tr(
+            "conflict.summary_msg",
+            "Both this window and the key file were changed a lot since the last sync:\n\n"
+            "  Tabs with conflicts: {tabs}\n  Button conflicts: {buttons}\n  Tab name conflicts: {names}\n"
+            "  Tabs deleted on one side and changed on the other: {deletes}\n  Tabs that cannot be matched: {unmatched}\n\n"
+            "The version that is discarded is backed up first.", **stats)).pack(padx=16, pady=(14, 10), anchor="w")
+        bar = tk.Frame(win)
+        bar.pack(pady=(0, 12), padx=10)
+
+        def done(choice):
+            result["choice"] = choice
+            win.destroy()
+        for label, value in ((tr("conflict.use_ts_all", "Use Key File (discard local)"), "ts_all"),
+                             (tr("conflict.use_local_all", "Use Local (overwrite key file)"), "local_all"),
+                             (tr("conflict.itemized", "Resolve One by One"), "itemized"),
+                             (tr("conflict.pause", "Pause Auto Sync"), "pause")):
+            tk.Button(bar, text=label, command=lambda v=value: done(v)).pack(side="left", padx=4)
+        self._conflict_show(win)
+        return result["choice"]
+
+    # ---------------- 同步模式下需要等保存完成的场合（关闭窗口、加载前提示保存）
+    def _sync_blocking_save(self):
+        """返回 True 表示已经保存好（或不需要保存）。"""
+        deadline = time.time() + 15
+        while self._sync_busy and time.time() < deadline:
+            self.root.update()
+            time.sleep(0.05)
+        path = self._sync_path()
+        self._sync_busy = True
+        try:
+            for _ in range(3):
+                text, enc, fp = ts_read_stable(path)
+                self._sync_last_fp = fp
+                action = self._sync_merge(path, text, enc)
+                if action is None:
+                    return not self.script_modified
+                if action[0] == "pause":
+                    return False
+                if action[0] == "backup":
+                    ts_backup(path, action[1], enc, "local")
+                    return True
+                _, content, expected, backup_label = action
+                self._sync_job_rev = self._sync_local_rev
+                result = ts_locked_write(path, content, enc, expected, backup_label)
+                self._sync_last_fp = result[2]
+                if result[0] == "written":
+                    self._sync_on_written(content)
+                    return not self.script_modified
+            return False
+        except Exception as e:
+            messagebox.showerror(tr("common.error", "Error"),
+                                 tr("file.save_script_failed", "Failed to save script: {error}", error=e), parent=self.root)
+            return False
+        finally:
+            self._sync_busy = False
 
     def get_ports(self):
         ports = [port.device for port in serial.tools.list_ports.comports()]
-        return ports if ports else ["无可用串口"]
+        return ports if ports else [tr("send.no_ports", "No ports available")]
 
     def refresh_ports(self):
         ports = self.get_ports()
@@ -5539,10 +7665,10 @@ GUI 控件状态:
             self.connect_serial()  # connect_serial 内部会更新相关状态
             # 如果连接成功，则更新按钮文字为“断开串口”
             if self.serial_conn and self.serial_conn.ser and self.serial_conn.ser.is_open:
-                self.toggle_port_btn.config(text="断开串口")
+                self.toggle_port_btn.config(text=tr("main.disconnect_serial", "Disconnect"))
         else:
             self.close_serial()  # close_serial 内部更新状态
-            self.toggle_port_btn.config(text="连接串口")
+            self.toggle_port_btn.config(text=tr("main.connect_serial", "Connect"))
 
     def connect_serial(self):
         port = self.port_var.get()
@@ -5554,22 +7680,22 @@ GUI 控件状态:
                 self.send_btn.config(state=tk.NORMAL) #发送
                 self.single_loop_send_btn.config(state=tk.NORMAL) #单行循环
                 #self.start_button.config(state=tk.NORMAL) # 开始运行按钮，新增了脚本对COM口的操作，此行注释掉
-                self.toggle_port_btn.config(text="关闭串口")
+                self.toggle_port_btn.config(text=tr("main.close_serial", "Close Port"))
                 self.port_menu.config(state="disabled")
                 self.baud_menu.config(state="disabled")
                 self.refresh_btn.config(state="disabled")
                 self.status_canvas.config(bg="green")
-                self.tk_safe(lambda: self.text_area.insert(tk.END, f"串口已打开: {port} @ {baudrate}bps\n"))
+                self.tk_safe(lambda: self.text_area.insert(tk.END, tr("serial.opened", "Port opened: {port} @ {baudrate}bps", port=port, baudrate=baudrate) + "\n"))
                 self.tk_safe(lambda: self._auto_scroll())
                 self.stop_reading = False
                 self.reading_thread = threading.Thread(target=self.read_from_serial, daemon=True)
                 self.reading_thread.start()
             else:
                 # 串口未打开成功，给出错误提示
-                self.tk_safe(lambda: self.text_area.insert(tk.END, f"错误: 无法连接到 {port}\n"))
+                self.tk_safe(lambda: self.text_area.insert(tk.END, tr("serial.connect_failed", "Error: cannot connect to {port}", port=port) + "\n"))
                 self.tk_safe(lambda: self._auto_scroll())
         except Exception as e:
-            self.tk_safe(lambda: self.text_area.insert(tk.END, f"错误: 无法连接到 {port}\n"))
+            self.tk_safe(lambda: self.text_area.insert(tk.END, tr("serial.connect_failed", "Error: cannot connect to {port}", port=port) + "\n"))
             self.tk_safe(lambda: self._auto_scroll())
 
     def close_serial(self):
@@ -5581,12 +7707,12 @@ GUI 控件状态:
             #self.start_button.config(state=tk.DISABLED) # 开始运行按钮，新增了脚本对COM口的操作，此行注释掉
             #self.stop_button.config(state=tk.DISABLED)
             #self.pause_button.config(state=tk.DISABLED)
-            self.toggle_port_btn.config(text="打开串口")
+            self.toggle_port_btn.config(text=tr("main.open_serial", "Open Port"))
             self.port_menu.config(state="readonly")
             self.baud_menu.config(state="readonly")
             self.refresh_btn.config(state="normal")
             self.status_canvas.config(bg="gray")
-            self.tk_safe(lambda: self.text_area.insert(tk.END, "串口已关闭\n"))
+            self.tk_safe(lambda: self.text_area.insert(tk.END, tr("serial.closed", "Port closed") + "\n"))
             self.tk_safe(lambda: self._auto_scroll())
 
             #if self.loop_sending:
@@ -5595,7 +7721,7 @@ GUI 控件状态:
 
     def open_ssh_config_window(self):
         win = tk.Toplevel(self.root)
-        win.title("SSH 串口配置")
+        win.title(tr("ssh.config_title", "SSH Config"))
 
         # 固定初始大小
         width, height = 200, 180
@@ -5605,17 +7731,17 @@ GUI 控件状态:
         y = (screen_h - height) // 2
         win.geometry(f"{width}x{height}+{x}+{y}")
 
-        tk.Label(win, text="IP 地址:").pack()
+        tk.Label(win, text=tr("ssh.ip", "IP Address:")).pack()
         ip_entry = tk.Entry(win)
         ip_entry.pack()
         ip_entry.insert(0, getattr(self, 'ssh_ip', ''))
 
-        tk.Label(win, text="用户名:").pack()
+        tk.Label(win, text=tr("ssh.username", "Username:")).pack()
         user_entry = tk.Entry(win)
         user_entry.pack()
         user_entry.insert(0, getattr(self, 'ssh_user', ''))
 
-        tk.Label(win, text="密码:").pack()
+        tk.Label(win, text=tr("ssh.password", "Password:")).pack()
         pwd_entry = tk.Entry(win, show="*")
         pwd_entry.pack()
         pwd_entry.insert(0, getattr(self, 'ssh_password', ''))
@@ -5633,8 +7759,8 @@ GUI 控件状态:
         btn_frame = tk.Frame(win)
         btn_frame.pack(pady=5)
 
-        tk.Button(btn_frame, text="连接", command=connect_ssh).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="断开", command=disconnect_ssh).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text=tr("ssh.connect", "Connect"), command=connect_ssh).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text=tr("ssh.disconnect", "Disconnect"), command=disconnect_ssh).pack(side=tk.LEFT, padx=5)
 
     def _ssh_connect_thread(self):
         try:
@@ -5658,7 +7784,7 @@ GUI 控件状态:
             threading.Thread(target=self._ssh_receive_loop, daemon=True).start()
 
         except Exception as e:
-            messagebox.showerror("SSH 连接失败", str(e), parent=self.root)
+            messagebox.showerror(tr("ssh.connect_failed", "SSH Connection Failed"), str(e), parent=self.root)
 
 
     def _ssh_disconnect(self):
@@ -5721,39 +7847,49 @@ GUI 控件状态:
     def _check_auto_save_target(self, path, fname):
         """校验自动保存的路径和文件名。合格返回空字符串，否则返回不合格的原因。"""
         if not path:
-            return ("没有设置自动保存路径。\n\n"
-                    "请点击路径输入框右侧的 … 按钮，选择一个用来存放日志的文件夹。")
+            return tr("autosave.no_path",
+                      "No auto save path set.\n\n"
+                      "Click the … button to the right of the path box and choose a folder for the logs.")
         if not fname:
-            return ("没有设置保存文件名。\n\n"
-                    "请在“保存文件名”里填一个名字，程序会自动在后面加上日期和时间。")
+            return tr("autosave.no_filename",
+                      "No file name set.\n\n"
+                      "Enter a name in \"File name\". Date and time are appended automatically.")
 
         bad = self._find_invalid_name_chars(fname)
         if bad:
-            return ("保存文件名里含有 Windows 不允许用于文件名的字符：\n\n"
-                    f"        {'  '.join(bad)}\n\n"
-                    "不能使用的字符是：  < > : \" / \\ | ? *\n\n"
-                    "其中半角冒号要特别注意：用它做文件名不会报错，但日志会被写进 NTFS 的\n"
-                    "隐藏数据流，在资源管理器里只能看到一个 0 字节的空文件，看起来就像什么\n"
-                    "都没有保存。\n\n"
-                    f"当前的文件名是：{fname}")
+            return tr("autosave.invalid_chars",
+                      "The file name contains characters that Windows does not allow:\n\n"
+                      "        {chars}\n\n"
+                      "Not allowed:  < > : \" / \\ | ? *\n\n"
+                      "Watch out for the colon: it raises no error, but the log is written into a\n"
+                      "hidden NTFS data stream, and Explorer shows only an empty 0-byte file, so it\n"
+                      "looks as if nothing was saved.\n\n"
+                      "Current file name: {fname}",
+                      chars="  ".join(bad), fname=fname)
 
         if not self._is_absolute_dir_path(path):
-            return ("自动保存路径必须是完整的绝对路径，例如  D:\\log  或  \\\\服务器\\共享目录。\n\n"
-                    f"当前填的是：{path}\n"
-                    f"它会被解析到：{os.path.abspath(path)}\n\n"
-                    "像 logs、.、C: 这样的写法是相对路径，会以程序的当前工作目录为基准。\n"
-                    "程序被双击启动、用快捷方式启动、或由别的程序调起时，这个基准都不一样，\n"
-                    "文件会被写到意料之外的地方，而且不会有任何报错。")
+            return tr("autosave.not_absolute",
+                      "The auto save path must be a full absolute path, e.g.  D:\\log  or  \\\\server\\share.\n\n"
+                      "Current value: {path}\n"
+                      "Resolves to: {abspath}\n\n"
+                      "Forms like logs, . or C: are relative to the program's working directory.\n"
+                      "That directory differs when started by double-click, a shortcut or another program,\n"
+                      "so the file may end up somewhere unexpected, without any error.",
+                      path=path, abspath=os.path.abspath(path))
 
         if not os.path.exists(path):
-            return ("自动保存路径不存在：\n\n"
-                    f"        {path}\n\n"
-                    "程序不会自动创建这个目录，以免在打错字的情况下建出一堆无用文件夹。\n"
-                    "请先在资源管理器里手动建好这个文件夹，或者用 … 按钮重新选一个已存在的。")
+            return tr("autosave.path_missing",
+                      "The auto save path does not exist:\n\n"
+                      "        {path}\n\n"
+                      "The folder is not created automatically, to avoid stray folders from typos.\n"
+                      "Create it in Explorer first, or use the … button to choose an existing one.",
+                      path=path)
         if not os.path.isdir(path):
-            return ("自动保存路径指向的是一个文件，不是文件夹：\n\n"
-                    f"        {path}\n\n"
-                    "请改成一个文件夹的路径。")
+            return tr("autosave.path_is_file",
+                      "The auto save path points to a file, not a folder:\n\n"
+                      "        {path}\n\n"
+                      "Please enter a folder path.",
+                      path=path)
         return ""
 
     def _check_auto_save_capacity(self):
@@ -5762,25 +7898,38 @@ GUI 控件状态:
         返回 (是否可以继续, 是否需要用户确认, 提示文字)。
         """
         raw = self.max_capacity_entry.get().strip()
-        advice = (f"建议不要超过 {self.RECOMMENDED_MAX_CAPACITY_MB} MB。单个日志文件过大时，"
-                  "用文本编辑器打开会\n非常慢甚至打不开，程序在写入和轮转时也容易卡顿。")
+        advice = tr("autosave.capacity_advice",
+                    "Recommended: no more than {max_mb} MB. Very large log files open slowly\n"
+                    "or not at all in text editors, and writing and rotation may lag.",
+                    max_mb=self.RECOMMENDED_MAX_CAPACITY_MB)
         if not raw:
-            return False, False, ("“文件最大容量”是空的。\n\n"
-                                  "请填写一个大于 0 的数字，单位是 MB。\n\n" + advice)
+            return False, False, (tr("autosave.capacity_empty",
+                                     "\"Max file size\" is empty.\n\n"
+                                     "Enter a number greater than 0, in MB.")
+                                  + "\n\n" + advice)
         try:
             value = float(raw)
         except ValueError:
-            return False, False, (f"“文件最大容量”填的是“{raw}”，这不是一个有效的数字。\n\n"
-                                  "请只填数字，不要带单位（MB 已经标在输入框右边了），\n"
-                                  "也不要使用千位分隔符。\n\n" + advice)
+            return False, False, (tr("autosave.capacity_not_number",
+                                     "\"Max file size\" is \"{raw}\", which is not a valid number.\n\n"
+                                     "Enter digits only, without the unit (MB is shown to the right),\n"
+                                     "and without thousands separators.",
+                                     raw=raw)
+                                  + "\n\n" + advice)
         if value <= 0:
-            return False, False, (f"“文件最大容量”是 {raw}，必须大于 0。\n\n"
-                                  "填 0 或负数会让程序每隔 10 秒就判定文件已超限，\n"
-                                  "从而不停地关闭当前文件、新建下一个，生成大量碎片文件。\n\n"
-                                  + advice)
+            return False, False, (tr("autosave.capacity_not_positive",
+                                     "\"Max file size\" is {raw}; it must be greater than 0.\n\n"
+                                     "0 or a negative value makes the file count as full every 10 seconds,\n"
+                                     "so the program keeps closing it and creating new ones, producing many small files.",
+                                     raw=raw)
+                                  + "\n\n" + advice)
         if value > self.RECOMMENDED_MAX_CAPACITY_MB:
-            return True, True, (f"当前设置的单文件最大容量是 {raw} MB，偏大。\n\n" + advice
-                                + "\n\n仍然要按这个设置开启自动保存吗？")
+            return True, True, (tr("autosave.capacity_large",
+                                   "Max file size is set to {raw} MB, which is large.",
+                                   raw=raw)
+                                + "\n\n" + advice + "\n\n"
+                                + tr("autosave.capacity_large_confirm",
+                                     "Enable auto save with this setting anyway?"))
         return True, False, ""
 
     def _auto_save_capacity_mb(self, default=10.0):
@@ -5799,7 +7948,7 @@ GUI 控件状态:
         # 先校验路径和文件名，不合格就说明原因并停止，不再去 open()
         reason = self._check_auto_save_target(path, fname)
         if reason:
-            self.tk_safe(lambda: messagebox.showwarning("无法开启自动保存", reason, parent=self.root))
+            self.tk_safe(lambda: messagebox.showwarning(tr("autosave.cannot_enable", "Cannot Enable Auto Save"), reason, parent=self.root))
             return None
 
         # 构造文件名：保存文件名_YYYY-MM-DD_HH_MM_SS.txt
@@ -5809,14 +7958,16 @@ GUI 控件状态:
             new_file = open(full_path, "w", encoding="utf-8")
         except Exception as e:
             # 把完整路径和长度一并给出，方便判断是权限、路径过长还是别的原因
-            msg = (f"无法创建自动保存文件：\n\n{e}\n\n"
-                   f"完整路径（共 {len(full_path)} 个字符）：\n{full_path}")
-            self.tk_safe(lambda: messagebox.showerror("错误", msg, parent=self.root))
+            msg = tr("autosave.create_failed",
+                     "Cannot create auto save file:\n\n{error}\n\n"
+                     "Full path ({length} characters):\n{path}",
+                     error=e, length=len(full_path), path=full_path)
+            self.tk_safe(lambda: messagebox.showerror(tr("common.error", "Error"), msg, parent=self.root))
             return None
 
         # 把实际写入的绝对路径显示出来，避免以后再出现“文件到底存哪了”的问题
         self.tk_safe(lambda: self.text_area.insert(
-            tk.END, f"自动保存已开启，文件位置：{full_path}\n", "green"))
+            tk.END, tr("autosave.enabled", "Auto save on, file: {path}", path=full_path) + "\n", "green"))
         self.tk_safe(lambda: self._auto_scroll())
         return new_file
 
@@ -5842,12 +7993,12 @@ GUI 控件状态:
     def toggle_loop_send(self):
         if not self.loop_sending:
             self.loop_sending = True
-            self.single_loop_send_btn.config(text="停止发送")
+            self.single_loop_send_btn.config(text=tr("main.stop_sending", "Stop"))
             self.loop_thread = threading.Thread(target=self.loop_send, daemon=True)
             self.loop_thread.start()
         else:
             self.loop_sending = False
-            self.single_loop_send_btn.config(text="单行循环")
+            self.single_loop_send_btn.config(text=tr("main.single_loop", "Loop Send"))
 
     def loop_send(self):
         while self.loop_sending:
@@ -5951,7 +8102,7 @@ GUI 控件状态:
             self.sent_bytes = 0
         if self.received_bytes >= 1_000_000_000:
             self.received_bytes = 0
-        self.tk_safe(lambda: self.data_stats.set(f"发送: {format_bytes(self.sent_bytes)} | 接收: {format_bytes(self.received_bytes)}"))
+        self.tk_safe(lambda: self.data_stats.set(tr("main.data_stats", "Sent: {sent} | Recv: {recv}", sent=format_bytes(self.sent_bytes), recv=format_bytes(self.received_bytes))))
 
     def new_port(self):
         #self.root.update_idletasks()
@@ -6155,11 +8306,11 @@ GUI 控件状态:
             cap_ok, cap_confirm, cap_msg = self._check_auto_save_capacity()
             if not cap_ok:
                 self.tk_safe(lambda: messagebox.showwarning(
-                    "无法开启自动保存", cap_msg, parent=self.root))
+                    tr("autosave.cannot_enable", "Cannot Enable Auto Save"), cap_msg, parent=self.root))
                 return
             if cap_confirm:
                 if not self.tk_safe(lambda: messagebox.askokcancel(
-                        "文件容量偏大", cap_msg, parent=self.root)):
+                        tr("autosave.capacity_large_title", "File Size Large"), cap_msg, parent=self.root)):
                     return
             new_file = self.create_auto_save_file()
             if new_file is None:
@@ -6315,6 +8466,8 @@ GUI 控件状态:
         """
         config = configparser.ConfigParser()
         config['Setup'] = {
+            # 界面语言：en / zh ...，在 Language 菜单里修改，重启生效
+            'language': _LANG_SAVE_CODE,
             'window_name': self.window_name_entry.get(),
             'serial_port_menu': self.port_menu.get(),
             'baud_rate_menu': self.baud_menu.get(),
@@ -6332,7 +8485,8 @@ GUI 控件状态:
             'terminal_wait_over_time': self.send_all_over_time_entry.get(),
             'display_mode': self.DISPLAY_MODE_BY_LABEL.get(
                 self.display_mode_combo.get(), AnsiTextRenderer.MODE_TERMINAL),
-            'sent_commands': json.dumps(self.sent_commands, ensure_ascii=False)
+            'sent_commands': json.dumps(self.sent_commands, ensure_ascii=False),
+            'key_auto_sync': str(bool(self.key_sync_var.get())),
         }
         for i, p in enumerate(self.history_paths):
             config['Setup'][f'history_{i+1}'] = p
@@ -6343,8 +8497,8 @@ GUI 控件状态:
         config['Setup']['regex_save_path'] = p
         config['Setup']['regex_save_filename'] = n
         config['Setup']['regex_save_max_mb'] = m
-        # 在程序所在目录创建/覆盖 TermPlusSetup.ini
-        with open("TermPlusSetup.ini", "w", encoding="utf-8") as configfile:
+        # 在 exe（源码运行时为 TermPlus.py）所在目录创建/覆盖 TermPlusSetup.ini
+        with open(INI_PATH, "w", encoding="utf-8") as configfile:
             config.write(configfile)
 
     def toggle_key_area(self):
@@ -6525,20 +8679,27 @@ GUI 控件状态:
         程序启动时，尝试从 TermPlusSetup.ini 读取控件的默认值，如果文件不存在则不做任何操作
         """
         import os
-        if not os.path.exists("TermPlusSetup.ini"):
+        if not os.path.exists(INI_PATH):
             return  # 文件不存在则直接返回
         
         config = configparser.ConfigParser()
-        config.read("TermPlusSetup.ini", encoding="utf-8")
+        config.read(INI_PATH, encoding="utf-8")
         
         if 'Setup' in config:
             setup = config['Setup']
+
+            # 按键文件历史记录（5 个历史按键），文件已不存在时显示删除线
+            for i in range(5):
+                p = setup.get(f'history_{i+1}', '').strip()
+                self.history_paths[i] = p
+                self.history_strike[i] = bool(p) and not os.path.isfile(p)
+                self._update_history_button(i)
             
             # 读取窗口名并更新窗口标题
             if 'window_name' in setup:
                 self.window_name_entry.delete(0, 'end')
                 self.window_name_entry.insert(0, setup['window_name'])
-                self.root.title(setup['window_name'])
+                self._refresh_title()
             
             # 读取串口下拉框的值
             if 'serial_port_menu' in setup:
@@ -6594,6 +8755,10 @@ GUI 控件状态:
                     idx = ts_files.index(setup['script_file'])
                     self.script_file_combo.current(idx)
                     self.load_script()
+            # 按键文件自动同步（启动时加载了按键文件才会真正打开）
+            if setup.get('key_auto_sync', 'False') == 'True':
+                self.key_sync_var.set(True)
+                self._on_sync_toggle(quiet=True)
             # 脚本路径
             if 'multi_script_path' in setup:
                 self.multi_script_path_entry.delete(0, 'end')

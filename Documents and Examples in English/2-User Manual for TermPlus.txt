@@ -1,0 +1,429 @@
+
+TermPlus User Manual - last edit on 2026.06.24 by xian wu
+
+### 0. Introduction
+
+This software was developed by Xian Wu as a personal project. It is a GUI program written in Python that runs on Windows (to run it on another operating system, it must be repackaged from the source code). It was built with Python 3.10 and VS2022, with help from ChatGPT.
+
+Version naming: the earliest versions were a single exe, later a .pyw version; the current form is a single exe plus a single folder.
+
+After starting the program, you can check the exact packaging date of the version in the **About** menu (e.g. v260109 means packaged on January 9, 2026).
+
+The main purpose of this software is to overcome the shortcomings of the Term and IPOP programs and to meet usability needs (loop test statements are hard to write, automatic log saving is inconvenient, long runs tend to crash, loop sending blocks the process, etc.).
+
+The software also adds several extra features, including:
+-Support for PowerShell (CMD terminal): PowerShell can be controlled directly by scripts in this GUI.
+-Support for SCPI (programmable power supplies), covering the need to write files to a Linux device at a given IP and to power-cycle a programmable power supply.
+-Access to remote SSH ports: you can connect directly to the virtual serial port of an SSH server.
+-Simplified Python code can read the content of serial port replies, match it, evaluate it and act on it.
+-Scripts can open/close the COM port and change the COM port configuration.
+-Regex match monitoring: extracts specified content from serial data in real time and shows it in a separate multi-column table, with optional auto save.
+
+The software also adds timestamps, Up/Down keys to browse previously sent commands, a simple loop script syntax, script keyword highlighting, automatic screen clearing (more stable for long runs), log saving and more.
+
+
+### 1. Instructions
+
+1.1 Opening the serial port
+
+Double-click `TermPlus_vxxxxxx.exe` (the launcher in the folder). When the window starts, open the "Port:" drop-down list, select the COM port you want, select a suitable baud rate (if no suitable baud rate is listed, you can type one in), and click "Open Port".
+
+If the serial device was not plugged in when the program started, plug it in and click "Scan Ports" to get the list of available serial devices again.
+
+You can also click "SSH Setup" to open the SSH window and access the virtual serial port of an SSH server on another device. This works the same as connecting a physical serial port directly.
+
+In the window opened by the "SSH Setup" button, set the IP, username and password, e.g. `10.166.1xx.xx - root - (empty password)`, click "Connect", and wait until the connection succeeds or a failure is reported.
+
+After the serial port or SSH virtual serial port is connected, the corresponding status indicator turns green.
+
+
+1.2 Sending and receiving in the main window
+
+In the main window at the top left, type a command and press Enter to send it. A "\n" character is appended to the end of the input by default. Pressing Enter with no input sends a single "\n" character.
+
+Received content is shown directly in the main window. For continuously received content, the display is refreshed every 0.1 seconds or every 2048 received characters.
+
+Input in the main window supports the standard Windows Ctrl+Z (undo) and Ctrl+Y (redo).
+
+To avoid conflicting with undo, the Linux shortcuts are mapped to Alt + c/d/z/l/a/e/k/u, which send the ASCII codes that the corresponding Ctrl key combinations produce in Linux.
+
+In the main window and the single-line send box, the Up/Down keys select among recently sent commands (this only applies to content typed directly; content sent by buttons or scripts is not recorded in this history).
+
+
+1.3 Single-line send and single-line loop
+
+Type content in the send text box and click "Send" to send it. If "Newline" is checked, a "\n" is appended to the end of the content. This box is checked by default when the window starts.
+
+Click "Loop Send" to send the content of the send text box repeatedly, at the interval entered in the "Interval (s):" box. Click it again to stop.
+
+Hexadecimal characters can be sent: sending `\xA1` directly is replaced by the actual hex byte "0xA1". In the script area, write it as send_line(r"\xa0\x01\x01\xa2") or send_line("\\xa0\\x01\\x01\\xa2").
+
+The send text box is also a drop-down list that records the history of sent commands.
+
+
+1.4 Auto save
+
+Click the button below "Auto-save path" to choose a folder, enter the desired name in the "File name" box, and click the OFF button to the right of "Auto Save". The button changes to ON and auto save is enabled.
+
+This feature creates a .txt file named with the specified file name + date + time, stored in the specified folder.
+
+Click ON and the button changes back to OFF, which turns auto save off. When you turn auto save off manually (click to switch to OFF), the program saves once immediately and then stops writing to that file.
+
+Auto save runs every 10 s. If the saved file becomes larger than the specified "Max file size", a new file is created and saving continues there.
+
+Every 10 s the program also checks whether to auto clear: if the main window contains more than 1M (1 million) characters, the first half of the main window content is deleted automatically, to prevent high memory usage from causing lag (this does not affect auto save). This feature ("Auto Clear") is checked by default.
+
+Auto clear is temporarily disabled while the script area is executing functions such as `wait_for`. This does not affect normal use.
+
+
+1.5 Button area
+
+Click the button below the "Key File" row to choose a folder. The drop-down list shows all .ts files in that folder. Select the file you want to load and click "Load"; all content of the file is loaded into the tab area.
+
+Click a button in the tab area and the button's multi-line string is sent line by line.
+
+If "Prompt:" or "Timeout (s):" is empty, the program waits 100 ms between lines by default.
+
+If "Prompt:" contains a single character or several characters separated by commas, and "Timeout (s):" contains a number, then after each line is sent, the next line is sent only after any of the wait characters appears. If none of the specified characters appears before the timeout, sending stops and a red message is shown in the main window.
+
+If the commands to send contain wait t or wait for x for t (some other special functions also perform specific actions, see the examples), the program performs the delay or waits for the specified content; all other content is sent line by line as is.
+
+Right-click a button in the tab area to edit its name and content. You can also right-click > edit and, in the window that opens: change the button's display name, write multi-line content, send the current line, send the current line and move to the next line (non-empty, non-comment), send all, save, save and exit, and so on. The top-right corner of the edit window has a pin button (📍/📌); when pressed, the window always stays on top and is not covered by other windows; press it again to cancel. After you press Send All, it changes to Stop, so you can interrupt the sending at any time.
+
+
+The edit window supports a right-click menu with undo/redo, cut, copy, paste, etc.
+
+In the multi-line content of the edit window, lines starting with `#` are comments. They are not sent and are shown in green italics in the edit window.
+
+The content of the button tab area can be saved with the "Save" and "Save As" buttons.
+
+
+To the right of the button selection row there is a "History..." label and 5 history buttons, used to switch quickly between recently used key files. See 2.13 Key file history.
+
+
+
+1.6 Script area
+
+In the script area you can write Python code that is executed line by line. Syntax and indentation rules are the same as Python. All Python standard libraries can be used, and some library functions are already imported into this code namespace; see the description below.
+
+When you click "Start", every line of code in the multi-line text box of the script area is executed in turn. For send xxx and send_line(xxx,True,True) statements, if the "Delay ms:" box has a value, the send function waits that long after sending.
+
+If the line after send x in the script area is not wait or wait for, a wait call is added during execution, with the default interval as the wait time.
+
+If the number in the "Loops:" box is 0, the script loops forever; if it is 1, it runs once and ends; if it is n, it runs n times and ends.
+
+The current loop count is shown at "Loop:".
+
+While a script is running, you can use the "Pause" and "Stop" buttons, and after pausing you can click "Start" again.
+
+For the content of the script area text box, you can specify a folder path, select a .txt file in the drop-down list and click "Open"; all content of that txt file is then loaded into the text box.
+
+After modifying the content of the text box, you can also save it or save it as a new file.
+
+During execution, the running statement is highlighted line by line. wait and wait for x for t statements stay highlighted until the wait ends or times out.
+
+Python keywords and custom functions are automatically highlighted in blue. If an error occurs while running, an error window opens showing the error line number, variable information and main window text, and this is also recorded in `script_error_info.txt`.
+
+While a custom script is running, undo in the main window is temporarily disabled to prevent unlimited memory growth.
+
+While the wait, wait_for, wait_for_any and send_and_get functions are waiting, the remaining seconds are shown in real time at the end of the corresponding script line (e.g. `(10)`), counting down every second and disappearing automatically when the wait ends.
+
+The script area has a new `send_and_get(str_2_send, regex_pattern, over_time, wait_str="", line_count=0)` function. It sends a command, waits, and extracts the reply with a regular expression, returning the matched string or list. See example script 07.
+
+The script area has new `run_button(button_name, wait_str, over_time)` and `send_commands_from_file(file_name, wait_str, over_time)` functions. They take an existing button from the button area, or a plain-text command list, and run it in the script line by line as a whole, without rewriting each line as a function call. See 2.14 and example script 17.
+
+
+
+1.7 Layout buttons
+
+At the top left there are buttons such as "Keys", "Script", "Config", "Theme" and "Regex". The first three show or hide the corresponding area. The "Theme" button switches between the light and dark interface. The "Regex" button opens the regex match monitor window; see 2.12 Regex match monitor.
+
+
+The colors of the window title bar and menu bar cannot be changed.
+
+
+### 2. Details
+
+2.1 Main window interaction
+
+Content received from the serial port is shown directly in the main window. If the received content ends with a carriage return or line feed, it is shown immediately.
+
+If the received content does not end with a carriage return or line feed, the program waits 0.01 seconds before showing the received content in the main window as one reception.
+
+Characters typed in the main window are held in a buffer; they are sent and the buffer is cleared only when Enter is pressed.
+
+The main window supports undo and redo with Ctrl+Z and Ctrl+Y.
+
+This conflicts with the Linux stop key, so the Linux shortcuts were changed to Alt+c/d/z/l/a/e/k/u (a Linux shortcut actually sends specific binary data to the remote hardware device; for shortcuts that are not implemented, you can look up the binary string and send it separately).
+
+In the main window, the keyboard arrow keys cannot move freely; you can only move left and right within the input string area. The Up/Down keys browse the command history by default.
+
+The serial port idle detection time is optimized to 0.001 s to ensure stability during continuous high-volume transfers.
+
+The undo history of the text editing windows (main window, script box, etc.) is limited to 20 steps.
+
+In the main window, Backspace and the arrow keys are restricted so that they can only move and operate within the input string area, to avoid damaging received history data.
+
+
+
+2.2 Auto save and load of settings
+
+When the exe starts, it checks whether the .ini file and its settings exist. If they do, the settings are loaded into the whole interface.
+
+When the program closes, the current settings and command history are saved to the `.ini` file and are restored automatically the next time it opens (automatic restore of the script area path had a bug, fixed in version 20260213).
+
+From version 2026.11.10, TermPlusSetup.ini is always stored in the folder where the exe is located, and no longer depends on how the program is started (double-click, the "Start in" setting of a shortcut, etc.). The language entry in the ini stores the interface language; see 2.15 Interface language.
+
+2.3 Script custom function list
+
+The content of this text box acts as a space in which Python code runs. When you click "Start", all lines are merged into one executable code string and then executed.
+
+The three functions send x, wait t and wait for x for t are handled specially: they are not valid Python syntax, but are converted into valid Python function calls before execution.
+
+send_line(text,addNewline=True,insertDisplay=True)
+wait(seconds)
+wait_for(target_string, over_time)
+
+See the txt documents in the Example Scripts folder to learn about for and while loops and how to use all custom functions.
+
+-Added support for PowerShell and SCPI functions; see the corresponding examples.
+-Added functions to get the main window text; see the examples.
+-Added the show_str("xxx") display function.
+
+All currently supported custom functions:
+	send xxx, equivalent to send_line(xxx,True,True)
+	wait x, equivalent to wait(x)
+	wait for xxxx for t, equivalent to wait_for(xxx,t)
+	wait_for_any(["xxx","yyy","zzz","www"],t)
+	messagebox.showinfo("title_str", "content_str")
+	raise StopLoopException("stop")
+	get_future_lines_till_str_or_overtime(str_to_end,overtime)
+	send_and_get(str_2_send, regex_pattern, over_time, wait_str="", line_count=0)
+	run_button(button_name, wait_str, over_time, tab_name=None, interpret=True)
+	send_commands_from_file(file_name, wait_str, over_time, interpret=True)
+	connect_serial()
+	get_last_n_lines(line_amount)
+	get_future_n_lines_or_till_overtime(line_amount,overtime)
+	get_future_lines_till_str_or_overtime(str_to_end,overtime)
+	connect_serial()
+	close_serial()
+	toggle_serial()
+	set_port("COMx")
+	set_baudrate("xxxx")
+	visa_init()
+	visa_query()
+	visa_write()
+	visa_read() (the read function is not demonstrated; switching the power supply on/off does not need a separate read)
+	open power shell
+	power shell send xxx
+
+Besides the custom functions, the script area can run most built-in Python code. If some code is not supported, you can try adding the required libraries to the TermPlus source code and repackaging it; the function names you need must also be included in "local_namespcae" in the code.
+
+If the script area detects a problem in the code or an exception occurs while running, execution stops and the exception is reported. The details of the error can be seen in the window that opens.
+
+The error also generates a script_error_info.txt, whose content you can find in the same folder as the exe.
+
+2.4 Loading scripts
+
+Files with the .ts extension can be loaded. When loading, the program tries **GBK, UTF-8, UTF-8-sig, Latin-1** decoding in turn and remembers the encoding that worked for later saving, to prevent garbled text. You can view or change the encoding with Notepad++; it should be ANSI or Latin-1, otherwise the file may fail to load or show garbled text.
+
+2.5 Naming the window
+
+Type text in the "Window name:" box at the top right, and the window title changes accordingly.
+
+2.6 PowerShell (CMD)
+
+Added support for PowerShell. PowerShell is the full version of CMD and can perform operations such as SCP; see Example Scripts.
+
+2.7 SCPI
+
+Added support for SCPI, which can control devices such as programmable power supplies; see Example Scripts.
+
+2.10 Timestamps
+
+When the "Timestamp" box is checked, sent and received content is prefixed with "Send at xx:xx:xx.xxx" and "Receive at xx:xx:xx.xxx", in blue and green respectively.
+
+The receive timestamp is shown when the first character is received. After it is shown, the next receive timestamp is shown only if no characters have been received continuously for more than 0.1 seconds.
+
+2.11 Donation
+
+A donation option has been added to the "About" menu; you can scan the QR code to support the author.
+
+
+2.12 Regex match monitor
+
+What this feature does
+Data received from the serial port keeps scrolling in the main window. When you need to keep capturing specific values or status words from a lot of data (e.g. temperature, voltage, a keyword), reading line by line is very tiring.
+The regex match monitor automatically scans newly received data in the background, extracts the content you care about in real time, and shows it in a separate, tidy table.
+
+Quick start
+Click the "Regex" button at the top of the main window to open the monitor window.
+
+Enter the content you want to capture in the "Regex:" input box at the top left and click "Add". Then start receiving serial data; matched results appear automatically in the results table below.
+
+Leave "Match lines:" at the default 1. Increase it only when the content you want to match spans several lines.
+
+New to regular expressions? Start here
+A regular expression is a syntax that describes "what kind of text I want to find". It sounds complicated, but only a few forms are commonly used:
+
+1. Write fixed text directly
+
+To find Temperature, just enter Temperature. It matches every position that contains this word.
+
+2. \d means any single digit
+
+What you want to find	Pattern	Matches
+Any single digit	\d	matches 3, 7
+Several digits in a row	\d+	matches 123, 42
+A number with a decimal point	\d+\.\d+	matches 34.5, 3.14
+
+3. Use parentheses () to extract only the part you care about
+
+This is the most useful technique. For example, the serial output is Temperature: 34.5 and you only want to record the temperature value:
+
+Without parentheses: Temperature: \d+\.\d+ → the result shows Temperature: 34.5
+
+With parentheses: Temperature: (\d+\.\d+) → the result shows only 34.5
+
+Only the content inside the parentheses is the final result shown in the table. Without parentheses, the full match is shown.
+
+4. . means any single character, .+ means any piece of text
+
+Pattern	Meaning
+.	matches any single character
+.+	matches any non-empty piece of text
+.*	matches anything (including empty)
+
+Common examples
+Serial output format	Regex	Result
+Temp: 34.5 C	Temp: (\d+\.\d+)	34.5
+PASS or FAIL	PASS|FAIL	PASS or FAIL
+COM1, COM3	COM(\d+)	1, 3
+Error code: 0x1A	Error code: (0x[0-9A-Fa-f]+)	0x1A
+[OK], [ERROR]	\[(\w+)\]	OK, ERROR
+Any line ending with #	.+(?=#)	the whole line
+
+Results table
+The results window uses a monospaced font and shows the results in columns. The first row is the header row, showing the regex of each column; the first column is the row number column. Whenever any column has a new match, a new row is written with the latest values of all columns. When several regexes match at the same time, the program tries to align them in the same row.
+
+The results table keeps at most 5000 rows. Beyond that, the first half is deleted automatically to avoid high memory usage.
+
+Buttons
+Button	Function
+Add	adds the regex in the input box as a new column
+Test	runs a full match on all content currently in the main window and appends the results to the end of the existing results, so you can check whether the regex is correct
+< / >	swaps the column at the cursor with the column to its left/right; the cursor moves with it to the new column position
+Clear Column	clears all match results of the column at the cursor
+Clear All	clears the match results of all columns
+Delete Column Regex	deletes the regex of the column at the cursor; the following columns move forward
+Delete All Regex	deletes all regexes and clears the results
+
+Cursor position: click a column in the results table, then click "Clear Column" or "Delete Column Regex", and the operation applies to that column.
+
+Auto save
+Below the results window there is a row of auto save controls. Fill in "Path", "File name" and "Max size", then click the OFF button to enable auto save (the button turns green and changes to ON). Once enabled, each time there are new match results, the new rows are appended incrementally to the specified txt file; when the file exceeds the maximum size, the next file is created automatically. The path, file name and maximum size are saved to the ini file automatically when the program starts and closes.
+
+Tips
+First use the "Test" button to check that the regex is correct, then let it monitor in real time.
+
+Several regexes can run at the same time without interfering with each other, which is suitable for monitoring several values such as temperature, voltage and status at once.
+
+The results window has horizontal and vertical scroll bars, so you can scroll left and right when there are many columns.
+
+
+2.13 Key file history
+
+To the right of the button selection row there is a "History..." label and 5 history buttons. They record recently used key files, so you can switch quickly between several frequently used files.
+
+Rules for pushing into the history buttons:
+Each time you click "Load", the old file that is replaced is pushed into history button 1, the former 1-4 move back one position, and the former 5 is discarded. If the replaced file is already in the history, it is first removed from its old position and then pushed into position 1, and the remaining buttons fill the gap in order. During Save As, if the file name changes, the original file is also pushed into the history. The file currently shown in the script file box never duplicates a history button.
+
+What happens when you click a history button:
+When you click any history button, the currently loaded file and the file recorded by that button are swapped. After the swap, that button moves to position 1, the buttons between the former position 1 and that position move back one position, and the other buttons stay unchanged. Clicking the same history button repeatedly switches back and forth between the current file and that history file.
+
+Button display:
+When a button has content, it shows the file name (up to 20 characters; anything longer is shown as ...). When it is empty, it shows its number 1-5.
+
+If a history file has been deleted or moved, the button name is shown with strikethrough. If it still cannot be loaded when clicked, a message is shown and the strikethrough stays; if it loads successfully, the strikethrough is removed automatically.
+
+The history is saved to TermPlusSetup.ini automatically when the program closes and is restored automatically at the next start.
+
+
+2.14 Using existing buttons or command files in a script
+
+What this feature does
+
+When you already have a long multi-line command sequence (for example a finished button in the button area, or a command list txt with hundreds of lines) and want to make it part of an automated script, you do not need to rewrite each line as a function call such as send_and_get("..."). With the two functions below you can reference the whole block, and the command list stays as plain text.
+
+	run_button(button_name, wait_str, over_time, tab_name=None, interpret=True)
+	send_commands_from_file(file_name, wait_str, over_time, interpret=True)
+
+Parameters
+
+	button_name  The name shown on the button.
+	file_name    The command list file. It can be an absolute path; if only a file name is given, it is looked up relative to the "Script File" path box in the interface. The file encodings utf-8 and gbk are tried in turn.
+	wait_str     The string to wait for after sending a normal command, usually the device prompt, such as $ or #. Must not be empty.
+	over_time    Timeout in seconds for waiting after a normal command. Must be greater than 0.
+	tab_name     Optional. When several tabs contain buttons with the same name, use it to specify which one; otherwise a duplicate-name message is shown.
+	interpret    Optional, default True; see below for its meaning.
+
+How each line is processed
+
+The processing rules are exactly the same as when you click a button to send. Each line is checked in the following order:
+
+	1. Empty lines, comment lines starting with #   skipped
+	2. wait <seconds>                               actually waits, not sent to the serial port
+	3. wait for <string> for <seconds>              actually waits, not sent to the serial port
+	4. Custom function commands                     executed, not sent to the serial port
+	5. Everything else                              sent to the serial port, then waits for wait_str
+
+The custom function commands supported by rule 4 are exactly the same as those supported in the button area, including show_str("xxx"), show_date_time(), set_port("COMx"), set_baudrate(xxxx), connect_serial(), close_serial(), toggle_serial(), open power shell, power shell send xxx, powershell_send("xxx"), visa_init(ADDRESS), visa_query(CMD), visa_write(CMD), visa_read().
+
+In addition, after a normal command is sent, if the next line is a wait statement, the wait for wait_str for that line is skipped and the wait is executed directly, to avoid waiting twice. This also matches the behavior of the button send engine.
+
+If you do not want any of the interpretation above and want every line sent to the serial port as is, add the parameter interpret=False. This is useful when the device itself has a command called wait that you do not want to be consumed as a wait statement.
+
+Trailing whitespace on each line is removed automatically, so commands of different lengths or extra spaces at the end of a line do no harm.
+
+Timeout handling
+
+When a line does not receive the ready signal, the whole run is not interrupted. Instead, a red warning is written in the main window (with a blank line before and after it), and execution continues with the next line. The warning looks like this:
+
+	*** Wait timeout ***  Source: button init radio (tab Tab 1)  Line 12 (progress 12/300)
+	    Command: dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2
+	    Wait string not received: $    Timeout: 20 s
+	    Wait for this line skipped, continuing with next line
+
+The line number is the original line number in the command list (comment lines and empty lines are counted too), so you can use it directly to find the command in the txt file or the button content.
+
+Return value
+
+Returns 1 if every wait succeeded, and 0 if any wait timed out, so it can be used with if. It also returns 0, with a message explaining the reason, for parameter errors, a button that cannot be found, duplicate button names, or a file that cannot be found.
+
+Interface feedback while running
+
+While running, the end of the script line shows (current line/total lines remaining seconds), e.g. (12/300 18) means command 12 of 300 is running and 18 seconds remain before the current one times out. On a wait statement, the seconds value is taken over by the wait's own countdown. The start of every line responds to the "Pause" and "Stop" buttons, so even a list of hundreds of lines can be stopped immediately halfway through.
+
+How to write a command list txt
+
+It is just a plain text file with one command per line. No quotes or commas are needed, and nothing needs to be wrapped in a function. Empty lines and lines starting with # are skipped. For the exact format and more examples, see 17-run existing button or command file.txt in Example Scripts.
+
+Note that the script area does not support triple-quoted multi-line strings. Before running, the script is processed line by line and line-highlighting calls are inserted, which would break multi-line strings. So put command lists in an external txt file or in a button, not in a multi-line string in the script.
+
+
+2.15 Interface language
+
+From version 2026.11.10, the interface supports several languages; currently English and Chinese are provided. The default is English: if there is no TermPlusSetup.ini, or the language entry in the ini is empty or invalid, the interface is shown in English.
+
+Switching the language:
+Click Language → Choose Language in the menu bar. The window that opens lists all language files found in the program's _internal\language folder. Select the language you want and click "Load" (or double-click the language). After you confirm the restart prompt, the program writes the language to the ini, closes and restarts automatically, and shows the new language after the restart. If the key file has unsaved changes, you are asked whether to save them first.
+The Language menu and the language selection window are always shown in English, so you can find your way back even after choosing the wrong language.
+
+How to write it in the ini:
+Under [Setup], language = en means English and language = zh means Chinese. You can also write English, Chinese, etc.; it is not case-sensitive.
+
+What does not change with the language:
+The timestamps "Send at" / "Receive at", default tab names such as "Tab 1", function names in scripts, the VISA message prefixes (√ VISA WRITE: / >>> VISA QUERY:), and the format of key files (.ts). These are used by logs, key files and user scripts, so they stay the same, and scripts written under different languages work with each other.
+
+Language files:
+Each language is a UTF-8 text file in the _internal\language folder, named with the language code (en.txt, zh.txt). Each line is one "key = translation" entry; \n in a translation means a line break, and placeholders such as {name} must stay unchanged. If a key has no translation, English is shown automatically. To add a language, copy en.txt, rename it to the new language code (e.g. ja.txt), change language.name in the first line to the name of the language, and translate the text to the right of the equals sign line by line. Once it is in the language folder, it appears in Choose Language.
