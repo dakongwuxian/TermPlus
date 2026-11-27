@@ -1,0 +1,36 @@
+# This example shows how to configure the IP address of the serial-port device, and how to use the Power Shell functions to copy a file via SCP from the computer running this program to the specified IP address.
+# These custom functions can be used in both the "Keys" area and the "Script Area"
+# Functions used in this example
+# send xxx
+# wait t
+# open power shell: opens a Power Shell window. The window cannot be operated manually, only through TermPlus
+# power shell send xxx: sends a command to Power Shell. The Power Shell response is shown directly in TermPlus, and nothing is shown in the Power Shell window itself. Run open power shell before this command
+
+send ifconfig eth0 10.166.147.42 netmask 255.255.255.128 broadcast 10.166.147.127
+wait 1
+send route add default gw 10.166.147.1
+wait 1
+send ifconfig eth0
+wait 1
+send ping -c 4 10.166.147.42
+wait 5
+open power shell
+wait 1
+power shell send cd C:\4485\4485_R1C_JESD_DL_lane4_CRC_issue_debug\krypton_bin\aapl_3.2.7
+# If the path used with the cd command in Power Shell contains spaces, put single quotes around the path
+wait 1
+# The -v option of scp shows detailed output, so you can see whether the command completed normally. TermPlus cannot show the copy progress bar, so add -v to confirm success
+power shell send scp -v aapl_krypton0 root@10.166.147.42:/usr/bin
+wait 3
+send cd ..
+wait 1
+send ls /usr/bin/aapl_krypton0
+wait 1
+
+# When the copy succeeds, the following output is shown
+# Transferred: sent 203453672, received 356080 bytes, in 17.6 seconds
+# Bytes per second: sent 11570386.2, received 20250.2
+# debug1: Exit status 0
+
+
+

@@ -1,0 +1,36 @@
+# This example shows how to get the content of the main window, search for a specified string, get the number after that string on the same line, and check whether the number is greater than 30. If it is greater than 30, a message box pops up and the script stops; otherwise the script continues.
+# Functions used in this example
+# send xxx
+# wait t
+# get_last_n_lines() gets the content at a specified position in the main window
+# re.search() searches a string for the specified content
+# messagebox.showinfo() pops up a message box
+# raise StopLoopException("stop") stops the script
+
+# Define variables
+temp = 0
+
+# Send the command
+send ts r
+
+# Wait until the command reply is complete
+wait for $ for 3
+
+# Get the last n lines back from the current end of the text area (replace n with the actual number of lines to search)
+text_to_search = get_last_n_lines(n)
+
+# match for words "Board" and temp number
+match_result = re.search(r'Board\s*:\s*([\d.]+)', text_to_search)
+
+# get temp number
+if match_result:
+    temp = float(m.group(1))
+if temp > 30:# decide if temp >30
+    messagebox.showinfo("Info", "board temp>30 detected")# pop out message
+    raise StopLoopException("stop")# stop running
+
+# Scripts must follow Python indentation rules. Python uses indentation to identify which lines belong to a block (if/for/while, etc.).
+# For indentation, use either multiples of 4 spaces everywhere or tabs everywhere.
+# This example may fail in some run after running for a long time, because long-time running triggers the function that automatically deletes the first half of the lines in the window, which makes start_idx point to the wrong position
+
+

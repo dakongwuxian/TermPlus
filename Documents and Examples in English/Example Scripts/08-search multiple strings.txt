@@ -1,0 +1,23 @@
+# This example uses the wait_for_any function to wait for and detect content appearing in the main window, and uses if statements to perform specific actions when specific strings appear.
+# Scripts must follow Python indentation rules. Python uses indentation to identify which lines belong to a block (if/for/while, etc.).
+# For indentation, it is recommended to use either 4n spaces everywhere or tabs everywhere.
+# After it starts, the wait_for_any(["xxx","yyy","zzz","www"],t) function checks the new content appearing in the main window. If any of the specified strings (xxx, yyy, etc.) is found, it stops waiting and the following functions are executed. If none of the specified strings is found, the wait ends after t seconds.
+# The first parameter of the wait_for_any function is a list with no length limit; it can contain 1 or more items
+# The wait_for_any function has a return value: the found string if a specified string is found, None if nothing is found. You can use the return value with if to perform specific actions.
+	
+# Send the command whose response needs to be checked
+
+send lmclist
+search_result = wait_for_any(["CXP2021113/1_P23A913","CXP2021113/1_R23C111","CXP2021113/1_R24B49"],3)
+if search_result=="CXP2021113/1_P23A913":
+    # Insert a string into the main window
+    show_str("First slot name found.\n")
+if search_result=="CXP2021113/1_R23C111":
+    show_str("Second slot name found.\n")
+if search_result=="CXP2021113/1_R24B49":
+    show_str("Third slot name found.\n")
+if search_result==None:
+    show_str("Nothing was found.\nWait over time and search ended.\n")
+
+
+

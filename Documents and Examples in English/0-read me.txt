@@ -1,0 +1,7 @@
+
+1. Copy TermPlus_v26xxxx.zip to the computer where you want to use it and unzip it.
+
+2. Open the TermPlus_v26xxxx folder and double-click TermPlus_v26xxxx.exe to start the program. The exe must stay in the same location as the _internal folder, otherwise it cannot start.
+
+3. For automation scripts see the Example Scripts folder and for instructions see 2-User Manual for TermPlus.txt (both in this English folder). For old versions see the History versions folder (in the parent TermPlus sharing folder).
+

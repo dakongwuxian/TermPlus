@@ -1,0 +1,129 @@
+# This example shows how to take a large block of existing multi-line commands and run it line by line directly in the "Script Area"
+# Use case: there is already a tuned button in the "Keys" area, or you have a command list txt with hundreds of lines,
+# and you want to make it part of an automated script without rewriting every line as send_and_get("...")
+
+# Functions used in this example:
+# run_button(button name, prompt, timeout) runs the multi-line content saved in an existing button in the "Keys" area, exactly as if the button were clicked
+# send_commands_from_file(file name, prompt, timeout) reads a plain text file line by line and runs it, with exactly the same rules as button sending
+# Both functions return a value: 1 if every wait succeeded, 0 if any wait timed out. Use it with if to take specific actions
+# A timeout on one line does not abort the whole run; a red alert is written in the main window and the next line is run
+
+show_str("\nexample start\n")
+
+# Run the button named init radio in the "Keys" area; after each normal command is sent, wait for $ to appear, for up to 20 seconds
+run_button("init radio", "$", 20)
+
+# Run the button and use the return value to check whether everything succeeded
+ok = run_button("init radio", "$", 20)
+if ok:
+    show_str("\nall commands got the prompt\n")
+if not ok:
+    show_str("\nsome commands timed out, check the red alert above\n")
+
+# If buttons with the same name exist in several tabs, use the tab_name parameter to choose one
+run_button("init radio", "$", 20, tab_name="Tab 1")
+
+# Run a txt file line by line. If only a file name is given, the file is looked up relative to the path field in the "Script File" row of the UI
+send_commands_from_file("init_cmds.txt", "$", 20)
+
+# You can also give an absolute path; put r before the path so that backslashes are not treated as escape characters
+send_commands_from_file(r"D:\my cmds\init_cmds.txt", "$", 20)
+
+show_str("\nexample end\n")
+
+
+# ============================================================
+# How to write the command list txt
+# ============================================================
+#
+# It is just a plain text file with one command per line. No quotes, no commas
+# and no wrapping in any function are needed. For example, the file content can simply be:
+#
+#     # this is a comment line and is skipped
+#     dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2
+#     dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_3
+#     wait 2
+#     rvc r PaDriverBias0:0
+#
+# Empty lines are skipped, comment lines starting with # are skipped,
+# and trailing spaces on each line are removed automatically, so uneven command lengths or extra trailing spaces do not matter.
+# Supported file encodings are utf-8 and gbk; the program tries them in that order.
+
+
+# ============================================================
+# How each line is processed
+# ============================================================
+#
+# These two functions use exactly the same rules as clicking a button to send. Each line is checked in this order:
+#
+#   1. Empty lines, comment lines starting with #    Skipped
+#   2. wait <seconds>                                Real wait, not sent to the serial port
+#   3. wait for <string> for <seconds>               Real wait, not sent to the serial port
+#   4. Custom function commands                      Executed, not sent to the serial port
+#   5. Everything else                               Sent to the serial port, then waits for the prompt
+#
+# The custom function commands supported by item 4 are exactly the same as those supported in the "Keys" area:
+#   show_str("xxx")        show_date_time()
+#   set_port("COM3")       set_baudrate(115200)
+#   connect_serial()       close_serial()          toggle_serial()
+#   open power shell       power shell send xxx    powershell_send("xxx")
+#   visa_init(ADDRESS)     visa_query(CMD)         visa_write(CMD)     visa_read()
+#
+# In addition, after a normal command is sent, if the next line is a wait statement,
+# the wait for the prompt on this line is skipped and that wait is run directly, to avoid waiting twice.
+# This also matches the behavior of the button send engine.
+#
+# If you do not want the interpretation above and want every line sent to the serial port as is,
+# add the interpret=False parameter:
+#
+#     run_button("init radio", "$", 20, interpret=False)
+#     send_commands_from_file("init_cmds.txt", "$", 20, interpret=False)
+#
+# When this is useful: the device itself has a command called wait, and you do not want it consumed as a wait statement.
+
+
+# ============================================================
+# UI feedback while running
+# ============================================================
+#
+# While running, the end of the script line shows (current line/total lines remaining seconds), for example
+#
+#     run_button("init radio", "$", 20) (12/300 18)
+#
+# This means command 12 of 300 is running, and the current one times out in 18 seconds.
+# For a wait statement, the seconds value is taken over by the wait's own countdown.
+#
+# When a line does not get the prompt, the main window shows a block like this in red, with an empty line before and after:
+#
+#     *** Wait timeout ***  Source: button init radio (tab Tab 1)  Line 12 (progress 12/300)
+#         Command: dra r krypton:0 ADC_IF_1_DL_MEAS_LANE_2
+#         Wait string not received: $    Timeout: 20 s
+#         Wait for this line skipped, continuing with next line
+#
+# The line number is the original line number in the command list (comments and empty lines are counted too),
+# so you can use it directly to find that command in the txt file or the button content.
+# You can press "Pause" and "Stop" at any time while running; they take effect at the start of each line.
+
+
+# ============================================================
+# Doing it without the new functions
+# ============================================================
+#
+# Python built-in functions such as open() can be used directly in the "Script Area", and the os module is also available.
+# To control the processing of each line yourself, write it like this, e.g. to send only part of the list, or to collect and parse the reply of each line.
+# Note: gui refers to the program itself. The script runs in a worker thread, so reading UI widgets must be wrapped in gui.tk_safe(...)
+
+BASE_DIR = gui.tk_safe(lambda: gui.multi_script_path_entry.get().strip())
+FULL_PATH = os.path.join(BASE_DIR, "init_cmds.txt")
+
+for RAW in open(FULL_PATH, encoding="utf-8").read().splitlines():
+    CMD = RAW.rstrip()
+    if not CMD.strip() or CMD.lstrip().startswith("#"):
+        continue
+    send_line(CMD)
+    if not wait_for("$", 20):
+        show_str("timeout on: " + CMD + "\n")
+
+# Note that the "Script Area" does NOT support triple-quoted multi-line strings.
+# Before running, the script is processed line by line and line-highlight calls are inserted, which breaks multi-line strings.
+# So put the command list in an external txt file, not in a multi-line string in the script.

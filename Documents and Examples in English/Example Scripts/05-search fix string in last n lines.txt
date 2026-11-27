@@ -1,0 +1,25 @@
+# This example uses get_last_n_lines() to get content from the main window and uses if to evaluate the search result. When the specified content appears in the main window, the specified action is executed.
+# Scripts must follow Python indentation rules. Python uses indentation to identify which lines belong to a block (if/for/while, etc.).
+# For indentation, it is recommended to use either 4n spaces everywhere or tabs everywhere.
+
+# Send the command
+send lmclist
+
+# Wait for the command response to appear
+wait 3
+
+# Get the last 5 lines of the text area, counting back from the end
+response = get_last_n_lines(5) 
+
+# Set the text to search for
+match_target = "CXP2021113/1_R24B49"
+
+# Take further action based on the search result
+if match_target in response: 
+    messagebox.showinfo("Info", "Target string found.")# pop out message
+    raise StopLoopException("stop")# stop running
+else:
+    messagebox.showinfo("Info", "Target string not found.")# pop out message
+
+
+

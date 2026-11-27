@@ -1,0 +1,41 @@
+# This example uses for loops to send commands and insert strings into the main window
+# Scripts must follow Python indentation rules. Python uses indentation to identify which lines belong to a block (if/for/while, etc.).
+# For indentation, it is recommended to use either 4n spaces everywhere or tabs everywhere
+
+for i in range(10):
+    #send command1 # Action to execute; commented out in this example
+    show_str("external loop count is %d\n"%i) # Show the current loop count in the main window
+    wait 1    
+    for j in range(10):
+        #send command2 # Action to execute; commented out in this example
+        show_str("internal loop count is %d\n"%j) # Show the current loop count in the main window
+        wait 0.3
+
+# If the content sent after send contains single or double quotes, handle it as follows
+
+# Contains single quotes (It's)	"It's a test"
+# Contains double quotes ("Hello")	'He said "Hello"'
+# Contains both single and double quotes	'''He said, "It's fine."'''
+# Consistent quote style, but escaped	"She said, \"Hello\" and I replied \"Hi\""
+
+
+# The 2 examples below show how to send from rvc r PaDriverBias0:0 to rvc r PaDriverBias0:63
+
+for i in range(64):
+    send_line("rvc r PaDriverBias0:%d"%i)
+    wait 1
+
+for i in range(64):
+    send_line(f"rvc r PaDriverBias0:{i}")
+    wait(1)
+
+# The 2 examples below show how to send commands where the changing number is in the middle
+
+for i in range(64):
+    send_line("ch w GDpa:%d.0 2180"%i)
+    wait 1
+
+for i in range(64):
+    send_line(f"ch w GDpa:{i}.0 2180")
+    wait 1
+

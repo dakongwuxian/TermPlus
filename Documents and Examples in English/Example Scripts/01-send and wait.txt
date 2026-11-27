@@ -1,0 +1,36 @@
+# This example shows how to send commands to the serial port line by line using script functions
+# Functions used in this example:
+# send xxx, equivalent to send_line(xxx): sends the string xxx to the serial port and shows it in the main window
+# wait x, equivalent to wait(x): waits x seconds; decimals are allowed
+# wait for xxxx for t, equivalent to wait_for(xxx,t)
+# After it starts, the wait for xxx for t function checks the content that appears in the main window. If the specified string xxx is found, it stops waiting and the following functions are executed. If the specified string is never found, the wait ends after t seconds.
+# The wait for function has a return value: 1 if the specified string is found, 0 if it is not found. You can use the return value with if to perform specific actions.
+# The show_str("xxxx") function inserts the string xxxx at the end of the main window. You need to add line breaks yourself. The string is not sent to the serial port and is automatically saved in the log
+
+show_str("\nexample start\n")
+send first line
+wait 3
+send second line
+wait for # for 3
+send third line
+wait for krypton for 3
+show_str("\nexample end\n")
+
+# If the content sent after send contains single or double quotes, handle it as follows
+
+# Contains single quotes (It's)	"It's a test"
+# Contains double quotes ("Hello")	'He said "Hello"'
+# Contains both single and double quotes	'''He said, "It's fine."'''
+# Consistent quote style, but escaped	"She said, \"Hello\" and I replied \"Hi\""
+
+# 2025.9.25 New features
+# 1. In the "Script Area", the function send_line(text) was changed to send_line(text,addNewline=True,insertDisplay=True). With 2 additional optional parameters, send_line can specify whether to send a newline and whether to show the text in the main window.
+
+# Send a string. Even if the 2 extra parameters are omitted, a newline is sent at the end by default and the sent content is shown in the window by default
+send_line("hello")
+
+# Send a string, send a newline at the end, and show the sent content in the window
+send_line("hello",True,True)
+
+# Send a string without a newline at the end, and do not show it in the main window
+send_line("hello",False,False)

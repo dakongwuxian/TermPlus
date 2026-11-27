@@ -1,0 +1,329 @@
+# 本示例展示了如何通过 VISA 控制同一台电脑上运行的 ChamCtrl（温箱控制软件），读取温箱状态、修改设置、点击按钮
+# 效果与人在 ChamCtrl 界面上操作完全相同，按钮被点击后执行的就是 ChamCtrl 原有的功能
+# 使用前需要先打开 ChamCtrl（2026.10.22 及以后的版本），ChamCtrl 窗口标题栏会显示 VISA 地址，例如 [VISA: TCPIP0::127.0.0.1::5025::SOCKET]
+# 不需要安装 Keysight Connection Expert 或 NI-VISA，TermPlus 自带的 pyvisa-py 就可以直接连接
+
+# 示例中使用的函数：
+# visa_init(地址)      连接 ChamCtrl，只需要运行一次
+# visa_query(命令)     发送查询命令并在主窗口中显示回复，也可以写成 x = visa_query("命令")，把回复存进变量 x，配合 if 使用
+# visa_write(命令)     发送写入命令或点击命令，ChamCtrl 不会回复
+# show_str("xxxx")     在主窗口末尾显示一段文字，不会发送
+
+# 注意事项：
+# 1. visa_query 只能用于以 ? 结尾的查询命令。用它发送不带 ? 的命令，ChamCtrl 不会回复，TermPlus 会一直等到5秒超时报错
+# 2. visa_write 不会告诉你成功还是失败，出错信息会进入 ChamCtrl 的错误队列，需要用 visa_query(SYST:ERR?) 逐条读取，读完返回 0,"No error"
+# 3. 单独一行使用时，命令可以不加引号，例如 visa_query(CHAM:TEMP?)
+#    要把回复存进变量或写在 if 里时，命令必须加引号，例如 t = visa_query("CHAM:TEMP?")
+# 4. ChamCtrl 每10秒从温箱读取一次数据，TEMP、TARGET_TEMP、STATUS 的读数最多会有10秒延迟，修改设置后要等10秒以上再读取确认
+# 5. 已连接且温箱端口不是502时，会改变温箱状态的按钮会被拒绝，错误为 -203：
+#        RUN_BTN, STOP_BTN, PAUSE_BTN, CONST_BTN, VAR_BTN, SET_BTN, LIGHT_ON_BTN, LIGHT_OFF_BTN, WAVE_START_BTN
+#    只影响本机界面的控件在任何端口下都可以操作：
+#        IP, PORT, CONN_BTN, SET_TEMP, WAVE_TEXT, WAVE_PREVIEW_BTN, AUTO_CENTER, AUTO_MARK
+# 6. 需要连接温箱的按钮在未连接时会被拒绝，错误为 -200
+# 7. ChamCtrl 的弹窗在远程操作时不会弹出，内容会转入错误队列（warning 为 10，error 为 -200）
+
+# 本示例分为三部分：
+# 第一部分：列出所有命令，只读取数据或修改本机界面，不会改变温箱状态，可以直接运行
+# 第二部分：连接温箱、确认状态、设置温度、运行、等待温度到达、开关灯、停止、断开，会真正操作温箱
+# 第三部分：写入波形、预览、启动波形、确认运行、停止波形，会真正操作温箱
+# 第二、三部分默认不运行，确认温箱可以被操作后，把下面对应的变量改成 1 再运行
+
+do_control = 0
+do_wave = 0
+
+show_str("\nexample start\n")
+
+
+# ============================================================
+# 第一部分：所有命令列表
+# ============================================================
+
+# 连接 ChamCtrl，地址以 ChamCtrl 标题栏显示的为准，多开 ChamCtrl 时端口会变成 5026、5027……
+visa_init(TCPIP0::127.0.0.1::5025::SOCKET)
+
+# ---- 通用命令 ----
+
+# 读取设备信息，返回 ChamCtrl,ChamCtrl,0,<版本号>
+visa_query(*IDN?)
+
+# 查询之前的命令是否都已执行完，返回 1
+visa_query(*OPC?)
+
+# 清空错误队列，一般在一段操作开始前发送一次，避免读到之前遗留的错误
+visa_write(*CLS)
+
+# 读取一条错误，没有错误时返回 0,"No error"
+visa_query(SYST:ERR?)
+
+# 与 SYST:ERR? 相同
+visa_query(CHAM:ERR?)
+
+# 列出所有控件名，并标注 r(只读) / rw(可读写) / click(按钮)
+visa_query(CHAM:LIST?)
+
+# ---- 读取所有控件 ----
+
+# 当前选择的温箱，返回 名称:IP，例如 Chamber04:10.166.156.141
+visa_query(CHAM:IP?)
+
+# 当前选择的温箱端口，502~506
+visa_query(CHAM:PORT?)
+
+# 连接按钮的文字，未连接时为 Connect，已连接时为 Disconnect
+visa_query(CHAM:CONN_BTN?)
+
+# 运行状态，未连接时为 disconnected，已连接时为 模式, 状态，例如 Constant Mode, Run
+visa_query(CHAM:STATUS?)
+
+# 当前温度，只返回数字，没有数据时返回 NAN
+visa_query(CHAM:TEMP?)
+
+# 温箱当前的目标温度，只返回数字，没有数据时返回 NAN
+visa_query(CHAM:TARGET_TEMP?)
+
+# 照明灯状态，ON / OFF
+visa_query(CHAM:LIGHT_STATUS?)
+
+# 温度输入框中的数值（还没有按 Set 发送给温箱的值）
+visa_query(CHAM:SET_TEMP?)
+
+# 波形文本框的内容，多行时用 \n 表示换行
+visa_query(CHAM:WAVE_TEXT?)
+
+# 波形启动按钮的文字，波形运行中为 Wave Stop，其他文字都表示没有在运行
+visa_query(CHAM:WAVE_START_BTN?)
+
+# 复选框状态，1 为勾选，0 为不勾选
+visa_query(CHAM:AUTO_CENTER?)
+visa_query(CHAM:AUTO_MARK?)
+
+# 读取按钮控件时返回按钮上的文字
+visa_query(CHAM:RUN_BTN?)
+visa_query(CHAM:STOP_BTN?)
+visa_query(CHAM:PAUSE_BTN?)
+visa_query(CHAM:CONST_BTN?)
+visa_query(CHAM:VAR_BTN?)
+visa_query(CHAM:SET_BTN?)
+visa_query(CHAM:LIGHT_ON_BTN?)
+visa_query(CHAM:LIGHT_OFF_BTN?)
+visa_query(CHAM:WAVE_PREVIEW_BTN?)
+
+# ---- 只修改本机界面的写入，不会改变温箱状态 ----
+
+# 修改温度输入框，只改输入框，要再点击 SET_BTN 才会发送给温箱
+visa_write(CHAM:SET_TEMP 25)
+visa_query(CHAM:SET_TEMP?)
+
+# 修改复选框，可以写 0/1 或 OFF/ON
+visa_write(CHAM:AUTO_CENTER 0)
+visa_query(CHAM:AUTO_CENTER?)
+visa_write(CHAM:AUTO_CENTER 1)
+visa_write(CHAM:AUTO_MARK 0)
+visa_query(CHAM:AUTO_MARK?)
+visa_write(CHAM:AUTO_MARK 1)
+
+# 修改波形文本，内容可以包含括号和引号，整行都会原样发送；多行波形用 \n 表示换行
+visa_write(CHAM:WAVE_TEXT "(start temp 25C)-(loop count 10)-[(0,25C)-(55,80C)-(60,80C)-(120,-40C)-(60,-40C)-(65,25C)]")
+visa_query(CHAM:WAVE_TEXT?)
+
+# 点击 Wave Preview，在 ChamCtrl 图表上画出波形预览
+visa_write(CHAM:WAVE_PREVIEW_BTN:CLICK)
+
+# 读取上面这些操作有没有出错
+visa_query(SYST:ERR?)
+
+# ---- 错误示例，以下命令都会出错 ----
+
+# 查询不存在的控件，直接返回 ERROR: -113,...，同时这条错误也会进入错误队列
+visa_query(CHAM:FOO?)
+
+# 写只读控件，-221
+visa_write(CHAM:TEMP 25)
+
+# 按钮要用 :CLICK 点击，不能直接写值，-221
+visa_write(CHAM:RUN_BTN 1)
+
+# 下拉框里不存在的温箱名称，-224
+visa_write(CHAM:IP NoSuchChamber)
+
+# 不认识的命令，-113
+visa_write(ABC:DEF)
+
+# 循环读取错误队列，直到读到 0,"No error" 为止
+err = visa_query("SYST:ERR?")
+while err is not None and not err.startswith("0,"):
+    err = visa_query("SYST:ERR?")
+
+
+# ============================================================
+# 第二部分：用脚本控制温箱，确认状态后再操作
+# ============================================================
+
+if do_control == 1:
+    # 开始前清空错误队列
+    visa_write(*CLS)
+
+    # 选择要操作的温箱和端口，IP 可以写完整选项 Chamber04:10.166.156.141、名称 Chamber04 或纯 IP
+    # 只有 502 端口允许改变温箱状态，其他端口只能读取
+    visa_write(CHAM:IP Chamber04)
+    visa_write(CHAM:PORT 502)
+    visa_query(CHAM:IP?)
+    visa_query(CHAM:PORT?)
+
+    # 按钮文字为 Connect 时表示还没有连接，点击连接；连接需要几秒钟，等待5秒再继续，避免后面的查询超时
+    conn = visa_query("CHAM:CONN_BTN?")
+    if conn == "Connect":
+        visa_write(CHAM:CONN_BTN:CLICK)
+        wait 5
+
+    # 确认连接成功：按钮文字变为 Disconnect；连接失败时错误队列里会有 -200,"Execution error; Error: Could not connect to ..."
+    conn = visa_query("CHAM:CONN_BTN?")
+    if conn != "Disconnect":
+        show_str("\nconnect failed, check the error below\n")
+        visa_query(SYST:ERR?)
+
+    # 确认当前连接的端口是502，不是502时后面的操作都会被拒绝
+    port = visa_query("CHAM:PORT?")
+    if port != "502":
+        show_str("\nnot port 502, chamber is read-only\n")
+
+    # 确认状态：连接后 ChamCtrl 立刻读取一次温箱，返回例如 Constant Mode, Stop
+    visa_query(CHAM:STATUS?)
+    visa_query(CHAM:TEMP?)
+    visa_query(CHAM:TARGET_TEMP?)
+
+    # 切换到 Constant Mode，ChamCtrl 的波形功能和设置温度都基于这个模式
+    visa_write(CHAM:CONST_BTN:CLICK)
+
+    # 设置目标温度：先写温度输入框，再点击 Set 发送给温箱
+    visa_write(CHAM:SET_TEMP 25)
+    visa_write(CHAM:SET_BTN:CLICK)
+
+    # 写入和点击没有回复，读取错误队列确认是否成功
+    visa_query(SYST:ERR?)
+
+    # 等待 ChamCtrl 下一次刷新后，确认温箱的目标温度已经变为 25
+    wait 12
+    tt = visa_query("CHAM:TARGET_TEMP?")
+    if tt is not None and tt != "NAN" and abs(float(tt) - 25) < 0.1:
+        show_str("\ntarget temp set to 25C\n")
+    else:
+        show_str("\ntarget temp not changed, check the error below\n")
+        visa_query(SYST:ERR?)
+
+    # 点击 RUN 开始运行，等待刷新后确认状态里包含 Run
+    visa_write(CHAM:RUN_BTN:CLICK)
+    wait 12
+    st = visa_query("CHAM:STATUS?")
+    if st is not None and "Run" in st:
+        show_str("\nchamber is running\n")
+
+    # 每10秒读取一次温度，直到与目标温度相差 1C 以内，最多等待 180 次（30 分钟）
+    reach = 0
+    n = 0
+    while n < 180:
+        t = visa_query("CHAM:TEMP?")
+        if t is not None and t != "NAN" and abs(float(t) - 25) <= 1:
+            reach = 1
+            break
+        n = n + 1
+        wait 10
+    if reach == 1:
+        show_str("\ntemperature reached 25C\n")
+    else:
+        show_str("\ntemperature not reached in 30 minutes\n")
+
+    # 开灯，确认灯状态为 ON
+    visa_write(CHAM:LIGHT_ON_BTN:CLICK)
+    visa_query(CHAM:LIGHT_STATUS?)
+
+    # 关灯，确认灯状态为 OFF
+    visa_write(CHAM:LIGHT_OFF_BTN:CLICK)
+    visa_query(CHAM:LIGHT_STATUS?)
+
+    # 暂停运行，等待刷新后状态里应包含 Pause
+    visa_write(CHAM:PAUSE_BTN:CLICK)
+    wait 12
+    visa_query(CHAM:STATUS?)
+
+    # 停止运行，等待刷新后状态里应包含 Stop
+    visa_write(CHAM:STOP_BTN:CLICK)
+    wait 12
+    visa_query(CHAM:STATUS?)
+
+    # Variable Mode 按钮，ChamCtrl 的温度控制只使用 Constant Mode，这里只是列出命令，不运行
+    # visa_write(CHAM:VAR_BTN:CLICK)
+
+    # 读取整个过程中的所有错误
+    err = visa_query("SYST:ERR?")
+    while err is not None and not err.startswith("0,"):
+        err = visa_query("SYST:ERR?")
+
+    # 断开连接，确认按钮文字变回 Connect，状态变为 disconnected
+    visa_write(CHAM:CONN_BTN:CLICK)
+    visa_query(CHAM:CONN_BTN?)
+    visa_query(CHAM:STATUS?)
+
+
+# ============================================================
+# 第三部分：用脚本运行温度波形
+# ============================================================
+
+if do_wave == 1:
+    visa_write(*CLS)
+
+    # 连接 502 端口，与第二部分相同
+    visa_write(CHAM:IP Chamber04)
+    visa_write(CHAM:PORT 502)
+    conn = visa_query("CHAM:CONN_BTN?")
+    if conn == "Connect":
+        visa_write(CHAM:CONN_BTN:CLICK)
+        wait 5
+
+    # 波形只能在 Constant Mode 下运行。ChamCtrl 要等下一次刷新才知道模式已经切换，
+    # 所以切换后等待12秒再启动波形，否则会被拒绝，错误为 -200,"Execution error; Not in Constant Mode: ..."
+    visa_write(CHAM:CONST_BTN:CLICK)
+    wait 12
+    visa_query(CHAM:STATUS?)
+
+    # 写入波形并预览，格式为 (start temp 起始温度C)-(loop count 循环次数)-[(分钟,温度C)-(分钟,温度C)-...]
+    visa_write(CHAM:WAVE_TEXT "(start temp 25C)-(loop count 1)-[(0,25C)-(10,30C)-(20,30C)-(30,25C)]")
+    visa_query(CHAM:WAVE_TEXT?)
+    visa_write(CHAM:WAVE_PREVIEW_BTN:CLICK)
+
+    # 波形格式错误时，错误队列里会有 -200,"Execution error; Error: Wave format invalid"
+    visa_query(SYST:ERR?)
+
+    # 启动波形，按钮文字变为 Wave Stop 表示波形正在运行
+    visa_write(CHAM:WAVE_START_BTN:CLICK)
+    wb = visa_query("CHAM:WAVE_START_BTN?")
+    if wb == "Wave Stop":
+        show_str("\nwave is running\n")
+    else:
+        show_str("\nwave not started, check the error below\n")
+        visa_query(SYST:ERR?)
+
+    # 波形运行期间每分钟读取一次温度和目标温度，这里只监控5分钟作为示例
+    n = 0
+    while n < 5:
+        visa_query(CHAM:TEMP?)
+        visa_query(CHAM:TARGET_TEMP?)
+        n = n + 1
+        wait 60
+
+    # 停止波形：按钮文字为 Wave Stop 时再点击一次就会停止
+    # 注意：波形结束后按钮文字可能是 Wave Start，也可能是 Temp Cycle Start，都表示没有在运行，
+    # 此时不要再点击，否则会重新启动波形，所以要先读取按钮文字再决定是否点击
+    wb = visa_query("CHAM:WAVE_START_BTN?")
+    if wb == "Wave Stop":
+        visa_write(CHAM:WAVE_START_BTN:CLICK)
+    visa_query(CHAM:WAVE_START_BTN?)
+
+    # 停止温箱运行并断开
+    visa_write(CHAM:STOP_BTN:CLICK)
+    err = visa_query("SYST:ERR?")
+    while err is not None and not err.startswith("0,"):
+        err = visa_query("SYST:ERR?")
+    visa_write(CHAM:CONN_BTN:CLICK)
+
+show_str("\nexample end\n")

@@ -1,0 +1,20 @@
+# This example uses get_future_n_lines_or_till_overtime() to get content from the main window, uses re.search() to search for the specified string, and uses if to evaluate the search result. When the specified content appears in the main window, the specified action is executed.
+# Scripts must follow Python indentation rules. Python uses indentation to identify which lines belong to a block (if/for/while, etc.).
+# For indentation, it is recommended to use either 4n spaces everywhere or tabs everywhere.
+
+# Send the command
+send lmclist
+
+# Get the next 5 new lines in the text area from now on. Stop after 5 lines are received, or if 5 lines have not appeared after 20 seconds
+response = get_future_n_lines_or_till_overtime(5,20) 
+
+# Set the text to search for
+match_target = "CXP2021113/1_R24B49"
+
+# Take further action based on the search result
+if match_target in response: 
+    messagebox.showinfo("Info", "Target string found.")# pop out message
+    raise StopLoopException("stop")# stop running
+else:
+    messagebox.showinfo("Info", "Target string not found.")# pop out message
+

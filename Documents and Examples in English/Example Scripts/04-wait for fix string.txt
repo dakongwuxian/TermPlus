@@ -1,0 +1,56 @@
+
+#This file contains 2 examples
+#Example 1
+
+# This example uses the wait for function to wait for and detect content appearing in the main window, and uses an if statement to perform a specific action when a specific string appears.
+# Scripts must follow Python indentation rules. Python uses indentation to identify which lines belong to a block (if/for/while, etc.).
+# For indentation, it is recommended to use either 4n spaces everywhere or tabs everywhere
+# After it starts, the wait for xxx for t function checks the new content appearing in the main window. If the specified string xxx is found, it stops waiting and the following functions are executed. If the specified string is never found, the wait ends after t seconds.
+# The wait for function has a return value: 1 (True) if the specified string is found, 0 (False) if it is not found. You can use the return value with if to perform specific actions.
+	
+# Send the command whose response needs to be checked
+
+send lmclist
+
+wait_result = wait_for('CXP2021113/1_R24B49',3)
+
+if wait_result==True:
+
+    # Insert a string into the main window so it can be found in the log
+    show_str("Target found.\n")
+
+    # pop out message # Show a pop-up message
+    messagebox.showinfo("Info", "Target string found.")
+    
+    # The expected response was found; print the log to record it (not run in this example)
+    #send te log read
+    
+    # Stop the script
+    raise StopLoopException("stop")
+else:
+    show_str("Search over time, target not found.\n")
+    messagebox.showinfo("Info", "Target string not found.")
+
+
+
+
+# Example 2
+# This example uses get_future_lines_till_str_or_overtime() to get content from the main window, uses re.search() to search for the specified string, and uses if to evaluate the search result. When the specified content appears in the main window, the specified action is executed.
+# Scripts must follow Python indentation rules. Python uses indentation to identify which lines belong to a block (if/for/while, etc.).
+# For indentation, it is recommended to use either 4n spaces everywhere or tabs everywhere.
+
+# Send the command
+send lmclist
+
+# Get all new content in the text area from now on until the string krypton:~# appears; also stop if it has not appeared after 20 seconds
+response = get_future_lines_till_str_or_overtime("krypton:~#",20) 
+
+# Set the text to search for
+match_target = "CXP2021113/1_R24B49"
+
+# Take further action based on the search result
+if match_target in response: 
+    messagebox.showinfo("Info", "Target string found.")# pop out message
+    raise StopLoopException("stop")# stop running
+else:
+    messagebox.showinfo("Info", "Target string not found.")# pop out message
